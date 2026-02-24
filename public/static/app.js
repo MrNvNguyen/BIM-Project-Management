@@ -1800,13 +1800,40 @@ async function loadCostAnalysis() {
     $('anaOtherCost').textContent = fmtMoney(data.costs.total_other_costs)
     $('anaTotalCost').textContent = fmtMoney(data.costs.total_costs)
     $('anaProfit').textContent    = fmtMoney(data.profit.profit)
-    $('anaProfitMargin').textContent = `Tỷ suất LN: ${data.profit.profit_margin}%`
+    $('anaProfitMargin').textContent = `Tỷ suất LN: ${data.profit.profit_margin ?? 'N/A'}%`
 
     const profitCard = $('anaProfitCard')
     if (profitCard) {
-      profitCard.style.background = data.profit.profit >= 0
+      const profitStatus = data.validation?.profit_status || 'ok'
+      profitCard.style.background = profitStatus === 'ok'
         ? 'linear-gradient(135deg,#9c27b0,#7b1fa2)'
-        : 'linear-gradient(135deg,#ef4444,#dc2626)'
+        : profitStatus === 'warning'
+          ? 'linear-gradient(135deg,#f59e0b,#d97706)'
+          : 'linear-gradient(135deg,#ef4444,#dc2626)'
+    }
+
+    // Show validation warnings
+    const warnDiv = $('anaValidationWarnings')
+    if (warnDiv) {
+      const warnings = data.validation?.warnings || []
+      if (warnings.length > 0) {
+        warnDiv.innerHTML = `<div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
+          <div class="flex items-center gap-2 mb-2">
+            <i class="fas fa-exclamation-triangle text-yellow-500"></i>
+            <span class="font-semibold text-yellow-700 text-sm">Cảnh báo dữ liệu</span>
+          </div>
+          <ul class="space-y-1">
+            ${warnings.map(w => `<li class="text-sm text-yellow-700">• ${w}</li>`).join('')}
+          </ul>
+        </div>`
+        warnDiv.classList.remove('hidden')
+      } else {
+        warnDiv.innerHTML = `<div class="bg-green-50 border border-green-200 rounded-lg p-2 mb-3 flex items-center gap-2">
+          <i class="fas fa-check-circle text-green-500 text-xs"></i>
+          <span class="text-xs text-green-700">Dữ liệu hợp lệ — không có cảnh báo</span>
+        </div>`
+        warnDiv.classList.remove('hidden')
+      }
     }
 
     const laborDet = data.costs.labor_cost_details
@@ -1863,7 +1890,7 @@ async function loadCostAnalysis() {
         if (src) src.innerHTML = `
           <p>• Giờ làm dự án tháng này: <strong>${laborDet.total_hours}h</strong></p>
           <p>• Chi phí/giờ công ty: <strong>${fmtMoney(laborDet.cost_per_hour)}/h</strong></p>
-          <p>• Nguồn: <strong>${laborDet.cost_source === 'manual' ? 'Nhập thủ công (Chi Phí Lương)' : 'Tổng lương nhân sự'}</strong></p>
+          <p>• Nguồn: <strong>${laborDet.cost_source === 'project_labor_costs' ? 'Bảng project_labor_costs (đã đồng bộ)' : laborDet.cost_source === 'manual' ? 'Nhập thủ công (Chi Phí Lương)' : 'Tổng lương nhân sự (tự động)'}</strong></p>
           <p>• Chi phí lương dự án = ${laborDet.total_hours}h × ${fmtMoney(laborDet.cost_per_hour)} = <strong>${fmtMoney(data.costs.labor_cost)}</strong></p>`
       }
 
@@ -2641,29 +2668,63 @@ async function loadFinanceProject() {
   const projectId = $('finProjSelect')?.value
   if (!projectId) return
   try {
-    const data = await api(`/finance/project/${projectId}`)
+    // Build query params with optional month/year filter
+    const mf = $('finMonthFilter')?.value
+    const yf = $('finYearFilter')?.value
+    let query = `/finance/project/${projectId}`
+    const params = []
+    if (mf) params.push(`month=${mf}`)
+    if (yf) params.push(`year=${yf}`)
+    if (params.length) query += '?' + params.join('&')
+
+    const data = await api(query)
     const el = $('financeProjectContent')
     if (!el) return
-    const { project, summary, costs_by_type, timeline } = data
+    const { project, summary, costs_by_type, timeline, validation } = data
+
+    // Validation warnings banner
+    const warningBanner = validation?.has_warnings
+      ? `<div class="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mb-4">
+           <div class="flex items-center gap-2 mb-1">
+             <i class="fas fa-exclamation-triangle text-yellow-500"></i>
+             <span class="font-semibold text-yellow-700 text-sm">Cảnh báo dữ liệu</span>
+             <span class="ml-auto text-xs bg-yellow-200 text-yellow-800 px-2 rounded-full">${validation.warnings.length} cảnh báo</span>
+           </div>
+           <ul class="space-y-0.5">${(validation.warnings || []).map(w => `<li class="text-xs text-yellow-700">• ${w}</li>`).join('')}</ul>
+         </div>`
+      : validation
+        ? `<div class="bg-green-50 border border-green-200 rounded-lg p-2 mb-3 flex items-center gap-2">
+             <i class="fas fa-check-circle text-green-500 text-xs"></i>
+             <span class="text-xs text-green-700">Dữ liệu hợp lệ — không có cảnh báo</span>
+           </div>`
+        : ''
+
+    const profitColor = validation?.profit_status === 'ok' ? 'text-purple-600' : validation?.profit_status === 'warning' ? 'text-amber-600' : 'text-red-600'
+    const profitBorder = validation?.profit_status === 'ok' ? '#8B5CF6' : validation?.profit_status === 'warning' ? '#F59E0B' : '#EF4444'
 
     // KPI cards
     el.innerHTML = `
+      ${warningBanner}
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <div class="kpi-card" style="border-color:#00A651">
-          <p class="text-xs text-gray-500">DOANH THU (Giá trị HĐ)</p>
+          <p class="text-xs text-gray-500">DOANH THU</p>
           <p class="text-lg font-bold text-green-600 mt-1">${fmtMoney(summary.total_revenue)}</p>
+          <p class="text-xs text-gray-400 mt-0.5">Giá trị HĐ: ${fmtMoney(project.contract_value)}</p>
+        </div>
+        <div class="kpi-card" style="border-color:#2196F3">
+          <p class="text-xs text-gray-500">CHI PHÍ LƯƠNG</p>
+          <p class="text-lg font-bold text-blue-600 mt-1">${fmtMoney(summary.labor_cost)}</p>
+          <p class="text-xs text-gray-400 mt-0.5">${summary.labor_hours}h × ${fmtMoney(summary.labor_per_hour)}/h</p>
         </div>
         <div class="kpi-card" style="border-color:#EF4444">
           <p class="text-xs text-gray-500">TỔNG CHI PHÍ</p>
           <p class="text-lg font-bold text-red-600 mt-1">${fmtMoney(summary.total_cost)}</p>
+          <p class="text-xs text-gray-400 mt-0.5">Khác: ${fmtMoney(summary.other_cost)}</p>
         </div>
-        <div class="kpi-card" style="border-color:${summary.profit>=0?'#8B5CF6':'#EF4444'}">
+        <div class="kpi-card" style="border-color:${profitBorder}">
           <p class="text-xs text-gray-500">LỢI NHUẬN</p>
-          <p class="text-lg font-bold ${summary.profit>=0?'text-purple-600':'text-red-600'} mt-1">${fmtMoney(summary.profit)}</p>
-        </div>
-        <div class="kpi-card" style="border-color:#F59E0B">
-          <p class="text-xs text-gray-500">TỶ SUẤT LN</p>
-          <p class="text-lg font-bold text-amber-600 mt-1">${summary.margin}%</p>
+          <p class="text-lg font-bold ${profitColor} mt-1">${fmtMoney(summary.profit)}</p>
+          <p class="text-xs text-gray-400 mt-0.5">Tỷ suất: ${summary.margin}%</p>
         </div>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -2682,18 +2743,26 @@ async function loadFinanceProject() {
           <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
             <th class="pb-2 pr-3">Loại chi phí</th>
             <th class="pb-2 pr-3 text-right">Số tiền</th>
-            <th class="pb-2 text-right">% Tổng</th>
+            <th class="pb-2 pr-3 text-right">% Tổng</th>
+            <th class="pb-2 text-center">Nguồn</th>
           </tr></thead>
           <tbody>
             ${costs_by_type.map(c => `
               <tr class="table-row border-b">
-                <td class="py-2 pr-3">${getCostTypeName(c.cost_type)}</td>
+                <td class="py-2 pr-3">${c.label || getCostTypeName(c.cost_type)}</td>
                 <td class="py-2 pr-3 text-right font-medium text-red-600">${fmt(c.total)} VNĐ</td>
-                <td class="py-2 text-right text-gray-500">${summary.total_cost > 0 ? Math.round(c.total/summary.total_cost*100) : 0}%</td>
+                <td class="py-2 pr-3 text-right text-gray-500">${summary.total_cost > 0 ? Math.round(c.total/summary.total_cost*100) : 0}%</td>
+                <td class="py-2 text-center">${c.is_auto ? '<span class="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">tự động</span>' : '<span class="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">thủ công</span>'}</td>
               </tr>
             `).join('')}
           </tbody>
         </table>
+        ${summary.labor_source !== 'none' ? `
+        <div class="mt-3 bg-blue-50 border border-blue-100 rounded p-2 text-xs text-blue-700">
+          <i class="fas fa-info-circle mr-1"></i>
+          Chi phí lương từ: <strong>${summary.labor_source === 'project_labor_costs' ? 'project_labor_costs (đã đồng bộ)' : 'Tính real-time từ timesheet'}</strong>
+          — ${summary.labor_hours}h × ${fmtMoney(summary.labor_per_hour)}/h
+        </div>` : ''}
       </div>
     `
 
@@ -3058,5 +3127,199 @@ function deleteCostType(id, name) {
 function getCostTypeNameDynamic(code) {
   const ct = allCostTypes.find(c => c.code === code)
   return ct ? ct.name : getCostTypeName(code)
+}
+
+// ================================================================
+// DATA AUDIT — Consistency Check + Fix
+// ================================================================
+
+// Run audit from Tài Chính Dự Án page (shows in dataAuditPanel)
+async function runDataAudit() {
+  const mf = $('finMonthFilter')?.value
+  const yf = $('finYearFilter')?.value
+  const panel = $('dataAuditPanel')
+  if (!panel) return
+  panel.innerHTML = `<div class="card p-4 text-sm text-gray-500"><i class="fas fa-spinner fa-spin mr-2"></i>Đang kiểm tra tính nhất quán dữ liệu...</div>`
+  panel.classList.remove('hidden')
+  try {
+    let url = '/data-audit/consistency-check'
+    const p = []; if (mf) p.push(`month=${mf}`); if (yf) p.push(`year=${yf}`)
+    if (p.length) url += '?' + p.join('&')
+    const data = await api(url)
+    renderAuditPanel(panel, data, mf, yf)
+  } catch(e) {
+    panel.innerHTML = `<div class="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm"><i class="fas fa-times-circle mr-2"></i>Lỗi: ${e.message}</div>`
+  }
+}
+
+// Run audit from Chi Phí & Doanh Thu analysis tab
+async function runDataAuditForCosts() {
+  const month = $('analysisMonthSel')?.value
+  const year  = $('analysisYearSel')?.value
+  const warnDiv = $('anaValidationWarnings')
+  if (!warnDiv) return
+  warnDiv.innerHTML = `<div class="bg-gray-50 rounded p-3 text-sm text-gray-500 mb-3"><i class="fas fa-spinner fa-spin mr-2"></i>Đang kiểm tra...</div>`
+  warnDiv.classList.remove('hidden')
+  try {
+    let url = '/data-audit/consistency-check'
+    if (month && year) url += `?month=${month}&year=${year}`
+    const data = await api(url)
+    const { summary, errors, warnings } = data
+    const all = [...errors, ...warnings]
+    if (all.length === 0) {
+      warnDiv.innerHTML = `<div class="bg-green-50 border border-green-200 rounded-lg p-3 mb-3 flex items-center gap-2">
+        <i class="fas fa-check-circle text-green-500"></i>
+        <span class="text-sm text-green-700">✅ Không phát hiện lỗi hoặc cảnh báo dữ liệu cho tháng ${summary.month}/${summary.year}</span>
+      </div>`
+    } else {
+      const errHtml = errors.length > 0
+        ? `<div class="mb-2"><span class="text-xs font-bold text-red-600 uppercase">Lỗi (${errors.length})</span>
+            <ul class="mt-1 space-y-0.5">${errors.map(e => `<li class="text-xs text-red-700">🔴 ${e.message}</li>`).join('')}</ul></div>` : ''
+      const warnHtml = warnings.length > 0
+        ? `<div><span class="text-xs font-bold text-yellow-600 uppercase">Cảnh báo (${warnings.length})</span>
+            <ul class="mt-1 space-y-0.5">${warnings.map(w => `<li class="text-xs text-yellow-700">🟡 ${w.message}</li>`).join('')}</ul></div>` : ''
+      warnDiv.innerHTML = `<div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
+        <div class="flex items-center gap-2 mb-2">
+          <i class="fas fa-exclamation-triangle text-red-500"></i>
+          <span class="font-semibold text-red-700 text-sm">Phát hiện ${all.length} vấn đề</span>
+          <button onclick="fixDataInconsistency('${month}','${year}')" class="ml-auto text-xs bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700">
+            <i class="fas fa-wrench mr-1"></i>Tự động sửa
+          </button>
+        </div>
+        ${errHtml}${warnHtml}
+      </div>`
+    }
+  } catch(e) {
+    warnDiv.innerHTML = `<div class="text-red-600 text-xs p-2">Lỗi kiểm tra: ${e.message}</div>`
+  }
+}
+
+function renderAuditPanel(panel, data, mf, yf) {
+  const { summary, errors, warnings } = data
+  const statusColor = summary.status === 'OK' ? 'green' : summary.status === 'WARNING' ? 'yellow' : 'red'
+  const statusIcon  = summary.status === 'OK' ? 'check-circle' : 'exclamation-triangle'
+
+  panel.innerHTML = `
+    <div class="card mb-4">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-10 h-10 rounded-full flex items-center justify-center" style="background:${statusColor === 'green' ? '#dcfce7' : statusColor === 'yellow' ? '#fef3c7' : '#fee2e2'}">
+          <i class="fas fa-${statusIcon}" style="color:${statusColor === 'green' ? '#16a34a' : statusColor === 'yellow' ? '#d97706' : '#dc2626'}"></i>
+        </div>
+        <div>
+          <h3 class="font-bold text-gray-800">Kiểm tra nhất quán dữ liệu — T${summary.month}/${summary.year}</h3>
+          <p class="text-xs text-gray-500">${summary.total_errors} lỗi · ${summary.total_warnings} cảnh báo · Chi phí/giờ: ${fmtMoney(summary.cost_per_hour)}</p>
+        </div>
+        <div class="ml-auto flex gap-2">
+          ${errors.length > 0 || summary.duplicate_cost_groups > 0 || summary.duplicate_timesheet_groups > 0
+            ? `<button onclick="fixDataInconsistency('${mf||''}','${yf||''}')"
+                class="text-sm bg-red-600 text-white px-3 py-1.5 rounded hover:bg-red-700 flex items-center gap-1.5">
+                <i class="fas fa-wrench"></i>Tự động sửa lỗi
+              </button>` : ''}
+          <button onclick="$('dataAuditPanel').classList.add('hidden')" class="text-xs text-gray-400 hover:text-gray-600 px-2">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Summary grid -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4 text-sm">
+        <div class="bg-gray-50 rounded p-3 text-center">
+          <div class="text-xl font-bold ${summary.duplicate_cost_groups > 0 ? 'text-red-600' : 'text-green-600'}">${summary.duplicate_cost_groups}</div>
+          <div class="text-xs text-gray-500">Nhóm trùng chi phí</div>
+        </div>
+        <div class="bg-gray-50 rounded p-3 text-center">
+          <div class="text-xl font-bold ${summary.duplicate_timesheet_groups > 0 ? 'text-red-600' : 'text-green-600'}">${summary.duplicate_timesheet_groups}</div>
+          <div class="text-xs text-gray-500">Nhóm trùng timesheet</div>
+        </div>
+        <div class="bg-gray-50 rounded p-3 text-center">
+          <div class="text-xl font-bold text-blue-600">${summary.company_total_hours}</div>
+          <div class="text-xs text-gray-500">Tổng giờ công ty</div>
+        </div>
+        <div class="bg-gray-50 rounded p-3 text-center">
+          <div class="text-sm font-bold text-purple-600">${summary.labor_cost_source === 'manual' ? 'Thủ công' : 'Tự động'}</div>
+          <div class="text-xs text-gray-500">Nguồn chi phí lương</div>
+        </div>
+      </div>
+
+      <!-- Errors -->
+      ${errors.length > 0 ? `
+        <div class="mb-3">
+          <h4 class="text-sm font-semibold text-red-700 mb-2 flex items-center gap-1.5">
+            <i class="fas fa-times-circle text-red-500"></i> Lỗi cần xử lý (${errors.length})
+          </h4>
+          <div class="space-y-1.5">
+            ${errors.map(e => `
+              <div class="flex items-start gap-2 bg-red-50 border border-red-100 rounded p-2 text-xs">
+                <i class="fas fa-circle text-red-400 mt-0.5 flex-shrink-0" style="font-size:6px"></i>
+                <div>
+                  <span class="font-medium text-red-800">[${e.code}]</span>
+                  <span class="text-red-700 ml-1">${e.message}</span>
+                </div>
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
+
+      <!-- Warnings -->
+      ${warnings.length > 0 ? `
+        <div>
+          <h4 class="text-sm font-semibold text-yellow-700 mb-2 flex items-center gap-1.5">
+            <i class="fas fa-exclamation-triangle text-yellow-500"></i> Cảnh báo (${warnings.length})
+          </h4>
+          <div class="space-y-1.5">
+            ${warnings.map(w => `
+              <div class="flex items-start gap-2 bg-yellow-50 border border-yellow-100 rounded p-2 text-xs">
+                <i class="fas fa-circle text-yellow-400 mt-0.5 flex-shrink-0" style="font-size:6px"></i>
+                <div>
+                  <span class="font-medium text-yellow-800">[${w.code}]</span>
+                  <span class="text-yellow-700 ml-1">${w.message}</span>
+                </div>
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
+
+      ${errors.length === 0 && warnings.length === 0 ? `
+        <div class="flex items-center gap-2 text-green-700 text-sm py-2">
+          <i class="fas fa-check-circle text-green-500"></i>
+          <span>✅ Dữ liệu nhất quán — không có lỗi hay cảnh báo</span>
+        </div>` : ''}
+    </div>
+  `
+  panel.classList.remove('hidden')
+}
+
+async function fixDataInconsistency(month, year) {
+  if (!confirm(`Tự động sửa lỗi dữ liệu cho tháng ${month||'hiện tại'}/${year||'hiện tại'}?\n\nHành động này sẽ:\n• Xóa bản ghi trùng lặp (giữ bản đầu tiên)\n• Đồng bộ chi phí lương dự án\n• Tạo bản ghi chi phí lương tháng nếu thiếu`)) return
+
+  const btn = event?.target
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Đang sửa...' }
+
+  try {
+    const body = { actions: ['dedup_all', 'fix_labor', 'create_missing'] }
+    if (month) body.month = parseInt(month)
+    if (year) body.year = parseInt(year)
+    const result = await api('/data-audit/fix-inconsistency', { method: 'POST', data: body })
+
+    toast(`✅ Đã sửa: ${result.rows_deleted} bản ghi trùng xóa, ${result.rows_fixed} dự án đồng bộ, ${result.rows_created} bản ghi mới`, 'success')
+
+    // Show result details
+    const panel = $('dataAuditPanel')
+    if (panel && !panel.classList.contains('hidden')) {
+      const resultDiv = document.createElement('div')
+      resultDiv.className = 'bg-green-50 border border-green-200 rounded-lg p-3 mb-3 text-sm'
+      resultDiv.innerHTML = `
+        <div class="font-semibold text-green-700 mb-1"><i class="fas fa-check-circle mr-1"></i>Kết quả sửa lỗi</div>
+        <ul class="space-y-0.5 text-xs text-green-700">
+          ${(result.actions_performed || []).map(a => `<li>• ${a}</li>`).join('')}
+          <li>• Còn lại ${result.remaining_duplicate_groups} nhóm trùng</li>
+        </ul>`
+      panel.insertBefore(resultDiv, panel.firstChild)
+    }
+
+    // Re-run audit to show clean state
+    setTimeout(() => runDataAudit(), 500)
+  } catch(e) {
+    toast('Lỗi sửa dữ liệu: ' + e.message, 'error')
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wrench mr-1"></i>Tự động sửa lỗi' }
+  }
 }
 

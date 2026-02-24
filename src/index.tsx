@@ -1356,7 +1356,8 @@ app.get('/api/projects/:id/labor-costs', authMiddleware, adminOnly, async (c) =>
 })
 
 // GET /api/projects/:id/costs-summary?month=MM&year=YYYY
-// Tóm tắt tài chính: doanh thu thực tế + chi phí lương (auto) + chi phí khác
+// Tóm tắt tài chính: doanh thu thực tế + chi phí lương (auto từ timesheet) + chi phí khác
+// Nguồn dữ liệu chuẩn: labor từ project_labor_costs (nếu có) hoặc tính real-time, other từ project_costs
 app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
@@ -1370,43 +1371,61 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
     const proj = await db.prepare('SELECT id, code, name, contract_value FROM projects WHERE id = ?').bind(projectId).first() as any
     if (!proj) return c.json({ error: 'Project not found' }, 404)
 
-    // --- Chi phí lương (auto từ timesheet) ---
-    const manualEntry = await db.prepare(
-      `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
-    ).bind(mInt, yInt).first() as any
-    const salaryPool = await db.prepare(
-      `SELECT SUM(salary_monthly) as total FROM users WHERE is_active = 1 AND role != 'system_admin'`
-    ).first() as any
-    const totalHoursAll = await db.prepare(
-      `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
-       WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
-    ).bind(y, m).first() as any
-    const laborCostSource = manualEntry ? manualEntry.total_labor_cost : (salaryPool?.total || 0)
-    const totalHrs = totalHoursAll?.total || 0
-    const costPerHour = totalHrs > 0 ? laborCostSource / totalHrs : 0
-    const projHours = await db.prepare(
-      `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
-       FROM timesheets WHERE project_id = ?
-       AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
-    ).bind(projectId, y, m).first() as any
-    const projectHrs = projHours?.total || 0
-    const laborCost = Math.round(projectHrs * costPerHour)
+    const contractValue = proj.contract_value || 0
+    const validation_warnings: string[] = []
+
+    // --- Chi phí lương: ưu tiên project_labor_costs, fallback tính real-time ---
+    const cachedLabor = await db.prepare(
+      `SELECT total_labor_cost, total_hours, cost_per_hour FROM project_labor_costs
+       WHERE project_id = ? AND month = ? AND year = ?`
+    ).bind(projectId, mInt, yInt).first() as any
+
+    let laborCost: number, projectHrs: number, costPerHourFinal: number, laborSource: string
+    if (cachedLabor) {
+      laborCost = cachedLabor.total_labor_cost
+      projectHrs = cachedLabor.total_hours
+      costPerHourFinal = cachedLabor.cost_per_hour
+      laborSource = 'project_labor_costs'
+    } else {
+      // Real-time từ monthly_labor_costs / salary_pool + timesheets
+      const { laborCostSource, totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+      const projHours = await db.prepare(
+        `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
+         FROM timesheets WHERE project_id = ?
+         AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+      ).bind(projectId, y, m).first() as any
+      projectHrs = projHours?.total || 0
+      costPerHourFinal = costPerHour
+      laborCost = Math.round(projectHrs * costPerHour)
+      laborSource = 'realtime'
+    }
+
+    // Validation: labor cost > contract value
+    if (contractValue > 0 && laborCost > contractValue) {
+      validation_warnings.push(`Chi phí lương (${fmtNum(laborCost)} ₫) vượt giá trị hợp đồng (${fmtNum(contractValue)} ₫)`)
+      laborCost = contractValue // Cap tại contract value
+    }
 
     // --- Chi phí khác (project_costs, không tính loại 'salary') ---
     const otherCostsByType = await db.prepare(`
-      SELECT cost_type, SUM(amount) as total_amount
-      FROM project_costs
-      WHERE project_id = ?
-        AND cost_type != 'salary'
-        AND strftime('%Y', cost_date) = ?
-        AND strftime('%m', cost_date) = ?
-      GROUP BY cost_type
+      SELECT pc.cost_type, SUM(pc.amount) as total_amount
+      FROM project_costs pc
+      WHERE pc.project_id = ?
+        AND pc.cost_type != 'salary'
+        AND strftime('%Y', pc.cost_date) = ?
+        AND strftime('%m', pc.cost_date) = ?
+      GROUP BY pc.cost_type
       ORDER BY total_amount DESC
     `).bind(projectId, y, m).all()
 
     const otherCostRows = otherCostsByType.results as any[]
     const totalOtherCosts = otherCostRows.reduce((s, r) => s + (r.total_amount || 0), 0)
     const totalCosts = laborCost + totalOtherCosts
+
+    // Validation: total cost > 120% contract value
+    if (contractValue > 0 && totalCosts > contractValue * 1.2) {
+      validation_warnings.push(`Tổng chi phí (${fmtNum(totalCosts)} ₫) vượt 120% giá trị hợp đồng (${fmtNum(contractValue * 1.2)} ₫)`)
+    }
 
     // --- Doanh thu thực tế trong tháng ---
     const revenueMonth = await db.prepare(
@@ -1416,10 +1435,18 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
     ).bind(projectId, y, m).first() as any
     const monthRevenue = revenueMonth?.total || 0
 
-    // --- Doanh thu lũy kế (giá trị HĐ) ---
-    const contractValue = proj.contract_value || 0
     const profit = monthRevenue - totalCosts
-    const profitMargin = monthRevenue > 0 ? parseFloat(((profit / monthRevenue) * 100).toFixed(1)) : 0
+    const profitMargin = monthRevenue > 0 ? parseFloat(((profit / monthRevenue) * 100).toFixed(1)) : null
+
+    // Validation rules on profit
+    if (monthRevenue > 0 && profit <= 0) {
+      validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
+    } else if (profitMargin !== null && profitMargin > 0 && profitMargin < 10) {
+      validation_warnings.push(`Lợi nhuận thấp: ${profitMargin}% (ngưỡng cảnh báo < 10%)`)
+    }
+    if (monthRevenue > 0 && laborCost > monthRevenue * 0.8) {
+      validation_warnings.push(`Chi phí lương chiếm ${((laborCost/monthRevenue)*100).toFixed(1)}% doanh thu (> 80%)`)
+    }
 
     // Cost type name mapping
     const costTypeNames: Record<string, string> = {
@@ -1429,7 +1456,7 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
 
     const breakdown = [
       { type: 'Lương nhân sự', cost_type: 'salary', amount: laborCost,
-        hours: projectHrs, cost_per_hour: Math.round(costPerHour), is_auto: true,
+        hours: projectHrs, cost_per_hour: Math.round(costPerHourFinal), is_auto: true,
         pct: totalCosts > 0 ? parseFloat(((laborCost / totalCosts) * 100).toFixed(1)) : 0 },
       ...otherCostRows.map(r => ({
         type: costTypeNames[r.cost_type] || r.cost_type,
@@ -1453,10 +1480,11 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
       },
       costs: {
         labor_cost: laborCost,
+        labor_cost_source: laborSource,
         labor_cost_details: {
           total_hours: projectHrs,
-          cost_per_hour: Math.round(costPerHour),
-          cost_source: manualEntry ? 'manual' : 'salary_pool'
+          cost_per_hour: Math.round(costPerHourFinal),
+          cost_source: laborSource
         },
         other_costs: otherCostRows,
         total_other_costs: totalOtherCosts,
@@ -1466,6 +1494,11 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
       profit: {
         profit,
         profit_margin: profitMargin
+      },
+      validation: {
+        warnings: validation_warnings,
+        has_warnings: validation_warnings.length > 0,
+        profit_status: profit > 0 ? (profitMargin !== null && profitMargin < 10 ? 'warning' : 'ok') : 'error'
       }
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
@@ -1557,6 +1590,302 @@ app.post('/api/costs/cleanup-duplicates', authMiddleware, adminOnly, async (c) =
       project_costs_deleted: delCosts.meta?.changes || 0,
       revenue_deleted: delRevs.meta?.changes || 0,
       remaining_duplicate_groups: remaining?.cnt || 0
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// DATA AUDIT & CONSISTENCY CHECK
+// ===================================================
+
+// Helper: compute labor cost for a month/year (reusable)
+async function computeMonthLaborCost(db: any, mInt: number, yInt: number) {
+  const m = String(mInt).padStart(2, '0')
+  const y = String(yInt)
+  const manualEntry = await db.prepare(
+    `SELECT total_labor_cost, notes FROM monthly_labor_costs WHERE month = ? AND year = ?`
+  ).bind(mInt, yInt).first() as any
+  const salaryPool = await db.prepare(
+    `SELECT SUM(salary_monthly) as total FROM users WHERE is_active = 1 AND role != 'system_admin'`
+  ).first() as any
+  const totalHoursRow = await db.prepare(
+    `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+     WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+  ).bind(y, m).first() as any
+  const laborCostSource = manualEntry ? manualEntry.total_labor_cost : (salaryPool?.total || 0)
+  const totalHrs = totalHoursRow?.total || 0
+  const costPerHour = totalHrs > 0 ? laborCostSource / totalHrs : 0
+  return { laborCostSource, totalHrs, costPerHour, isManual: !!manualEntry, notes: manualEntry?.notes || '' }
+}
+
+// GET /api/data-audit/consistency-check
+// Full diagnostic: duplicates, labor cost > contract, missing records
+app.get('/api/data-audit/consistency-check', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const { month, year } = c.req.query()
+    const mInt = month ? parseInt(month) : new Date().getMonth() + 1
+    const yInt = year ? parseInt(year) : new Date().getFullYear()
+    const m = String(mInt).padStart(2, '0')
+    const y = String(yInt)
+
+    const errors: any[] = []
+    const warnings: any[] = []
+
+    // --- 1. Duplicate checks ---
+    const costDups = await db.prepare(`
+      SELECT project_id, cost_type, cost_date, COUNT(*) as cnt, GROUP_CONCAT(id) as ids
+      FROM project_costs GROUP BY project_id, cost_type, cost_date HAVING cnt > 1
+    `).all()
+    const revDups = await db.prepare(`
+      SELECT project_id, revenue_date, description, COUNT(*) as cnt, GROUP_CONCAT(id) as ids
+      FROM project_revenues GROUP BY project_id, revenue_date, description HAVING cnt > 1
+    `).all()
+    const laborDups = await db.prepare(`
+      SELECT project_id, month, year, COUNT(*) as cnt, GROUP_CONCAT(id) as ids
+      FROM project_labor_costs GROUP BY project_id, month, year HAVING cnt > 1
+    `).all()
+    const tsDups = await db.prepare(`
+      SELECT user_id, project_id, work_date, COUNT(*) as cnt
+      FROM timesheets GROUP BY user_id, project_id, work_date HAVING cnt > 1
+    `).all()
+
+    if ((costDups.results as any[]).length > 0)
+      errors.push({ code: 'DUPLICATE_COSTS', message: `${(costDups.results as any[]).length} nhóm bản ghi trùng trong project_costs`, detail: costDups.results })
+    if ((revDups.results as any[]).length > 0)
+      errors.push({ code: 'DUPLICATE_REVENUES', message: `${(revDups.results as any[]).length} nhóm bản ghi trùng trong project_revenues`, detail: revDups.results })
+    if ((laborDups.results as any[]).length > 0)
+      errors.push({ code: 'DUPLICATE_LABOR_COSTS', message: `${(laborDups.results as any[]).length} nhóm bản ghi trùng trong project_labor_costs`, detail: laborDups.results })
+    if ((tsDups.results as any[]).length > 0)
+      errors.push({ code: 'DUPLICATE_TIMESHEETS', message: `${(tsDups.results as any[]).length} nhóm timesheet trùng`, detail: tsDups.results })
+
+    // --- 2. Projects financial validation ---
+    const projects = await db.prepare(
+      `SELECT id, code, name, contract_value, status FROM projects WHERE status != 'cancelled'`
+    ).all()
+
+    const { laborCostSource, totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+
+    for (const proj of projects.results as any[]) {
+      const contractVal = proj.contract_value || 0
+
+      // Get project hours for the month
+      const projHrs = await db.prepare(
+        `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+         WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+      ).bind(proj.id, y, m).first() as any
+
+      const laborCost = Math.round((projHrs?.total || 0) * costPerHour)
+
+      // Other costs
+      const otherRow = await db.prepare(
+        `SELECT SUM(amount) as total FROM project_costs
+         WHERE project_id = ? AND cost_type != 'salary'
+         AND strftime('%Y', cost_date) = ? AND strftime('%m', cost_date) = ?`
+      ).bind(proj.id, y, m).first() as any
+      const otherCosts = otherRow?.total || 0
+      const totalCosts = laborCost + otherCosts
+
+      // Revenue for the month
+      const revRow = await db.prepare(
+        `SELECT SUM(amount) as total FROM project_revenues
+         WHERE project_id = ? AND strftime('%Y', revenue_date) = ? AND strftime('%m', revenue_date) = ?`
+      ).bind(proj.id, y, m).first() as any
+      const revenue = revRow?.total || 0
+
+      const profit = revenue - totalCosts
+      const profitMargin = revenue > 0 ? (profit / revenue) * 100 : null
+
+      // Validation rules
+      if (contractVal > 0 && laborCost > contractVal) {
+        errors.push({
+          code: 'LABOR_EXCEEDS_CONTRACT',
+          message: `[${proj.code}] Chi phí lương (${fmtNum(laborCost)}) > Giá trị HĐ (${fmtNum(contractVal)})`,
+          project_id: proj.id, project_code: proj.code, labor_cost: laborCost, contract_value: contractVal
+        })
+      }
+      if (contractVal > 0 && totalCosts > contractVal * 1.2) {
+        errors.push({
+          code: 'TOTAL_COST_EXCEEDS_120PCT',
+          message: `[${proj.code}] Tổng chi phí (${fmtNum(totalCosts)}) > 120% giá trị HĐ (${fmtNum(contractVal * 1.2)})`,
+          project_id: proj.id, project_code: proj.code, total_costs: totalCosts, contract_value: contractVal
+        })
+      }
+      if (revenue > 0 && profit <= 0) {
+        errors.push({
+          code: 'NEGATIVE_PROFIT',
+          message: `[${proj.code}] Lợi nhuận âm: ${fmtNum(profit)} ₫`,
+          project_id: proj.id, project_code: proj.code, profit, revenue
+        })
+      }
+      if (revenue > 0 && profitMargin !== null && profitMargin > 0 && profitMargin < 10) {
+        warnings.push({
+          code: 'LOW_PROFIT_MARGIN',
+          message: `[${proj.code}] Lợi nhuận thấp: ${profitMargin.toFixed(1)}% (< 10%)`,
+          project_id: proj.id, project_code: proj.code, profit_margin: parseFloat(profitMargin.toFixed(1))
+        })
+      }
+      if (revenue > 0 && profitMargin !== null && laborCost > 0 && laborCost > revenue * 0.8) {
+        warnings.push({
+          code: 'HIGH_LABOR_RATIO',
+          message: `[${proj.code}] Chi phí lương chiếm ${((laborCost/revenue)*100).toFixed(1)}% doanh thu (> 80%)`,
+          project_id: proj.id, project_code: proj.code, labor_cost: laborCost, revenue
+        })
+      }
+    }
+
+    // --- 3. Monthly labor cost sync check ---
+    const monthlyEntry = await db.prepare(
+      `SELECT * FROM monthly_labor_costs WHERE month = ? AND year = ?`
+    ).bind(mInt, yInt).first() as any
+    if (!monthlyEntry) {
+      warnings.push({
+        code: 'MISSING_MONTHLY_LABOR_COST',
+        message: `Chưa nhập chi phí lương tháng ${mInt}/${yInt} — đang dùng quỹ lương tự động (${fmtNum(laborCostSource)})`,
+        month: mInt, year: yInt
+      })
+    }
+
+    // --- 4. Summary ---
+    const summary = {
+      month: mInt, year: yInt,
+      total_errors: errors.length,
+      total_warnings: warnings.length,
+      duplicate_cost_groups: (costDups.results as any[]).length,
+      duplicate_revenue_groups: (revDups.results as any[]).length,
+      duplicate_labor_groups: (laborDups.results as any[]).length,
+      duplicate_timesheet_groups: (tsDups.results as any[]).length,
+      labor_cost_source: monthlyEntry ? 'manual' : 'salary_pool',
+      company_labor_cost: laborCostSource,
+      company_total_hours: totalHrs,
+      cost_per_hour: Math.round(costPerHour),
+      status: errors.length === 0 ? (warnings.length === 0 ? 'OK' : 'WARNING') : 'ERROR'
+    }
+
+    return c.json({ summary, errors, warnings })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// Helper number formatter for server-side messages
+function fmtNum(n: number): string {
+  return new Intl.NumberFormat('vi-VN').format(Math.round(n))
+}
+
+// POST /api/data-audit/fix-inconsistency
+// Auto-fix: delete duplicates, cap excessive labor costs, create missing data
+app.post('/api/data-audit/fix-inconsistency', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const body = await c.req.json().catch(() => ({})) as any
+    const { month, year, actions = ['dedup_all', 'fix_labor', 'create_missing'] } = body
+    const mInt = month ? parseInt(month) : new Date().getMonth() + 1
+    const yInt = year ? parseInt(year) : new Date().getFullYear()
+
+    const results: any = { actions_performed: [], rows_deleted: 0, rows_fixed: 0, rows_created: 0 }
+
+    // Action 1: Deduplicate all tables
+    if (actions.includes('dedup_all')) {
+      const d1 = await db.prepare(`
+        DELETE FROM project_costs WHERE id NOT IN (
+          SELECT MIN(id) FROM project_costs GROUP BY project_id, cost_type, cost_date
+        )
+      `).run()
+      const d2 = await db.prepare(`
+        DELETE FROM project_revenues WHERE id NOT IN (
+          SELECT MIN(id) FROM project_revenues GROUP BY project_id, revenue_date, description
+        )
+      `).run()
+      const d3 = await db.prepare(`
+        DELETE FROM project_labor_costs WHERE id NOT IN (
+          SELECT MIN(id) FROM project_labor_costs GROUP BY project_id, month, year
+        )
+      `).run()
+      const d4 = await db.prepare(`
+        DELETE FROM timesheets WHERE id NOT IN (
+          SELECT MIN(id) FROM timesheets GROUP BY user_id, project_id, work_date
+        )
+      `).run()
+      const deleted = (d1.meta?.changes||0) + (d2.meta?.changes||0) + (d3.meta?.changes||0) + (d4.meta?.changes||0)
+      results.rows_deleted += deleted
+      results.actions_performed.push(`dedup_all: đã xóa ${deleted} bản ghi trùng (costs:${d1.meta?.changes||0}, revenues:${d2.meta?.changes||0}, labor:${d3.meta?.changes||0}, timesheets:${d4.meta?.changes||0})`)
+    }
+
+    // Action 2: Fix excessive labor costs in project_labor_costs
+    if (actions.includes('fix_labor')) {
+      const { laborCostSource, totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+      const m = String(mInt).padStart(2, '0')
+      const y = String(yInt)
+      const projects = await db.prepare(`SELECT id, contract_value FROM projects WHERE status != 'cancelled'`).all()
+      let fixed = 0
+      for (const proj of projects.results as any[]) {
+        const projHrs = await db.prepare(
+          `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+           WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+        ).bind(proj.id, y, m).first() as any
+        const correctLaborCost = Math.round((projHrs?.total || 0) * costPerHour)
+        const contractVal = proj.contract_value || 0
+        // Cap at contract value if exceeded
+        const cappedLaborCost = contractVal > 0 && correctLaborCost > contractVal ? contractVal : correctLaborCost
+
+        // Upsert into project_labor_costs
+        const existing = await db.prepare(
+          `SELECT id FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
+        ).bind(proj.id, mInt, yInt).first() as any
+
+        if (existing) {
+          await db.prepare(
+            `UPDATE project_labor_costs SET total_labor_cost = ?, total_hours = ?, cost_per_hour = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?`
+          ).bind(cappedLaborCost, projHrs?.total || 0, Math.round(costPerHour), existing.id).run()
+        } else if ((projHrs?.total || 0) > 0) {
+          await db.prepare(
+            `INSERT INTO project_labor_costs (project_id, month, year, total_labor_cost, total_hours, cost_per_hour)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          ).bind(proj.id, mInt, yInt, cappedLaborCost, projHrs?.total || 0, Math.round(costPerHour)).run()
+          results.rows_created++
+        }
+        fixed++
+      }
+      results.rows_fixed += fixed
+      results.actions_performed.push(`fix_labor: đã sync ${fixed} dự án với chi phí lương đúng cho tháng ${mInt}/${yInt}`)
+    }
+
+    // Action 3: Create missing monthly_labor_costs from salary pool
+    if (actions.includes('create_missing')) {
+      const existing = await db.prepare(
+        `SELECT id FROM monthly_labor_costs WHERE month = ? AND year = ?`
+      ).bind(mInt, yInt).first() as any
+      if (!existing) {
+        const salaryPool = await db.prepare(
+          `SELECT SUM(salary_monthly) as total FROM users WHERE is_active = 1 AND role != 'system_admin'`
+        ).first() as any
+        const poolTotal = salaryPool?.total || 0
+        if (poolTotal > 0) {
+          await db.prepare(
+            `INSERT INTO monthly_labor_costs (month, year, total_labor_cost, notes) VALUES (?, ?, ?, ?)`
+          ).bind(mInt, yInt, poolTotal, 'Tự động tạo từ quỹ lương (fix-inconsistency)').run()
+          results.rows_created++
+          results.actions_performed.push(`create_missing: tạo monthly_labor_costs tháng ${mInt}/${yInt} = ${fmtNum(poolTotal)} ₫ (từ quỹ lương)`)
+        }
+      } else {
+        results.actions_performed.push(`create_missing: monthly_labor_costs tháng ${mInt}/${yInt} đã tồn tại`)
+      }
+    }
+
+    // Final consistency re-check
+    const remainingDups = await db.prepare(`
+      SELECT (SELECT COUNT(*) FROM (SELECT project_id,cost_type,cost_date FROM project_costs GROUP BY project_id,cost_type,cost_date HAVING COUNT(*)>1))
+           + (SELECT COUNT(*) FROM (SELECT project_id,revenue_date,description FROM project_revenues GROUP BY project_id,revenue_date,description HAVING COUNT(*)>1))
+           + (SELECT COUNT(*) FROM (SELECT user_id,project_id,work_date FROM timesheets GROUP BY user_id,project_id,work_date HAVING COUNT(*)>1))
+           as total
+    `).first() as any
+
+    return c.json({
+      success: true,
+      month: mInt, year: yInt,
+      ...results,
+      remaining_duplicate_groups: remainingDups?.total || 0,
+      message: `Đã thực hiện ${results.actions_performed.length} hành động. Xóa ${results.rows_deleted} bản ghi trùng, sửa ${results.rows_fixed} dự án, tạo ${results.rows_created} bản ghi mới.`
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
@@ -2039,18 +2368,64 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     const db = c.env.DB
     const projectId = parseInt(c.req.param('id'))
     const { month, year } = c.req.query()
+    const mInt = month ? parseInt(month) : null
+    const yInt = year ? parseInt(year) : null
 
     const project = await db.prepare('SELECT * FROM projects WHERE id = ?').bind(projectId).first() as any
     if (!project) return c.json({ error: 'Not found' }, 404)
 
+    const contractValue = project.contract_value || 0
+    const validation_warnings: string[] = []
+
+    // --- Other costs from project_costs (excluding salary type) ---
     let dateFilter = ''; const fp: any[] = []
     if (year) { dateFilter += ` AND strftime('%Y', cost_date) = ?`; fp.push(year) }
     if (month) { dateFilter += ` AND strftime('%m', cost_date) = ?`; fp.push(month.padStart(2,'0')) }
 
-    const costs = await db.prepare(
-      `SELECT cost_type, SUM(amount) as total FROM project_costs WHERE project_id = ? ${dateFilter} GROUP BY cost_type`
+    const otherCosts = await db.prepare(
+      `SELECT cost_type, SUM(amount) as total FROM project_costs
+       WHERE project_id = ? AND cost_type != 'salary' ${dateFilter} GROUP BY cost_type`
     ).bind(projectId, ...fp).all()
+    const totalOtherCost = (otherCosts.results as any[]).reduce((s, c) => s + (c as any).total, 0)
 
+    // --- Labor cost: from project_labor_costs if month/year specified, else from timesheet real-time ---
+    let laborCost = 0
+    let laborHours = 0
+    let laborPerHour = 0
+    let laborSource = 'none'
+
+    if (mInt && yInt) {
+      const m = String(mInt).padStart(2, '0')
+      const y = String(yInt)
+      const cached = await db.prepare(
+        `SELECT total_labor_cost, total_hours, cost_per_hour FROM project_labor_costs
+         WHERE project_id = ? AND month = ? AND year = ?`
+      ).bind(projectId, mInt, yInt).first() as any
+      if (cached) {
+        laborCost = cached.total_labor_cost
+        laborHours = cached.total_hours
+        laborPerHour = cached.cost_per_hour
+        laborSource = 'project_labor_costs'
+      } else {
+        const { costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+        const projHrs = await db.prepare(
+          `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+           WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+        ).bind(projectId, y, m).first() as any
+        laborHours = projHrs?.total || 0
+        laborPerHour = costPerHour
+        laborCost = Math.round(laborHours * costPerHour)
+        laborSource = 'realtime'
+      }
+    }
+
+    // Validate labor cost
+    if (contractValue > 0 && laborCost > contractValue) {
+      validation_warnings.push(`Chi phí lương (${fmtNum(laborCost)} ₫) vượt giá trị hợp đồng`)
+      laborCost = contractValue
+    }
+
+    // --- Revenue ---
     let revFilter = ''; const rp: any[] = []
     if (year) { revFilter += ` AND strftime('%Y', revenue_date) = ?`; rp.push(year) }
     if (month) { revFilter += ` AND strftime('%m', revenue_date) = ?`; rp.push(month.padStart(2,'0')) }
@@ -2058,23 +2433,58 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     const revenues = await db.prepare(
       `SELECT SUM(amount) as total FROM project_revenues WHERE project_id = ? ${revFilter}`
     ).bind(projectId, ...rp).first() as any
+    const totalRevenue = revenues?.total || ((!month && !year) ? contractValue : 0)
 
+    // --- Timeline ---
     const timeline = await db.prepare(`
       SELECT strftime('%Y-%m', cost_date) as month, cost_type, SUM(amount) as total
       FROM project_costs WHERE project_id = ?
       GROUP BY month, cost_type ORDER BY month
     `).bind(projectId).all()
 
-    const totalCost = (costs.results as any[]).reduce((s, c) => s + c.total, 0)
-    const totalRevenue = revenues?.total || project.contract_value || 0
+    const totalCost = laborCost + totalOtherCost
     const profit = totalRevenue - totalCost
-    const margin = totalRevenue > 0 ? Math.round((profit / totalRevenue) * 100) : 0
+    const margin = totalRevenue > 0 ? parseFloat(((profit / totalRevenue) * 100).toFixed(1)) : 0
+
+    // Validation rules
+    if (contractValue > 0 && totalCost > contractValue * 1.2) {
+      validation_warnings.push(`Tổng chi phí (${fmtNum(totalCost)} ₫) vượt 120% giá trị HĐ`)
+    }
+    if (totalRevenue > 0 && profit <= 0) {
+      validation_warnings.push(`Lợi nhuận âm: ${fmtNum(profit)} ₫`)
+    } else if (totalRevenue > 0 && margin < 10 && margin > 0) {
+      validation_warnings.push(`Lợi nhuận thấp: ${margin}% (< 10%)`)
+    }
+    if (totalRevenue > 0 && laborCost > totalRevenue * 0.8) {
+      validation_warnings.push(`Chi phí lương chiếm ${((laborCost/totalRevenue)*100).toFixed(1)}% doanh thu (> 80%)`)
+    }
+
+    // Build costs_by_type with labor included
+    const costTypeNames: Record<string, string> = {
+      material: 'Vật liệu', equipment: 'Thiết bị', transport: 'Vận chuyển',
+      other: 'Chi phí khác', salary: 'Lương nhân sự'
+    }
+    const costsByType = [
+      ...(laborCost > 0 ? [{ cost_type: 'salary', total: laborCost, label: 'Lương nhân sự', is_auto: true }] : []),
+      ...(otherCosts.results as any[]).map((c: any) => ({
+        ...c, label: costTypeNames[c.cost_type] || c.cost_type, is_auto: false
+      }))
+    ]
 
     return c.json({
-      project: { id: project.id, code: project.code, name: project.name, contract_value: project.contract_value },
-      summary: { total_revenue: totalRevenue, total_cost: totalCost, profit, margin },
-      costs_by_type: costs.results,
-      timeline: timeline.results
+      project: { id: project.id, code: project.code, name: project.name, contract_value: contractValue },
+      summary: {
+        total_revenue: totalRevenue, total_cost: totalCost, labor_cost: laborCost,
+        other_cost: totalOtherCost, profit, margin,
+        labor_hours: laborHours, labor_per_hour: Math.round(laborPerHour), labor_source: laborSource
+      },
+      costs_by_type: costsByType,
+      timeline: timeline.results,
+      validation: {
+        warnings: validation_warnings,
+        has_warnings: validation_warnings.length > 0,
+        profit_status: profit > 0 ? (margin < 10 ? 'warning' : 'ok') : 'error'
+      }
     })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
@@ -2285,6 +2695,7 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL, type TEXT DEFAULT 'info', related_type TEXT, related_id INTEGER, is_read INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS cost_types (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT, color TEXT DEFAULT '#6B7280', is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0)`,
       `CREATE TABLE IF NOT EXISTS monthly_labor_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, month INTEGER NOT NULL, year INTEGER NOT NULL, total_labor_cost REAL NOT NULL, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(month, year))`,
+      `CREATE TABLE IF NOT EXISTS project_labor_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL, total_labor_cost REAL NOT NULL DEFAULT 0, total_hours REAL NOT NULL DEFAULT 0, cost_per_hour REAL NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(project_id, month, year), FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE)`,
     ]
 
     for (const stmt of tables) {
