@@ -1174,8 +1174,51 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
 app.get('/api/disciplines', async (c) => {
   try {
     const db = c.env.DB
-    const disciplines = await db.prepare('SELECT * FROM disciplines WHERE is_active = 1 ORDER BY category, code').all()
+    const disciplines = await db.prepare('SELECT * FROM disciplines WHERE is_active = 1 ORDER BY id').all()
     return c.json(disciplines.results)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// Reset disciplines to canonical list (System Admin only)
+app.post('/api/disciplines/reset', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user') as any
+    if (user.role !== 'system_admin') return c.json({ error: 'Forbidden' }, 403)
+    const db = c.env.DB
+    await db.prepare('DELETE FROM disciplines').run()
+    const disciplines = [
+      ['ZZ', 'Tổng hợp', 'general'],
+      ['AA', 'Kiến trúc', 'architecture'],
+      ['AD', 'Nội thất', 'architecture'],
+      ['AF', 'Mặt dựng', 'architecture'],
+      ['ES', 'Kết cấu', 'structure'],
+      ['EM', 'Điều hòa thông gió', 'mep'],
+      ['EE', 'Điện sinh hoạt', 'mep'],
+      ['EP', 'Cấp thoát nước sinh hoạt', 'mep'],
+      ['EF', 'Chữa cháy', 'mep'],
+      ['EC', 'Thông tin liên lạc', 'mep'],
+      ['CL', 'San nền', 'civil'],
+      ['CT', 'Giao thông', 'civil'],
+      ['CD', 'Thoát nước mưa', 'civil'],
+      ['CS', 'Thoát nước thải', 'civil'],
+      ['CW', 'Cấp nước', 'civil'],
+      ['CF', 'Chữa cháy (hạ tầng)', 'civil'],
+      ['CE', 'Điện (hạ tầng)', 'civil'],
+      ['CC', 'Thông tin (hạ tầng)', 'civil'],
+      ['LA', 'Cảnh quan', 'landscape'],
+      ['LW', 'Cấp nước cảnh quan', 'landscape'],
+      ['LD', 'Thoát nước cảnh quan', 'landscape'],
+      ['LR', 'Tường chắn', 'landscape'],
+      ['LE', 'Kè', 'landscape'],
+      ['LL', 'Chiếu sáng', 'landscape'],
+    ]
+    for (const [code, name, category] of disciplines) {
+      await db.prepare('INSERT INTO disciplines (code, name, category) VALUES (?, ?, ?)').bind(code, name, category).run()
+    }
+    const result = await db.prepare('SELECT * FROM disciplines ORDER BY id').all()
+    return c.json({ success: true, message: 'Disciplines reset successfully', data: result.results })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1193,7 +1236,7 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, full_name TEXT NOT NULL, email TEXT UNIQUE, phone TEXT, role TEXT NOT NULL DEFAULT 'member', department TEXT, salary_monthly REAL DEFAULT 0, is_active INTEGER DEFAULT 1, avatar TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT, client TEXT, project_type TEXT DEFAULT 'building', status TEXT DEFAULT 'active', start_date DATE, end_date DATE, budget REAL DEFAULT 0, contract_value REAL DEFAULT 0, location TEXT, admin_id INTEGER, leader_id INTEGER, progress INTEGER DEFAULT 0, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS project_members (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT DEFAULT 'member', joined_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(project_id, user_id))`,
-      `CREATE TABLE IF NOT EXISTS disciplines (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, name TEXT NOT NULL, category TEXT DEFAULT 'architecture', description TEXT, is_active INTEGER DEFAULT 1)`,
+      `CREATE TABLE IF NOT EXISTS disciplines (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, category TEXT DEFAULT 'architecture', description TEXT, is_active INTEGER DEFAULT 1)`,
       `CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, code TEXT, description TEXT, discipline_code TEXT, phase TEXT DEFAULT 'basic_design', start_date DATE, end_date DATE, progress INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', parent_id INTEGER, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, category_id INTEGER, title TEXT NOT NULL, description TEXT, discipline_code TEXT, phase TEXT DEFAULT 'basic_design', priority TEXT DEFAULT 'medium', status TEXT DEFAULT 'todo', assigned_to INTEGER, assigned_by INTEGER, start_date DATE, due_date DATE, actual_start_date DATE, actual_end_date DATE, estimated_hours REAL DEFAULT 0, actual_hours REAL DEFAULT 0, progress INTEGER DEFAULT 0, is_overdue INTEGER DEFAULT 0, tags TEXT, attachments TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, user_id INTEGER NOT NULL, field_changed TEXT NOT NULL, old_value TEXT, new_value TEXT, comment TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
@@ -1215,22 +1258,43 @@ app.post('/api/system/init', async (c) => {
        VALUES ('admin', ?, 'System Administrator', 'admin@onecad.vn', 'system_admin', 'Quản lý hệ thống')`
     ).bind(adminHash).run()
 
-    // Insert disciplines
+    // Reset and re-insert disciplines (clean slate to avoid duplicates)
+    await db.prepare('DELETE FROM disciplines').run()
     const disciplines = [
-      ['ZZ', 'Tổng hợp', 'general'], ['AA', 'Kiến trúc', 'architecture'], ['AD', 'Nội thất', 'architecture'],
-      ['AF', 'Mặt dựng', 'architecture'], ['ES', 'Kết cấu', 'structure'], ['EM', 'HVAC', 'mep'],
-      ['EE', 'Điện', 'mep'], ['EP', 'Cấp thoát nước', 'mep'], ['EF', 'Chữa cháy', 'mep'],
-      ['EC', 'Thông tin liên lạc', 'mep'], ['MEP', 'Cơ điện tổng hợp', 'mep'],
-      ['CL', 'San nền', 'civil'], ['CT', 'Giao thông', 'civil'], ['CD', 'Thoát nước mưa', 'civil'],
-      ['CS', 'Thoát nước thải', 'civil'], ['CW', 'Cấp nước', 'civil'],
-      ['CF', 'Chữa cháy (hạ tầng)', 'civil'], ['CE', 'Điện (hạ tầng)', 'civil'], ['CC', 'Thông tin (hạ tầng)', 'civil'],
-      ['LA', 'Cảnh quan', 'landscape'], ['LW', 'Cấp nước cảnh quan', 'landscape'],
-      ['LD', 'Thoát nước cảnh quan', 'landscape'], ['LR', 'Tường chắn', 'landscape'],
-      ['LE', 'Kè', 'landscape'], ['LL', 'Chiếu sáng', 'landscape']
+      // General
+      ['ZZ', 'Tổng hợp', 'general'],
+      // Architecture
+      ['AA', 'Kiến trúc', 'architecture'],
+      ['AD', 'Nội thất', 'architecture'],
+      ['AF', 'Mặt dựng', 'architecture'],
+      // Structure
+      ['ES', 'Kết cấu', 'structure'],
+      // MEP (Building)
+      ['EM', 'Điều hòa thông gió', 'mep'],
+      ['EE', 'Điện sinh hoạt', 'mep'],
+      ['EP', 'Cấp thoát nước sinh hoạt', 'mep'],
+      ['EF', 'Chữa cháy', 'mep'],
+      ['EC', 'Thông tin liên lạc', 'mep'],
+      // Civil
+      ['CL', 'San nền', 'civil'],
+      ['CT', 'Giao thông', 'civil'],
+      ['CD', 'Thoát nước mưa', 'civil'],
+      ['CS', 'Thoát nước thải', 'civil'],
+      ['CW', 'Cấp nước', 'civil'],
+      ['CF', 'Chữa cháy (hạ tầng)', 'civil'],
+      ['CE', 'Điện (hạ tầng)', 'civil'],
+      ['CC', 'Thông tin (hạ tầng)', 'civil'],
+      // Landscape
+      ['LA', 'Cảnh quan', 'landscape'],
+      ['LW', 'Cấp nước cảnh quan', 'landscape'],
+      ['LD', 'Thoát nước cảnh quan', 'landscape'],
+      ['LR', 'Tường chắn', 'landscape'],
+      ['LE', 'Kè', 'landscape'],
+      ['LL', 'Chiếu sáng', 'landscape'],
     ]
 
     for (const [code, name, category] of disciplines) {
-      await db.prepare('INSERT OR IGNORE INTO disciplines (code, name, category) VALUES (?, ?, ?)').bind(code, name, category).run()
+      await db.prepare('INSERT INTO disciplines (code, name, category) VALUES (?, ?, ?)').bind(code, name, category).run()
     }
 
     // Insert demo users

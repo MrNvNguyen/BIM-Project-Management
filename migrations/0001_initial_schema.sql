@@ -59,9 +59,9 @@ CREATE TABLE IF NOT EXISTS project_members (
 -- Disciplines (Bộ môn) table
 CREATE TABLE IF NOT EXISTS disciplines (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  code TEXT NOT NULL,
+  code TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,
-  category TEXT DEFAULT 'architecture', -- architecture, structure, mep, civil, landscape
+  category TEXT DEFAULT 'architecture', -- architecture, structure, mep, civil, landscape, general
   description TEXT,
   is_active INTEGER DEFAULT 1
 );

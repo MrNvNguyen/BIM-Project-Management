@@ -1,16 +1,16 @@
--- Seed disciplines data
-INSERT OR IGNORE INTO disciplines (code, name, category) VALUES 
+-- Seed disciplines data (24 canonical BIM discipline codes)
+DELETE FROM disciplines;
+INSERT INTO disciplines (code, name, category) VALUES 
   ('ZZ', 'Tổng hợp', 'general'),
   ('AA', 'Kiến trúc', 'architecture'),
   ('AD', 'Nội thất', 'architecture'),
   ('AF', 'Mặt dựng', 'architecture'),
   ('ES', 'Kết cấu', 'structure'),
-  ('EM', 'HVAC', 'mep'),
-  ('EE', 'Điện', 'mep'),
-  ('EP', 'Cấp thoát nước', 'mep'),
+  ('EM', 'Điều hòa thông gió', 'mep'),
+  ('EE', 'Điện sinh hoạt', 'mep'),
+  ('EP', 'Cấp thoát nước sinh hoạt', 'mep'),
   ('EF', 'Chữa cháy', 'mep'),
   ('EC', 'Thông tin liên lạc', 'mep'),
-  ('MEP', 'Cơ điện tổng hợp', 'mep'),
   ('CL', 'San nền', 'civil'),
   ('CT', 'Giao thông', 'civil'),
   ('CD', 'Thoát nước mưa', 'civil'),
@@ -48,7 +48,7 @@ INSERT OR IGNORE INTO projects (code, name, description, client, project_type, s
 INSERT OR IGNORE INTO categories (project_id, name, code, discipline_code, phase, start_date, end_date, status, created_by) VALUES 
   (1, 'Thiết kế kiến trúc', 'CAT-AA', 'AA', 'basic_design', '2024-01-15', '2024-04-30', 'in_progress', 4),
   (1, 'Thiết kế kết cấu', 'CAT-ES', 'ES', 'basic_design', '2024-02-01', '2024-05-31', 'in_progress', 4),
-  (1, 'Thiết kế MEP', 'CAT-MEP', 'MEP', 'basic_design', '2024-03-01', '2024-06-30', 'pending', 4),
+  (1, 'Thiết kế MEP', 'CAT-MEP', 'EM', 'basic_design', '2024-03-01', '2024-06-30', 'pending', 4),
   (2, 'Thiết kế cầu', 'CAT-CT', 'CT', 'technical_design', '2024-03-01', '2024-09-30', 'in_progress', 4);
 
 -- Sample tasks
