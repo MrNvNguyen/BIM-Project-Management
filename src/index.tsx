@@ -1288,17 +1288,28 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
       ORDER BY count DESC
     `).all()
 
-    // Member productivity
+    // Member productivity — use subqueries to avoid Cartesian product between tasks and timesheets
     const memberProductivity = await db.prepare(`
       SELECT u.id, u.full_name, u.department,
-        COUNT(DISTINCT t.id) as total_tasks,
-        SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) as completed_tasks,
-        COALESCE(SUM(ts.regular_hours + ts.overtime_hours), 0) as total_hours
+        COALESCE(tsk.total_tasks, 0)     AS total_tasks,
+        COALESCE(tsk.completed_tasks, 0) AS completed_tasks,
+        COALESCE(ts.total_hours, 0)      AS total_hours
       FROM users u
-      LEFT JOIN tasks t ON t.assigned_to = u.id
-      LEFT JOIN timesheets ts ON ts.user_id = u.id AND ts.work_date >= date('now', '-30 days')
+      LEFT JOIN (
+        SELECT assigned_to,
+          COUNT(DISTINCT id)                                              AS total_tasks,
+          COUNT(DISTINCT CASE WHEN status = 'completed' THEN id END)     AS completed_tasks
+        FROM tasks
+        GROUP BY assigned_to
+      ) tsk ON tsk.assigned_to = u.id
+      LEFT JOIN (
+        SELECT user_id,
+          SUM(regular_hours + overtime_hours) AS total_hours
+        FROM timesheets
+        WHERE work_date >= date('now', '-30 days')
+        GROUP BY user_id
+      ) ts ON ts.user_id = u.id
       WHERE u.is_active = 1 AND u.role NOT IN ('system_admin')
-      GROUP BY u.id
       ORDER BY total_hours DESC
     `).all()
 
@@ -1388,34 +1399,140 @@ app.get('/api/productivity', authMiddleware, async (c) => {
     const daysBack = parseInt(days || '30')
 
     let baseWhere = `WHERE u.is_active = 1 AND u.role NOT IN ('system_admin')`
-    const params: any[] = []
-    let taskWhere = ''
-    if (project_id) { taskWhere = ` AND t.project_id = ${parseInt(project_id)}`; }
 
+    // Use subqueries so tasks and timesheets are aggregated independently
+    // — avoids the Cartesian product that inflated completed_tasks counts
+    const taskFilter = project_id ? `AND project_id = ${parseInt(project_id)}` : ''
     const rows = await db.prepare(`
       SELECT u.id, u.full_name, u.department,
-        COUNT(DISTINCT t.id) as total_tasks,
-        SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) as completed_tasks,
-        SUM(CASE WHEN t.status = 'completed' AND (t.actual_end_date IS NULL OR t.actual_end_date <= t.due_date) THEN 1 ELSE 0 END) as ontime_tasks,
-        SUM(CASE WHEN t.status = 'completed' AND t.actual_end_date > t.due_date THEN 1 ELSE 0 END) as late_completed,
-        SUM(CASE WHEN t.due_date < date('now') AND t.status != 'completed' THEN 1 ELSE 0 END) as overdue_tasks,
-        COALESCE(AVG(CASE WHEN t.status = 'completed' THEN t.progress ELSE NULL END), 0) as avg_progress,
-        COALESCE(SUM(ts.regular_hours + ts.overtime_hours), 0) as total_hours_30d
+        COALESCE(tsk.total_tasks,     0) AS total_tasks,
+        COALESCE(tsk.completed_tasks, 0) AS completed_tasks,
+        COALESCE(tsk.ontime_tasks,    0) AS ontime_tasks,
+        COALESCE(tsk.late_completed,  0) AS late_completed,
+        COALESCE(tsk.overdue_tasks,   0) AS overdue_tasks,
+        COALESCE(tsk.avg_progress,    0) AS avg_progress,
+        COALESCE(ts.total_hours,      0) AS total_hours_30d
       FROM users u
-      LEFT JOIN tasks t ON t.assigned_to = u.id ${taskWhere}
-      LEFT JOIN timesheets ts ON ts.user_id = u.id AND ts.work_date >= date('now', '-${daysBack} days')
+      LEFT JOIN (
+        SELECT assigned_to,
+          COUNT(DISTINCT id)  AS total_tasks,
+          COUNT(DISTINCT CASE WHEN status = 'completed' THEN id END)  AS completed_tasks,
+          COUNT(DISTINCT CASE WHEN status = 'completed'
+            AND (actual_end_date IS NULL OR actual_end_date <= due_date) THEN id END) AS ontime_tasks,
+          COUNT(DISTINCT CASE WHEN status = 'completed'
+            AND actual_end_date > due_date THEN id END)               AS late_completed,
+          COUNT(DISTINCT CASE WHEN due_date < date('now')
+            AND status != 'completed' THEN id END)                    AS overdue_tasks,
+          AVG(CASE WHEN status = 'completed' THEN progress END)       AS avg_progress
+        FROM tasks
+        WHERE 1=1 ${taskFilter}
+        GROUP BY assigned_to
+      ) tsk ON tsk.assigned_to = u.id
+      LEFT JOIN (
+        SELECT user_id,
+          SUM(regular_hours + overtime_hours) AS total_hours
+        FROM timesheets
+        WHERE work_date >= date('now', '-${daysBack} days')
+        GROUP BY user_id
+      ) ts ON ts.user_id = u.id
       ${baseWhere}
-      GROUP BY u.id
       ORDER BY completed_tasks DESC, total_hours_30d DESC
     `).all()
 
     const data = (rows.results as any[]).map(r => {
-      const productivity = r.total_tasks > 0 ? Math.round((r.completed_tasks / r.total_tasks) * 100) : 0
-      const ontime_rate = r.completed_tasks > 0 ? Math.round((r.ontime_tasks / r.completed_tasks) * 100) : 100
-      const score = Math.round((productivity + ontime_rate) / 2)
-      return { ...r, productivity, ontime_rate, score }
+      // Clamp values to prevent impossible numbers from bad data
+      const total     = Math.max(0, r.total_tasks)
+      const completed = Math.min(total, Math.max(0, r.completed_tasks))   // completed ≤ assigned
+      const ontime    = Math.min(completed, Math.max(0, r.ontime_tasks))  // ontime ≤ completed
+      const late      = Math.max(0, r.late_completed)
+      const overdue   = Math.max(0, r.overdue_tasks)
+      const avgProg   = Math.min(100, Math.max(0, Math.round(r.avg_progress || 0)))
+
+      const productivity = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0
+      const ontime_rate  = completed > 0 ? Math.min(100, Math.round((ontime / completed) * 100)) : (total === 0 ? 0 : 100)
+      const score        = Math.round((productivity + ontime_rate) / 2)
+
+      return {
+        ...r,
+        total_tasks:     total,
+        completed_tasks: completed,
+        ontime_tasks:    ontime,
+        late_completed:  late,
+        overdue_tasks:   overdue,
+        avg_progress:    avgProg,
+        productivity,
+        ontime_rate,
+        score
+      }
     })
     return c.json(data)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ===================================================
+// DEDUP TASKS (one-time admin utility)
+// ===================================================
+app.post('/api/admin/dedup-tasks', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+
+    // Count before
+    const before = await db.prepare(`SELECT COUNT(*) as cnt FROM tasks`).first() as any
+
+    // Get the list of IDs to keep (min id per title+project+assigned group)
+    const keepRows = await db.prepare(`
+      SELECT MIN(id) as keep_id FROM tasks
+      GROUP BY title, project_id, assigned_to
+    `).all()
+    const keepIds = (keepRows.results as any[]).map(r => r.keep_id)
+
+    if (keepIds.length === 0) {
+      return c.json({ success: true, before: before?.cnt || 0, after: before?.cnt || 0, removed: 0 })
+    }
+
+    // Find duplicate IDs to delete
+    const allTasks = await db.prepare(`SELECT id FROM tasks`).all()
+    const deleteIds = (allTasks.results as any[])
+      .map(r => r.id)
+      .filter(id => !keepIds.includes(id))
+
+    if (deleteIds.length === 0) {
+      return c.json({ success: true, before: before?.cnt || 0, after: before?.cnt || 0, removed: 0 })
+    }
+
+    // Delete in batches of 50 to avoid query length limits
+    const batchSize = 50
+    for (let i = 0; i < deleteIds.length; i += batchSize) {
+      const batch = deleteIds.slice(i, i + batchSize)
+      const placeholders = batch.map(() => '?').join(',')
+      // Delete history first to respect foreign key constraints
+      await db.prepare(`DELETE FROM task_history WHERE task_id IN (${placeholders})`).bind(...batch).run()
+      // Also null out timesheet task_id references
+      await db.prepare(`UPDATE timesheets SET task_id = NULL WHERE task_id IN (${placeholders})`).bind(...batch).run()
+      // Now delete the duplicate tasks
+      await db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).bind(...batch).run()
+    }
+
+    // Count after
+    const after = await db.prepare(`SELECT COUNT(*) as cnt FROM tasks`).first() as any
+
+    // Recalculate is_overdue
+    await db.prepare(`
+      UPDATE tasks
+      SET is_overdue = CASE
+        WHEN due_date IS NOT NULL AND due_date < date('now') AND status != 'completed' THEN 1
+        ELSE 0
+      END
+    `).run()
+
+    return c.json({
+      success: true,
+      before: before?.cnt || 0,
+      after: after?.cnt || 0,
+      removed: deleteIds.length
+    })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1760,7 +1877,7 @@ app.post('/api/system/init', async (c) => {
       ).bind(code, name, desc, client, type, status, start, end, value).run()
     }
 
-    // Insert sample tasks
+    // Insert sample tasks — skip if the title already exists in that project to prevent duplicates on re-init
     const sampleTasks = [
       [1, 'Vẽ mặt bằng tầng điển hình', 'AA', 'high', 'in_progress', 2, '2026-01-20', '2026-04-28', 40, 65],
       [1, 'Thiết kế mặt đứng công trình', 'AA', 'high', 'in_progress', 2, '2026-02-01', '2026-05-15', 30, 40],
@@ -1774,12 +1891,35 @@ app.post('/api/system/init', async (c) => {
 
     for (const [pid, title, disc, priority, status, assigned, start, due, est, prog] of sampleTasks) {
       try {
-        await db.prepare(
-          `INSERT INTO tasks (project_id, title, discipline_code, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours, progress)
-           VALUES (?, ?, ?, ?, ?, ?, 4, ?, ?, ?, ?)`
-        ).bind(pid, title, disc, priority, status, assigned, start, due, est, prog).run()
-      } catch (_) { /* skip duplicates */ }
+        // Use INSERT OR IGNORE with a unique constraint check via WHERE NOT EXISTS
+        const existing = await db.prepare(
+          `SELECT id FROM tasks WHERE title = ? AND project_id = ? AND assigned_to = ? LIMIT 1`
+        ).bind(title, pid, assigned).first()
+        if (!existing) {
+          await db.prepare(
+            `INSERT INTO tasks (project_id, title, discipline_code, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours, progress)
+             VALUES (?, ?, ?, ?, ?, ?, 4, ?, ?, ?, ?)`
+          ).bind(pid, title, disc, priority, status, assigned, start, due, est, prog).run()
+        }
+      } catch (_) { /* skip on error */ }
     }
+
+    // --- Dedup: remove any previously inserted duplicate tasks ---
+    try {
+      await db.prepare(`
+        DELETE FROM task_history
+        WHERE task_id NOT IN (
+          SELECT MIN(id) FROM tasks GROUP BY title, project_id, assigned_to
+        )
+      `).run()
+      await db.prepare(`
+        DELETE FROM tasks
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM tasks GROUP BY title, project_id, assigned_to
+        )
+      `).run()
+    } catch (_) { /* ignore if no duplicates */ }
+
 
     // Sample timesheets
     const today = new Date()
