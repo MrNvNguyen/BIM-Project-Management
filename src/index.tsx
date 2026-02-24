@@ -1292,6 +1292,276 @@ app.post('/api/revenues', authMiddleware, adminOnly, async (c) => {
 })
 
 // ===================================================
+// PROJECT LABOR COSTS — link từ Chi Phí Lương → Chi Phí & Doanh Thu
+// ===================================================
+
+// GET /api/projects/:id/labor-costs?month=MM&year=YYYY
+// Lấy chi phí lương dự án đã tính (từ bảng project_labor_costs hoặc tính real-time từ finance/labor-cost)
+app.get('/api/projects/:id/labor-costs', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const { month, year } = c.req.query()
+    const m = (month || String(new Date().getMonth() + 1)).padStart(2, '0')
+    const y = year || String(new Date().getFullYear())
+    const mInt = parseInt(m)
+    const yInt = parseInt(y)
+
+    // Kiểm tra project tồn tại
+    const proj = await db.prepare('SELECT id, code, name, contract_value FROM projects WHERE id = ?').bind(projectId).first() as any
+    if (!proj) return c.json({ error: 'Project not found' }, 404)
+
+    // Tính chi phí lương từ labor-cost endpoint logic (tái sử dụng)
+    const manualEntry = await db.prepare(
+      `SELECT * FROM monthly_labor_costs WHERE month = ? AND year = ?`
+    ).bind(mInt, yInt).first() as any
+
+    const salaryPool = await db.prepare(
+      `SELECT SUM(salary_monthly) as total FROM users WHERE is_active = 1 AND role != 'system_admin'`
+    ).first() as any
+
+    const totalHoursAll = await db.prepare(
+      `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+       WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+    ).bind(y, m).first() as any
+
+    const laborCostSource = manualEntry ? manualEntry.total_labor_cost : (salaryPool?.total || 0)
+    const totalHrs = totalHoursAll?.total || 0
+    const costPerHour = totalHrs > 0 ? laborCostSource / totalHrs : 0
+
+    // Giờ làm của dự án trong tháng
+    const projHours = await db.prepare(
+      `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
+       FROM timesheets WHERE project_id = ?
+       AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+    ).bind(projectId, y, m).first() as any
+
+    const projectHrs = projHours?.total || 0
+    const laborCost = Math.round(projectHrs * costPerHour)
+
+    return c.json({
+      project_id: projectId,
+      project_code: proj.code,
+      project_name: proj.name,
+      month: mInt,
+      year: yInt,
+      total_hours: projectHrs,
+      cost_per_hour: Math.round(costPerHour),
+      total_labor_cost: laborCost,
+      cost_source: manualEntry ? 'manual' : 'salary_pool',
+      company_total_hours: totalHrs,
+      company_labor_cost: laborCostSource
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/projects/:id/costs-summary?month=MM&year=YYYY
+// Tóm tắt tài chính: doanh thu thực tế + chi phí lương (auto) + chi phí khác
+app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const { month, year } = c.req.query()
+    const m = (month || String(new Date().getMonth() + 1)).padStart(2, '0')
+    const y = year || String(new Date().getFullYear())
+    const mInt = parseInt(m)
+    const yInt = parseInt(y)
+
+    const proj = await db.prepare('SELECT id, code, name, contract_value FROM projects WHERE id = ?').bind(projectId).first() as any
+    if (!proj) return c.json({ error: 'Project not found' }, 404)
+
+    // --- Chi phí lương (auto từ timesheet) ---
+    const manualEntry = await db.prepare(
+      `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
+    ).bind(mInt, yInt).first() as any
+    const salaryPool = await db.prepare(
+      `SELECT SUM(salary_monthly) as total FROM users WHERE is_active = 1 AND role != 'system_admin'`
+    ).first() as any
+    const totalHoursAll = await db.prepare(
+      `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
+       WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+    ).bind(y, m).first() as any
+    const laborCostSource = manualEntry ? manualEntry.total_labor_cost : (salaryPool?.total || 0)
+    const totalHrs = totalHoursAll?.total || 0
+    const costPerHour = totalHrs > 0 ? laborCostSource / totalHrs : 0
+    const projHours = await db.prepare(
+      `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
+       FROM timesheets WHERE project_id = ?
+       AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+    ).bind(projectId, y, m).first() as any
+    const projectHrs = projHours?.total || 0
+    const laborCost = Math.round(projectHrs * costPerHour)
+
+    // --- Chi phí khác (project_costs, không tính loại 'salary') ---
+    const otherCostsByType = await db.prepare(`
+      SELECT cost_type, SUM(amount) as total_amount
+      FROM project_costs
+      WHERE project_id = ?
+        AND cost_type != 'salary'
+        AND strftime('%Y', cost_date) = ?
+        AND strftime('%m', cost_date) = ?
+      GROUP BY cost_type
+      ORDER BY total_amount DESC
+    `).bind(projectId, y, m).all()
+
+    const otherCostRows = otherCostsByType.results as any[]
+    const totalOtherCosts = otherCostRows.reduce((s, r) => s + (r.total_amount || 0), 0)
+    const totalCosts = laborCost + totalOtherCosts
+
+    // --- Doanh thu thực tế trong tháng ---
+    const revenueMonth = await db.prepare(
+      `SELECT SUM(amount) as total FROM project_revenues
+       WHERE project_id = ?
+       AND strftime('%Y', revenue_date) = ? AND strftime('%m', revenue_date) = ?`
+    ).bind(projectId, y, m).first() as any
+    const monthRevenue = revenueMonth?.total || 0
+
+    // --- Doanh thu lũy kế (giá trị HĐ) ---
+    const contractValue = proj.contract_value || 0
+    const profit = monthRevenue - totalCosts
+    const profitMargin = monthRevenue > 0 ? parseFloat(((profit / monthRevenue) * 100).toFixed(1)) : 0
+
+    // Cost type name mapping
+    const costTypeNames: Record<string, string> = {
+      material: 'Vật liệu', equipment: 'Thiết bị', transport: 'Vận chuyển',
+      other: 'Chi phí khác', salary: 'Lương nhân sự'
+    }
+
+    const breakdown = [
+      { type: 'Lương nhân sự', cost_type: 'salary', amount: laborCost,
+        hours: projectHrs, cost_per_hour: Math.round(costPerHour), is_auto: true,
+        pct: totalCosts > 0 ? parseFloat(((laborCost / totalCosts) * 100).toFixed(1)) : 0 },
+      ...otherCostRows.map(r => ({
+        type: costTypeNames[r.cost_type] || r.cost_type,
+        cost_type: r.cost_type,
+        amount: r.total_amount,
+        is_auto: false,
+        pct: totalCosts > 0 ? parseFloat(((r.total_amount / totalCosts) * 100).toFixed(1)) : 0
+      }))
+    ]
+
+    return c.json({
+      project_id: projectId,
+      project_code: proj.code,
+      project_name: proj.name,
+      month: mInt,
+      year: yInt,
+      period: `${y}-${m}`,
+      revenue: {
+        month_revenue: monthRevenue,
+        contract_value: contractValue
+      },
+      costs: {
+        labor_cost: laborCost,
+        labor_cost_details: {
+          total_hours: projectHrs,
+          cost_per_hour: Math.round(costPerHour),
+          cost_source: manualEntry ? 'manual' : 'salary_pool'
+        },
+        other_costs: otherCostRows,
+        total_other_costs: totalOtherCosts,
+        total_costs: totalCosts,
+        breakdown
+      },
+      profit: {
+        profit,
+        profit_margin: profitMargin
+      }
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/costs/duplicates — tìm bản ghi trùng trong project_costs
+app.get('/api/costs/duplicates', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const dups = await db.prepare(`
+      SELECT project_id, cost_type, cost_date,
+        COUNT(*) as duplicate_count,
+        GROUP_CONCAT(id) as ids,
+        SUM(amount) as total_amount
+      FROM project_costs
+      GROUP BY project_id, cost_type, cost_date
+      HAVING COUNT(*) > 1
+      ORDER BY duplicate_count DESC
+    `).all()
+
+    const revDups = await db.prepare(`
+      SELECT project_id, revenue_date, description,
+        COUNT(*) as duplicate_count,
+        GROUP_CONCAT(id) as ids,
+        SUM(amount) as total_amount
+      FROM project_revenues
+      GROUP BY project_id, revenue_date, description
+      HAVING COUNT(*) > 1
+      ORDER BY duplicate_count DESC
+    `).all()
+
+    // Enrich with project names
+    const projects = await db.prepare('SELECT id, code, name FROM projects').all()
+    const projMap: Record<number, any> = {}
+    ;(projects.results as any[]).forEach(p => { projMap[p.id] = p })
+
+    const enriched = (dups.results as any[]).map(d => ({
+      ...d,
+      project_code: projMap[d.project_id]?.code || '',
+      project_name: projMap[d.project_id]?.name || ''
+    }))
+    const enrichedRev = (revDups.results as any[]).map(d => ({
+      ...d,
+      project_code: projMap[d.project_id]?.code || '',
+      project_name: projMap[d.project_id]?.name || ''
+    }))
+
+    return c.json({
+      project_costs_duplicates: enriched,
+      revenue_duplicates: enrichedRev,
+      total_duplicate_groups: enriched.length + enrichedRev.length
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/costs/cleanup-duplicates — xóa trùng lặp, giữ bản ghi MIN(id)
+app.post('/api/costs/cleanup-duplicates', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+
+    // Xóa project_costs trùng (giữ MIN id)
+    const delCosts = await db.prepare(`
+      DELETE FROM project_costs
+      WHERE id NOT IN (
+        SELECT MIN(id) FROM project_costs
+        GROUP BY project_id, cost_type, cost_date
+      )
+    `).run()
+
+    // Xóa project_revenues trùng (giữ MIN id)
+    const delRevs = await db.prepare(`
+      DELETE FROM project_revenues
+      WHERE id NOT IN (
+        SELECT MIN(id) FROM project_revenues
+        GROUP BY project_id, revenue_date, description
+      )
+    `).run()
+
+    // Kiểm tra còn sót không
+    const remaining = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM (
+        SELECT project_id, cost_type, cost_date FROM project_costs
+        GROUP BY project_id, cost_type, cost_date HAVING COUNT(*) > 1
+      )
+    `).first() as any
+
+    return c.json({
+      success: true,
+      project_costs_deleted: delCosts.meta?.changes || 0,
+      revenue_deleted: delRevs.meta?.changes || 0,
+      remaining_duplicate_groups: remaining?.cnt || 0
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
 // ASSETS ROUTES (Admin Only)
 // ===================================================
 app.get('/api/assets', authMiddleware, adminOnly, async (c) => {

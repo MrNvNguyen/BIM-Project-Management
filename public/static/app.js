@@ -1642,9 +1642,18 @@ async function loadCostDashboard() {
   try {
     if (!allProjects.length) allProjects = await api('/projects')
 
-    // Fill project filter
+    // Fill project filters
     const cpf = $('costProjectFilter')
     if (cpf) cpf.innerHTML = '<option value="">Tất cả dự án</option>' + allProjects.map(p => `<option value="${p.id}">${p.code}</option>`).join('')
+
+    // Fill analysis project dropdown
+    const apf = $('analysisProjSel')
+    if (apf && apf.options.length <= 1) {
+      apf.innerHTML = '<option value="">-- Chọn dự án --</option>' +
+        allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
+      // Default to first project if only one
+      if (allProjects.length === 1) apf.value = String(allProjects[0].id)
+    }
 
     const year = $('costYearFilter')?.value || new Date().getFullYear().toString()
     const summary = await api(`/dashboard/cost-summary?year=${year}`)
@@ -1738,9 +1747,221 @@ async function loadCosts() {
 
 function switchCostTab(tab) {
   currentCostTab = tab
-  $('tabCosts').className = 'tab-btn ' + (tab === 'costs' ? 'active' : '')
-  $('tabRevenues').className = 'tab-btn ' + (tab === 'revenues' ? 'active' : '')
+  // Tab buttons
+  const tabs = ['costs', 'revenues', 'analysis', 'duplicates']
+  tabs.forEach(t => {
+    const btn = $(`tab${t.charAt(0).toUpperCase() + t.slice(1)}`)
+    if (btn) btn.className = 'tab-btn ' + (t === tab ? 'active' : '')
+  })
+  // Tab panels
+  const panels = { costs: 'tabPanelTable', revenues: 'tabPanelTable', analysis: 'tabPanelAnalysis', duplicates: 'tabPanelDuplicates' }
+  ;['tabPanelTable','tabPanelAnalysis','tabPanelDuplicates'].forEach(id => {
+    const el = $(id); if (el) el.classList.add('hidden')
+  })
+  const activePanel = panels[tab]
+  if (activePanel) { const el = $(activePanel); if (el) el.classList.remove('hidden') }
+
+  // Cost filter row: only show for costs/revenues
+  const costFilter = $('costFilter')
+  if (costFilter) costFilter.classList.toggle('hidden', tab === 'analysis' || tab === 'duplicates')
+
   renderCostTable()
+
+  // Init analysis project dropdown
+  if (tab === 'analysis') {
+    const sel = $('analysisProjSel')
+    if (sel && sel.options.length <= 1 && allProjects.length) {
+      sel.innerHTML = '<option value="">-- Chọn dự án --</option>' +
+        allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
+    }
+    // Set default month/year
+    const now = new Date()
+    const ms = $('analysisMonthSel'); if (ms) ms.value = String(now.getMonth() + 1).padStart(2, '0')
+    const ys = $('analysisYearSel');  if (ys) ys.value = String(now.getFullYear())
+  }
+}
+
+// ── Phân tích chi tiết ──────────────────────────────────────────────
+async function loadCostAnalysis() {
+  const projId = $('analysisProjSel')?.value
+  const month  = $('analysisMonthSel')?.value
+  const year   = $('analysisYearSel')?.value
+  if (!projId) { toast('Vui lòng chọn dự án', 'warning'); return }
+  if (!month || !year) { toast('Vui lòng chọn tháng/năm', 'warning'); return }
+
+  try {
+    const data = await api(`/projects/${projId}/costs-summary?month=${month}&year=${year}`)
+
+    // Show cards
+    const cards = $('analysisCards'); if (cards) cards.classList.remove('hidden')
+
+    $('anaRevenue').textContent   = fmtMoney(data.revenue.month_revenue)
+    $('anaLaborCost').textContent = fmtMoney(data.costs.labor_cost)
+    $('anaOtherCost').textContent = fmtMoney(data.costs.total_other_costs)
+    $('anaTotalCost').textContent = fmtMoney(data.costs.total_costs)
+    $('anaProfit').textContent    = fmtMoney(data.profit.profit)
+    $('anaProfitMargin').textContent = `Tỷ suất LN: ${data.profit.profit_margin}%`
+
+    const profitCard = $('anaProfitCard')
+    if (profitCard) {
+      profitCard.style.background = data.profit.profit >= 0
+        ? 'linear-gradient(135deg,#9c27b0,#7b1fa2)'
+        : 'linear-gradient(135deg,#ef4444,#dc2626)'
+    }
+
+    const laborDet = data.costs.labor_cost_details
+    if ($('anaLaborDetail') && laborDet) {
+      $('anaLaborDetail').textContent = `${laborDet.total_hours}h × ${fmtMoney(laborDet.cost_per_hour)}/h`
+    }
+
+    const breakdown = data.costs.breakdown || []
+    const hasData = breakdown.length > 0 || data.costs.total_costs > 0
+
+    const detailDiv = $('analysisDetail'); const emptyDiv = $('analysisEmpty')
+    if (detailDiv) detailDiv.classList.toggle('hidden', !hasData)
+    if (emptyDiv) emptyDiv.classList.toggle('hidden', hasData)
+
+    if (hasData) {
+      // Breakdown table
+      const tbody = $('anaBreakdownTbody')
+      if (tbody) {
+        const costTypeIcons = { 'Lương nhân sự':'👥', 'Vật liệu':'🔩', 'Thiết bị':'🔧', 'Vận chuyển':'🚛' }
+        tbody.innerHTML = breakdown.map(b => `
+          <tr class="border-b border-gray-50 hover:bg-gray-50">
+            <td class="py-2 pr-3">
+              <span class="flex items-center gap-1.5">
+                <span>${costTypeIcons[b.type] || '📋'}</span>
+                <span class="font-medium text-gray-700">${b.type}</span>
+                ${b.is_auto ? '<span class="text-xs bg-blue-100 text-blue-600 px-1 rounded ml-1">tự động</span>' : ''}
+              </span>
+            </td>
+            <td class="py-2 pr-3 text-right font-bold text-gray-800">${fmtMoney(b.amount)}</td>
+            <td class="py-2 text-right">
+              <span class="inline-flex items-center gap-1">
+                <div class="w-16 bg-gray-100 rounded-full h-1.5 inline-block align-middle">
+                  <div class="h-1.5 rounded-full" style="width:${Math.min(b.pct,100)}%;background:#00A651"></div>
+                </div>
+                <span class="text-xs text-gray-500">${b.pct}%</span>
+              </span>
+            </td>
+          </tr>`).join('')
+
+        // Totals row
+        tbody.innerHTML += `
+          <tr class="border-t-2 border-gray-300">
+            <td class="py-2 pr-3 font-bold text-gray-800">Tổng chi phí</td>
+            <td class="py-2 pr-3 text-right font-bold text-red-600">${fmtMoney(data.costs.total_costs)}</td>
+            <td class="py-2 text-right font-bold text-gray-600">100%</td>
+          </tr>`
+      }
+
+      // Labor info box
+      const laborInfo = $('anaLaborInfo')
+      if (laborInfo && laborDet) {
+        laborInfo.classList.remove('hidden')
+        const src = $('anaLaborInfoContent')
+        if (src) src.innerHTML = `
+          <p>• Giờ làm dự án tháng này: <strong>${laborDet.total_hours}h</strong></p>
+          <p>• Chi phí/giờ công ty: <strong>${fmtMoney(laborDet.cost_per_hour)}/h</strong></p>
+          <p>• Nguồn: <strong>${laborDet.cost_source === 'manual' ? 'Nhập thủ công (Chi Phí Lương)' : 'Tổng lương nhân sự'}</strong></p>
+          <p>• Chi phí lương dự án = ${laborDet.total_hours}h × ${fmtMoney(laborDet.cost_per_hour)} = <strong>${fmtMoney(data.costs.labor_cost)}</strong></p>`
+      }
+
+      // Doughnut chart
+      destroyChart('anaDoughnut')
+      const ctx = $('anaDoughnutChart')
+      if (ctx && breakdown.length) {
+        const colors = ['#2196f3','#ff9800','#f44336','#9c27b0','#00bcd4','#4caf50','#795548']
+        charts['anaDoughnut'] = new Chart(ctx, {
+          type: 'doughnut',
+          data: {
+            labels: breakdown.map(b => b.type),
+            datasets: [{
+              data: breakdown.map(b => b.amount),
+              backgroundColor: colors.slice(0, breakdown.length),
+              borderColor: '#fff',
+              borderWidth: 2
+            }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+              legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 12 } },
+              tooltip: { callbacks: { label: ctx => `${ctx.label}: ${fmtMoney(ctx.raw)}` } }
+            }
+          }
+        })
+      }
+    }
+  } catch (e) { toast('Lỗi tải phân tích: ' + e.message, 'error') }
+}
+
+// ── Kiểm tra & xóa trùng lặp ────────────────────────────────────────
+async function checkCostDuplicates() {
+  try {
+    $('dupStatusMsg').textContent = 'Đang kiểm tra...'
+    const data = await api('/costs/duplicates')
+    $('dupStatusMsg').textContent = ''
+
+    const total = data.total_duplicate_groups || 0
+    if (total === 0) {
+      $('dupResultsPanel').classList.add('hidden')
+      $('dupEmptyMsg').classList.remove('hidden')
+      $('btnCleanupCostDups').classList.add('hidden')
+      return
+    }
+
+    $('dupEmptyMsg').classList.add('hidden')
+    $('dupResultsPanel').classList.remove('hidden')
+    $('dupTotalCount').textContent = total
+    $('btnCleanupCostDups').classList.remove('hidden')
+
+    const costTypeNames = { salary:'Lương nhân sự', material:'Vật liệu', equipment:'Thiết bị', transport:'Vận chuyển', other:'Chi phí khác' }
+    const tbody = $('dupTableBody')
+    if (!tbody) return
+
+    const costsRows = (data.project_costs_duplicates || []).map(d => `
+      <tr class="border-b border-gray-100 hover:bg-red-50">
+        <td class="py-2 pr-3"><span class="badge" style="background:#fef3c7;color:#92400e">Chi phí</span></td>
+        <td class="py-2 pr-3 font-medium text-sm">${d.project_code || d.project_id}</td>
+        <td class="py-2 pr-3 text-sm">${costTypeNames[d.cost_type] || d.cost_type}</td>
+        <td class="py-2 pr-3 text-sm text-gray-500">${fmtDate(d.cost_date)}</td>
+        <td class="py-2 pr-3 text-center"><span class="bg-red-100 text-red-700 text-xs font-bold px-2 py-0.5 rounded-full">${d.duplicate_count}</span></td>
+        <td class="py-2 pr-3 text-right text-sm font-medium text-red-600">${fmt(d.total_amount)}</td>
+        <td class="py-2 text-xs text-gray-400">${d.ids}</td>
+      </tr>`)
+
+    const revRows = (data.revenue_duplicates || []).map(d => `
+      <tr class="border-b border-gray-100 hover:bg-red-50">
+        <td class="py-2 pr-3"><span class="badge badge-completed">Doanh thu</span></td>
+        <td class="py-2 pr-3 font-medium text-sm">${d.project_code || d.project_id}</td>
+        <td class="py-2 pr-3 text-sm text-gray-500">${(d.description||'').substring(0,30)}</td>
+        <td class="py-2 pr-3 text-sm text-gray-500">${fmtDate(d.revenue_date)}</td>
+        <td class="py-2 pr-3 text-center"><span class="bg-red-100 text-red-700 text-xs font-bold px-2 py-0.5 rounded-full">${d.duplicate_count}</span></td>
+        <td class="py-2 pr-3 text-right text-sm font-medium text-green-600">${fmt(d.total_amount)}</td>
+        <td class="py-2 text-xs text-gray-400">${d.ids}</td>
+      </tr>`)
+
+    tbody.innerHTML = [...costsRows, ...revRows].join('') ||
+      '<tr><td colspan="7" class="text-center py-4 text-gray-400">Không có dữ liệu trùng</td></tr>'
+
+    toast(`Phát hiện ${total} nhóm trùng lặp!`, 'warning')
+  } catch (e) { toast('Lỗi kiểm tra: ' + e.message, 'error') }
+}
+
+async function cleanupCostDuplicates() {
+  if (!confirm('Xóa tất cả dữ liệu trùng lặp?\n(Giữ lại bản ghi đầu tiên, không thể hoàn tác)')) return
+  try {
+    $('dupStatusMsg').textContent = 'Đang xóa...'
+    const result = await api('/costs/cleanup-duplicates', { method: 'post', data: {} })
+    $('dupStatusMsg').textContent = ''
+    const total = (result.project_costs_deleted || 0) + (result.revenue_deleted || 0)
+    toast(`Đã xóa ${total} bản ghi trùng (Chi phí: ${result.project_costs_deleted}, DT: ${result.revenue_deleted})`, 'success')
+    $('dupResultsPanel').classList.add('hidden')
+    $('btnCleanupCostDups').classList.add('hidden')
+    $('dupEmptyMsg').classList.remove('hidden')
+    loadCostDashboard()
+  } catch (e) { toast('Lỗi xóa trùng: ' + e.message, 'error') }
 }
 
 function renderCostTable() {
