@@ -2013,6 +2013,177 @@ app.post('/api/costs/cleanup-duplicates', authMiddleware, adminOnly, async (c) =
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
+// POST /api/data-cleanup/project-costs-duplicates
+// Dedicated cleanup endpoint keeping MAX(id) (newest record) per group
+// Provides detailed before/after report for the Chi Phí & Doanh Thu page
+app.post('/api/data-cleanup/project-costs-duplicates', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+
+    // Count before cleanup
+    const beforeCosts = await db.prepare(
+      `SELECT COUNT(*) as cnt FROM project_costs`
+    ).first() as any
+    const beforeRevs = await db.prepare(
+      `SELECT COUNT(*) as cnt FROM project_revenues`
+    ).first() as any
+    const beforeLaborCosts = await db.prepare(
+      `SELECT COUNT(*) as cnt FROM project_labor_costs`
+    ).first() as any
+
+    // Count duplicate groups before
+    const dupCostGroups = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM (
+        SELECT project_id, cost_type, cost_date FROM project_costs
+        GROUP BY project_id, cost_type, cost_date HAVING COUNT(*) > 1
+      )
+    `).first() as any
+    const dupRevGroups = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM (
+        SELECT project_id, revenue_date, description FROM project_revenues
+        GROUP BY project_id, revenue_date, description HAVING COUNT(*) > 1
+      )
+    `).first() as any
+    const dupLaborGroups = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM (
+        SELECT project_id, month, year FROM project_labor_costs
+        GROUP BY project_id, month, year HAVING COUNT(*) > 1
+      )
+    `).first() as any
+
+    // Delete project_costs duplicates — keep MAX(id) (newest)
+    const delCosts = await db.prepare(`
+      DELETE FROM project_costs
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM project_costs
+        GROUP BY project_id, cost_type, cost_date
+      )
+    `).run()
+
+    // Delete project_revenues duplicates — keep MAX(id) (newest)
+    const delRevs = await db.prepare(`
+      DELETE FROM project_revenues
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM project_revenues
+        GROUP BY project_id, revenue_date, description
+      )
+    `).run()
+
+    // Delete project_labor_costs duplicates — keep MAX(id) (newest)
+    const delLabor = await db.prepare(`
+      DELETE FROM project_labor_costs
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM project_labor_costs
+        GROUP BY project_id, month, year
+      )
+    `).run()
+
+    // Count after cleanup
+    const afterCosts = await db.prepare(
+      `SELECT COUNT(*) as cnt FROM project_costs`
+    ).first() as any
+    const afterRevs = await db.prepare(
+      `SELECT COUNT(*) as cnt FROM project_revenues`
+    ).first() as any
+    const afterLaborCosts = await db.prepare(
+      `SELECT COUNT(*) as cnt FROM project_labor_costs`
+    ).first() as any
+
+    // Verify no duplicates remain
+    const remainingDupCosts = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM (
+        SELECT project_id, cost_type, cost_date FROM project_costs
+        GROUP BY project_id, cost_type, cost_date HAVING COUNT(*) > 1
+      )
+    `).first() as any
+    const remainingDupRevs = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM (
+        SELECT project_id, revenue_date, description FROM project_revenues
+        GROUP BY project_id, revenue_date, description HAVING COUNT(*) > 1
+      )
+    `).first() as any
+
+    const totalDeleted = (delCosts.meta?.changes || 0) + (delRevs.meta?.changes || 0) + (delLabor.meta?.changes || 0)
+
+    return c.json({
+      success: true,
+      summary: {
+        total_deleted: totalDeleted,
+        project_costs_deleted: delCosts.meta?.changes || 0,
+        revenue_deleted: delRevs.meta?.changes || 0,
+        labor_costs_deleted: delLabor.meta?.changes || 0,
+      },
+      before: {
+        project_costs: beforeCosts?.cnt || 0,
+        project_revenues: beforeRevs?.cnt || 0,
+        project_labor_costs: beforeLaborCosts?.cnt || 0,
+        duplicate_cost_groups: dupCostGroups?.cnt || 0,
+        duplicate_revenue_groups: dupRevGroups?.cnt || 0,
+        duplicate_labor_groups: dupLaborGroups?.cnt || 0,
+      },
+      after: {
+        project_costs: afterCosts?.cnt || 0,
+        project_revenues: afterRevs?.cnt || 0,
+        project_labor_costs: afterLaborCosts?.cnt || 0,
+        remaining_duplicate_cost_groups: remainingDupCosts?.cnt || 0,
+        remaining_duplicate_revenue_groups: remainingDupRevs?.cnt || 0,
+      },
+      message: totalDeleted > 0
+        ? `Đã xóa ${totalDeleted} bản ghi trùng lặp (CP: ${delCosts.meta?.changes || 0}, DT: ${delRevs.meta?.changes || 0}, Lương: ${delLabor.meta?.changes || 0})`
+        : 'Không có bản ghi trùng lặp cần xóa'
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/data-cleanup/project-costs-duplicates — check duplicates count
+app.get('/api/data-cleanup/project-costs-duplicates', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+
+    const dupCosts = await db.prepare(`
+      SELECT pc.project_id, p.code as project_code, pc.cost_type, pc.cost_date,
+             COUNT(*) as duplicate_count, SUM(pc.amount) as total_amount,
+             GROUP_CONCAT(pc.id) as ids
+      FROM project_costs pc
+      LEFT JOIN projects p ON p.id = pc.project_id
+      GROUP BY pc.project_id, pc.cost_type, pc.cost_date
+      HAVING COUNT(*) > 1
+      ORDER BY duplicate_count DESC
+    `).all()
+
+    const dupRevs = await db.prepare(`
+      SELECT pr.project_id, p.code as project_code, pr.description, pr.revenue_date,
+             COUNT(*) as duplicate_count, SUM(pr.amount) as total_amount,
+             GROUP_CONCAT(pr.id) as ids
+      FROM project_revenues pr
+      LEFT JOIN projects p ON p.id = pr.project_id
+      GROUP BY pr.project_id, pr.revenue_date, pr.description
+      HAVING COUNT(*) > 1
+      ORDER BY duplicate_count DESC
+    `).all()
+
+    const dupLabor = await db.prepare(`
+      SELECT plc.project_id, p.code as project_code, plc.month, plc.year,
+             COUNT(*) as duplicate_count,
+             GROUP_CONCAT(plc.id) as ids
+      FROM project_labor_costs plc
+      LEFT JOIN projects p ON p.id = plc.project_id
+      GROUP BY plc.project_id, plc.month, plc.year
+      HAVING COUNT(*) > 1
+    `).all()
+
+    const totalGroups = (dupCosts.results?.length || 0) + (dupRevs.results?.length || 0) + (dupLabor.results?.length || 0)
+
+    return c.json({
+      total_duplicate_groups: totalGroups,
+      has_duplicates: totalGroups > 0,
+      project_costs_duplicates: dupCosts.results || [],
+      revenue_duplicates: dupRevs.results || [],
+      labor_cost_duplicates: dupLabor.results || [],
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 // ===================================================
 // DATA AUDIT & CONSISTENCY CHECK
 // ===================================================
@@ -3316,23 +3487,67 @@ app.post('/api/system/init', async (c) => {
       `).run()
     } catch (_) { /* ignore */ }
 
+    // AUTO-DEDUP: Remove existing duplicate project_costs and project_revenues on every init
+    // This permanently fixes any data doubled by previous versions of this init endpoint
+    try {
+      await db.prepare(`
+        DELETE FROM project_costs
+        WHERE id NOT IN (
+          SELECT MAX(id) FROM project_costs
+          GROUP BY project_id, cost_type, cost_date
+        )
+      `).run()
+    } catch (_) { /* ignore */ }
+    try {
+      await db.prepare(`
+        DELETE FROM project_revenues
+        WHERE id NOT IN (
+          SELECT MAX(id) FROM project_revenues
+          GROUP BY project_id, revenue_date, description
+        )
+      `).run()
+    } catch (_) { /* ignore */ }
+    try {
+      await db.prepare(`
+        DELETE FROM project_labor_costs
+        WHERE id NOT IN (
+          SELECT MAX(id) FROM project_labor_costs
+          GROUP BY project_id, month, year
+        )
+      `).run()
+    } catch (_) { /* ignore */ }
+
+    // Sample costs & revenues — use existence check to PREVENT DUPLICATES on every re-init
+    // This is the primary fix for the duplicate data issue on Chi Phí & Doanh Thu page
     const costTypes2 = ['salary', 'equipment', 'material', 'transport']
     for (let m = 1; m <= 2; m++) {
       const monthStr = m.toString().padStart(2, '0')
       for (const type of costTypes2) {
         try {
-          await db.prepare(
-            `INSERT INTO project_costs (project_id, cost_type, description, amount, cost_date, created_by)
-             VALUES (1, ?, ?, ?, ?, 1)`
-          ).bind(type, `Chi phí ${type} tháng ${m}/2026`, Math.floor(Math.random() * 50000000) + 5000000, `2026-${monthStr}-15`).run()
+          // Check if a cost record already exists for this project/type/month before inserting
+          const existingCost = await db.prepare(
+            `SELECT id FROM project_costs WHERE project_id = 1 AND cost_type = ? AND cost_date = ? LIMIT 1`
+          ).bind(type, `2026-${monthStr}-15`).first()
+          if (!existingCost) {
+            await db.prepare(
+              `INSERT INTO project_costs (project_id, cost_type, description, amount, cost_date, created_by)
+               VALUES (1, ?, ?, ?, ?, 1)`
+            ).bind(type, `Chi phí ${type} tháng ${m}/2026`, Math.floor(Math.random() * 50000000) + 5000000, `2026-${monthStr}-15`).run()
+          }
         } catch (_) { /* skip */ }
       }
       if (m % 2 === 0) {
         try {
-          await db.prepare(
-            `INSERT INTO project_revenues (project_id, description, amount, revenue_date, payment_status, created_by)
-             VALUES (1, ?, ?, ?, 'paid', 1)`
-          ).bind(`Đợt thanh toán tháng ${m}/2026`, Math.floor(Math.random() * 500000000) + 100000000, `2026-${monthStr}-20`).run()
+          // Check if a revenue record already exists for this project/month before inserting
+          const existingRev = await db.prepare(
+            `SELECT id FROM project_revenues WHERE project_id = 1 AND revenue_date = ? LIMIT 1`
+          ).bind(`2026-${monthStr}-20`).first()
+          if (!existingRev) {
+            await db.prepare(
+              `INSERT INTO project_revenues (project_id, description, amount, revenue_date, payment_status, created_by)
+               VALUES (1, ?, ?, ?, 'paid', 1)`
+            ).bind(`Đợt thanh toán tháng ${m}/2026`, Math.floor(Math.random() * 500000000) + 100000000, `2026-${monthStr}-20`).run()
+          }
         } catch (_) { /* skip */ }
       }
     }

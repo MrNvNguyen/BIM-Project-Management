@@ -16,6 +16,13 @@ let allDisciplines = []
 let currentCostTab = 'costs'
 let charts = {}
 
+// ── Guard flags to prevent duplicate API calls on Chi Phí & Doanh Thu ──
+let _costDashboardLoading = false      // prevent concurrent loadCostDashboard calls
+let _costAnalysisLoading = false       // prevent concurrent loadCostAnalysis calls
+let _costAnalysisLoaded = false        // track if analysis was already rendered for current selection
+let _costAnalysisDebounceTimer = null  // debounce timer for filter changes
+let _lastAnalysisKey = ''              // cache key: projId+periodType+month+year to avoid re-fetch
+
 // ================================================================
 // UTILITY FUNCTIONS
 // ================================================================
@@ -1639,6 +1646,9 @@ async function renderGantt() {
 // COSTS
 // ================================================================
 async function loadCostDashboard() {
+  // Guard: prevent concurrent calls
+  if (_costDashboardLoading) return
+  _costDashboardLoading = true
   try {
     if (!allProjects.length) allProjects = await api('/projects')
 
@@ -1681,6 +1691,7 @@ async function loadCostDashboard() {
 
     loadCosts()
   } catch (e) { toast('Lỗi tải dữ liệu tài chính: ' + e.message, 'error') }
+  finally { _costDashboardLoading = false }
 }
 
 function renderCostProjectChart(revenues, costs) {
@@ -1778,6 +1789,9 @@ function switchCostTab(tab) {
     const now = new Date()
     const ms = $('analysisMonthSel'); if (ms) ms.value = String(now.getMonth() + 1).padStart(2, '0')
     const ys = $('analysisYearSel');  if (ys) ys.value = String(now.getFullYear())
+    // Reset cache key so fresh data is loaded when user clicks Phân tích
+    _lastAnalysisKey = ''
+    _costAnalysisLoaded = false
   }
 }
 
@@ -1788,9 +1802,23 @@ function onAnalysisPeriodTypeChange() {
   const sc = $('analysisSingleCtrl'); const mc = $('analysisMultiCtrl')
   if (sc) sc.classList.toggle('hidden', pt !== 'single')
   if (mc) mc.classList.toggle('hidden', pt !== 'multi')
+  // Reset cache so next "Phân tích" click fetches fresh data
+  _lastAnalysisKey = ''
+  _costAnalysisLoaded = false
+}
+
+// Debounced wrapper for "Phân tích" button — prevent rapid double-clicks
+function debouncedLoadCostAnalysis() {
+  if (_costAnalysisDebounceTimer) clearTimeout(_costAnalysisDebounceTimer)
+  _costAnalysisDebounceTimer = setTimeout(() => {
+    _costAnalysisDebounceTimer = null
+    loadCostAnalysis()
+  }, 300)
 }
 
 async function loadCostAnalysis() {
+  // Guard: prevent concurrent API calls
+  if (_costAnalysisLoading) return
   const projId = $('analysisProjSel')?.value
   const year   = $('analysisYearSel')?.value
   const periodType = $('analysisPeriodType')?.value || 'single'
@@ -1799,23 +1827,33 @@ async function loadCostAnalysis() {
 
   // Build query params
   let apiUrl = `/projects/${projId}/costs-revenue-summary?year=${year}`
+  let cacheKey = `${projId}-${periodType}-${year}`
   if (periodType === 'all') {
     apiUrl += '&all_months=true'
+    cacheKey += '-all'
   } else if (periodType === 'multi') {
     const checked = [...document.querySelectorAll('.analysisMonthCheck:checked')].map(el => el.value)
     if (checked.length === 0) { toast('Vui lòng chọn ít nhất một tháng', 'warning'); return }
     apiUrl += `&months=${checked.join(',')}`
+    cacheKey += '-' + checked.join(',')
   } else {
     const month = $('analysisMonthSel')?.value
     if (!month) { toast('Vui lòng chọn tháng', 'warning'); return }
     apiUrl += `&month=${month}`
+    cacheKey += '-' + month
   }
 
+  // Avoid re-fetching same data (prevents double-render on filter change event fires)
+  if (cacheKey === _lastAnalysisKey && _costAnalysisLoaded) return
+  _lastAnalysisKey = cacheKey
+
+  _costAnalysisLoading = true
   try {
     const data = await api(apiUrl)
 
     // Show cards
     const cards = $('analysisCards'); if (cards) cards.classList.remove('hidden')
+    _costAnalysisLoaded = true
 
     // Map from new costs-revenue-summary response
     const fin = data.financial || {}
@@ -1969,7 +2007,12 @@ async function loadCostAnalysis() {
         })
       }
     }
-  } catch (e) { toast('Lỗi tải phân tích: ' + e.message, 'error') }
+  } catch (e) {
+    toast('Lỗi tải phân tích: ' + e.message, 'error')
+    _lastAnalysisKey = '' // reset cache key on error so next call can retry
+  } finally {
+    _costAnalysisLoading = false
+  }
 }
 
 // Quick sync helper called from the analysis page sync badge
@@ -1980,6 +2023,7 @@ async function createLaborForAnalysisProject(projId) {
   try {
     const res = await api(`/projects/${projId}/labor-costs/sync`, { method: 'POST', data: { month: parseInt(month), year: parseInt(year), force_recalculate: true } })
     toast(`Đồng bộ thành công: ${fmtMoney(res.data?.total_labor_cost)} ₫`, 'success')
+    _lastAnalysisKey = '' // force re-fetch after sync
     loadCostAnalysis()
   } catch(e) { toast('Lỗi đồng bộ: ' + e.message, 'error') }
 }
@@ -2038,7 +2082,7 @@ async function checkCostDuplicates() {
 }
 
 async function cleanupCostDuplicates() {
-  if (!confirm('Xóa tất cả dữ liệu trùng lặp?\n(Giữ lại bản ghi đầu tiên, không thể hoàn tác)')) return
+  if (!confirm('Xóa tất cả dữ liệu trùng lặp?\n(Giữ lại bản ghi mới nhất, không thể hoàn tác)')) return
   try {
     $('dupStatusMsg').textContent = 'Đang xóa...'
     const result = await api('/costs/cleanup-duplicates', { method: 'post', data: {} })
@@ -2050,6 +2094,76 @@ async function cleanupCostDuplicates() {
     $('dupEmptyMsg').classList.remove('hidden')
     loadCostDashboard()
   } catch (e) { toast('Lỗi xóa trùng: ' + e.message, 'error') }
+}
+
+// ── Full duplicate cleanup with detailed before/after report ─────────
+async function runFullDuplicateCleanup() {
+  const statusEl = $('fullCleanupStatus')
+  const resultEl = $('fullCleanupResult')
+  const btn = $('btnFullCleanup')
+
+  if (!confirm('Dọn dẹp toàn bộ dữ liệu trùng lặp trong project_costs, project_revenues và project_labor_costs?\n\n• Giữ lại bản ghi MỚI NHẤT (MAX id) cho mỗi nhóm\n• Thao tác KHÔNG thể hoàn tác\n\nXác nhận tiếp tục?')) return
+
+  if (btn) btn.disabled = true
+  if (statusEl) { statusEl.textContent = 'Đang dọn dẹp...'; statusEl.className = 'text-yellow-600 text-sm' }
+
+  try {
+    const result = await api('/data-cleanup/project-costs-duplicates', { method: 'post', data: {} })
+    const total = result.summary?.total_deleted || 0
+
+    if (statusEl) {
+      statusEl.textContent = total > 0 ? `✓ Đã xóa ${total} bản ghi trùng` : '✓ Không có dữ liệu trùng'
+      statusEl.className = 'text-green-600 text-sm font-medium'
+    }
+
+    if (resultEl) {
+      const b = result.before || {}; const a = result.after || {}
+      resultEl.innerHTML = `
+        <div class="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200 text-sm">
+          <div class="font-semibold text-gray-700 mb-2">📊 Báo cáo dọn dẹp</div>
+          <table class="w-full text-xs">
+            <thead><tr class="text-gray-500 border-b"><th class="text-left pb-1">Bảng</th><th class="text-right pb-1">Trước</th><th class="text-right pb-1">Đã xóa</th><th class="text-right pb-1">Sau</th></tr></thead>
+            <tbody>
+              <tr class="border-b border-gray-100">
+                <td class="py-1">project_costs</td>
+                <td class="text-right text-orange-600">${b.project_costs || 0}</td>
+                <td class="text-right text-red-600">-${result.summary?.project_costs_deleted || 0}</td>
+                <td class="text-right text-green-600 font-medium">${a.project_costs || 0}</td>
+              </tr>
+              <tr class="border-b border-gray-100">
+                <td class="py-1">project_revenues</td>
+                <td class="text-right text-orange-600">${b.project_revenues || 0}</td>
+                <td class="text-right text-red-600">-${result.summary?.revenue_deleted || 0}</td>
+                <td class="text-right text-green-600 font-medium">${a.project_revenues || 0}</td>
+              </tr>
+              <tr>
+                <td class="py-1">project_labor_costs</td>
+                <td class="text-right text-orange-600">${b.project_labor_costs || 0}</td>
+                <td class="text-right text-red-600">-${result.summary?.labor_costs_deleted || 0}</td>
+                <td class="text-right text-green-600 font-medium">${a.project_labor_costs || 0}</td>
+              </tr>
+            </tbody>
+          </table>
+          ${a.remaining_duplicate_cost_groups > 0
+            ? `<div class="mt-2 text-red-600">⚠ Còn ${a.remaining_duplicate_cost_groups} nhóm trùng trong project_costs</div>`
+            : '<div class="mt-2 text-green-600">✓ Không còn bản ghi trùng lặp</div>'
+          }
+        </div>`
+      resultEl.classList.remove('hidden')
+    }
+
+    if (total > 0) {
+      toast(result.message || `Đã xóa ${total} bản ghi trùng`, 'success')
+      loadCostDashboard()
+    } else {
+      toast('Không có bản ghi trùng lặp', 'info')
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = 'Lỗi: ' + e.message; statusEl.className = 'text-red-600 text-sm' }
+    toast('Lỗi dọn dẹp: ' + e.message, 'error')
+  } finally {
+    if (btn) btn.disabled = false
+  }
 }
 
 function renderCostTable() {
@@ -2556,6 +2670,14 @@ window.addEventListener('load', async () => {
   } else {
     $('loginPage').style.display = 'flex'
   }
+})
+
+// Reset loading guards on page unload so they don't persist on back-navigation
+window.addEventListener('beforeunload', () => {
+  _costDashboardLoading = false
+  _costAnalysisLoading = false
+  _costAnalysisLoaded = false
+  _lastAnalysisKey = ''
 })
 
 // Close modals when clicking outside
