@@ -506,7 +506,7 @@ function renderProjectsGrid(projects) {
         </div>
         <div class="flex gap-2">
           <span><i class="fas fa-users mr-1"></i>${p.member_count||0}</span>
-          ${p.contract_value ? `<span class="text-primary font-medium">${fmtMoney(p.contract_value)}</span>` : ''}
+          ${p.contract_value != null && currentUser?.role === 'system_admin' ? `<span class="text-primary font-medium">${fmtMoney(p.contract_value)}</span>` : ''}
         </div>
       </div>
     </div>`
@@ -545,15 +545,16 @@ async function openProjectDetail(id) {
     const canEdit = ['system_admin', 'project_admin'].includes(currentUser.role)
 
     $('projectDetailContent').innerHTML = `
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+      <div class="grid grid-cols-1 ${currentUser.role === 'system_admin' ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4 mb-6">
         <div class="card">
           <p class="text-xs text-gray-500 mb-1">Chủ đầu tư</p>
           <p class="font-bold text-gray-800">${project.client || '-'}</p>
         </div>
+        ${currentUser.role === 'system_admin' ? `
         <div class="card">
           <p class="text-xs text-gray-500 mb-1">Giá trị HĐ</p>
           <p class="font-bold text-green-600">${fmt(project.contract_value)} VNĐ</p>
-        </div>
+        </div>` : ''}
         <div class="card">
           <p class="text-xs text-gray-500 mb-1">Tiến độ tổng</p>
           <div class="flex items-center gap-2">
@@ -667,6 +668,9 @@ function openProjectModal(project = null) {
   $('projectStartDate').value = project?.start_date || ''
   $('projectEndDate').value = project?.end_date || ''
   $('projectContractValue').value = project?.contract_value || ''
+  // Show/hide contract value field based on role
+  const contractRow = document.getElementById('contractValueRow')
+  if (contractRow) contractRow.style.display = currentUser?.role === 'system_admin' ? '' : 'none'
   $('projectStatus').value = project?.status || 'planning'
   $('projectLocation').value = project?.location || ''
 
@@ -685,7 +689,7 @@ $('projectForm').addEventListener('submit', async (e) => {
     description: $('projectDesc').value, client: $('projectClient').value,
     project_type: $('projectType').value, status: $('projectStatus').value,
     start_date: $('projectStartDate').value, end_date: $('projectEndDate').value,
-    contract_value: parseFloat($('projectContractValue').value) || 0,
+    contract_value: currentUser?.role === 'system_admin' ? (parseFloat($('projectContractValue').value) || 0) : undefined,
     location: $('projectLocation').value,
     admin_id: parseInt($('projectAdmin').value) || null,
     leader_id: parseInt($('projectLeader').value) || null

@@ -310,7 +310,9 @@ app.get('/api/projects', authMiddleware, async (c) => {
     if (user.role !== 'system_admin') {
       query += ` WHERE p.id IN (SELECT project_id FROM project_members WHERE user_id = ?) OR p.admin_id = ? OR p.leader_id = ?`
       const result = await db.prepare(query).bind(user.id, user.id, user.id).all()
-      return c.json(result.results)
+      // Hide financial data from non-system_admin
+      const masked = (result.results as any[]).map(p => ({ ...p, contract_value: undefined, budget: undefined }))
+      return c.json(masked)
     }
 
     const result = await db.prepare(query).all()
@@ -344,6 +346,12 @@ app.get('/api/projects/:id', authMiddleware, async (c) => {
       WHERE pm.project_id = ?
     `).bind(id).all()
 
+    // Hide financial data from non-system_admin
+    const user = c.get('user') as any
+    if (user.role !== 'system_admin') {
+      const { contract_value, budget, ...safeProject } = project as any
+      return c.json({ ...safeProject, members: members.results })
+    }
     return c.json({ ...project, members: members.results })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
