@@ -1,0 +1,1327 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OneCad BIM - Quản Lý Dự Án</title>
+  <link rel="icon" href="https://onecadvn.com/Upload/images/logo/logo.png" type="image/png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: { DEFAULT: '#00A651', 50: '#e6f7ee', 100: '#c3ecd4', 200: '#85d9a9', 300: '#47c67e', 400: '#00A651', 500: '#008a43', 600: '#006e36', 700: '#005228', 800: '#003719', 900: '#001b0d' },
+            accent: { DEFAULT: '#0066CC', light: '#3385d6' },
+            warning: '#FF6B00',
+            danger: '#EF4444'
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    :root { --primary: #00A651; --accent: #0066CC; --warning: #FF6B00; }
+    * { font-family: 'Segoe UI', sans-serif; }
+    body { background: #f0f4f8; }
+    .sidebar { width: 260px; background: linear-gradient(180deg, #00A651 0%, #006e36 100%); min-height: 100vh; position: fixed; left: 0; top: 0; z-index: 100; transition: transform 0.3s; }
+    .sidebar.collapsed { transform: translateX(-260px); }
+    .main-content { margin-left: 260px; transition: margin 0.3s; min-height: 100vh; }
+    .main-content.expanded { margin-left: 0; }
+    .nav-item { display: flex; align-items: center; padding: 10px 20px; color: rgba(255,255,255,0.8); cursor: pointer; transition: all 0.2s; border-radius: 8px; margin: 2px 10px; }
+    .nav-item:hover, .nav-item.active { background: rgba(255,255,255,0.2); color: #fff; }
+    .nav-item i { width: 20px; margin-right: 10px; }
+    .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 20px; }
+    .kpi-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid var(--primary); }
+    .btn-primary { background: #00A651; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; transition: background 0.2s; }
+    .btn-primary:hover { background: #008a43; }
+    .btn-secondary { background: #f3f4f6; color: #374151; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; }
+    .btn-accent { background: #0066CC; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; }
+    .btn-danger { background: #EF4444; color: white; padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; }
+    .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+    .badge-todo { background: #f3f4f6; color: #6b7280; }
+    .badge-in_progress { background: #dbeafe; color: #1d4ed8; }
+    .badge-review { background: #fef3c7; color: #92400e; }
+    .badge-completed { background: #d1fae5; color: #065f46; }
+    .badge-cancelled { background: #fee2e2; color: #991b1b; }
+    .badge-overdue { background: #fee2e2; color: #991b1b; }
+    .badge-low { background: #d1fae5; color: #065f46; }
+    .badge-medium { background: #dbeafe; color: #1d4ed8; }
+    .badge-high { background: #fef3c7; color: #92400e; }
+    .badge-urgent { background: #fee2e2; color: #991b1b; }
+    .badge-active { background: #d1fae5; color: #065f46; }
+    .badge-planning { background: #dbeafe; color: #1d4ed8; }
+    .badge-on_hold { background: #fef3c7; color: #92400e; }
+    .table-row:hover { background: #f9fafb; }
+    .progress-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #00A651, #47c67e); border-radius: 4px; transition: width 0.3s; }
+    .progress-fill.danger { background: linear-gradient(90deg, #ef4444, #f87171); }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .modal { background: white; border-radius: 12px; max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; }
+    .toast { position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px; border-radius: 8px; padding: 12px 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); animation: slideIn 0.3s ease; }
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes fadeOut { to { opacity: 0; transform: translateX(100%); } }
+    .input-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 14px; outline: none; transition: border-color 0.2s; }
+    .input-field:focus { border-color: #00A651; box-shadow: 0 0 0 3px rgba(0,166,81,0.1); }
+    .select-field { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; font-size: 14px; background: white; outline: none; }
+    .select-field:focus { border-color: #00A651; }
+    .label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 4px; }
+    .sidebar-section { padding: 8px 10px 4px; color: rgba(255,255,255,0.5); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+    .top-bar { background: white; height: 60px; display: flex; align-items: center; padding: 0 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); position: sticky; top: 0; z-index: 50; }
+    .gantt-bar { height: 24px; border-radius: 4px; position: relative; min-width: 4px; }
+    .gantt-today { position: absolute; top: 0; bottom: 0; width: 2px; background: red; z-index: 10; }
+    .overdue-row { background: #fff5f5 !important; border-left: 3px solid #ef4444; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f1f1; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+    .login-bg { background: linear-gradient(135deg, #00A651 0%, #006e36 50%, #003719 100%); }
+    .page { display: none; }
+    .page.active { display: block; }
+    .tab-btn { padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; }
+    .tab-btn.active { background: #00A651; color: white; }
+    .tab-btn:not(.active) { color: #6b7280; }
+    .tab-btn:not(.active):hover { background: #f3f4f6; }
+  </style>
+</head>
+<body>
+
+<!-- LOGIN PAGE -->
+<div id="loginPage" class="min-h-screen login-bg flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8">
+    <div class="text-center mb-8">
+      <img src="https://onecadvn.com/Upload/images/logo/logo.png" alt="OneCad Logo" class="h-16 mx-auto mb-4" onerror="this.style.display='none'; document.getElementById('logoText').style.display='block'">
+      <div id="logoText" style="display:none" class="text-3xl font-bold text-primary">🏗️ OneCad BIM</div>
+      <h2 class="text-2xl font-bold text-gray-800 mt-2">Hệ Thống Quản Lý Dự Án BIM</h2>
+      <p class="text-gray-500 mt-1 text-sm">Đăng nhập để tiếp tục</p>
+    </div>
+    <form id="loginForm" class="space-y-5">
+      <div>
+        <label class="label">Tên đăng nhập</label>
+        <input type="text" id="loginUsername" class="input-field" placeholder="Nhập tên đăng nhập" value="admin">
+      </div>
+      <div>
+        <label class="label">Mật khẩu</label>
+        <div class="relative">
+          <input type="password" id="loginPassword" class="input-field pr-10" placeholder="Nhập mật khẩu" value="Admin@123">
+          <button type="button" onclick="togglePassword()" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+            <i class="fas fa-eye" id="eyeIcon"></i>
+          </button>
+        </div>
+      </div>
+      <button type="submit" class="w-full btn-primary py-3 rounded-lg text-base font-semibold">
+        <i class="fas fa-sign-in-alt mr-2"></i>Đăng nhập
+      </button>
+    </form>
+    <div class="mt-6 p-4 bg-gray-50 rounded-lg text-sm text-gray-600">
+      <p class="font-semibold mb-1">Tài khoản demo:</p>
+      <p>• <strong>admin</strong> / Admin@123 (System Admin)</p>
+      <p>• <strong>pham.thi.d</strong> / Pass@123 (Project Admin)</p>
+      <p>• <strong>le.van.c</strong> / Pass@123 (Project Leader)</p>
+      <p>• <strong>nguyen.van.a</strong> / Pass@123 (Member)</p>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="mainApp" style="display:none">
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="p-4 border-b border-green-700">
+      <div class="flex items-center gap-3">
+        <img src="https://onecadvn.com/Upload/images/logo/logo.png" alt="OneCad" class="h-10 filter brightness-0 invert" onerror="this.style.display='none'">
+        <div>
+          <div class="text-white font-bold text-lg leading-tight">OneCad BIM</div>
+          <div class="text-green-200 text-xs">Project Management</div>
+        </div>
+      </div>
+    </div>
+    
+    <nav class="py-4" id="sidebarNav">
+      <div class="sidebar-section">Tổng quan</div>
+      <div class="nav-item active" onclick="navigate('dashboard')">
+        <i class="fas fa-tachometer-alt"></i><span>Dashboard</span>
+      </div>
+
+      <div class="sidebar-section mt-3">Quản lý dự án</div>
+      <div class="nav-item" onclick="navigate('projects')">
+        <i class="fas fa-project-diagram"></i><span>Dự án</span>
+      </div>
+      <div class="nav-item" onclick="navigate('tasks')">
+        <i class="fas fa-tasks"></i><span>Công việc</span>
+      </div>
+      <div class="nav-item" onclick="navigate('timesheet')">
+        <i class="fas fa-clock"></i><span>Timesheet</span>
+      </div>
+      <div class="nav-item" onclick="navigate('gantt')">
+        <i class="fas fa-chart-gantt"></i><span>Tiến độ Gantt</span>
+      </div>
+
+      <div id="adminNav" style="display:none">
+        <div class="sidebar-section mt-3">Quản lý tài chính</div>
+        <div class="nav-item" onclick="navigate('costs')">
+          <i class="fas fa-coins"></i><span>Chi phí & Doanh thu</span>
+        </div>
+
+        <div class="sidebar-section mt-3">Tài sản & Nhân sự</div>
+        <div class="nav-item" onclick="navigate('assets')">
+          <i class="fas fa-laptop"></i><span>Tài sản</span>
+        </div>
+        <div class="nav-item" onclick="navigate('users')">
+          <i class="fas fa-users"></i><span>Nhân sự</span>
+        </div>
+      </div>
+
+      <div class="sidebar-section mt-3">Cá nhân</div>
+      <div class="nav-item" onclick="navigate('profile')">
+        <i class="fas fa-user-cog"></i><span>Hồ sơ & Cài đặt</span>
+      </div>
+    </nav>
+
+    <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-green-700">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-full bg-green-200 flex items-center justify-center text-green-800 font-bold text-sm" id="sidebarAvatar">A</div>
+        <div class="flex-1 min-w-0">
+          <div class="text-white text-sm font-medium truncate" id="sidebarName">Admin</div>
+          <div class="text-green-300 text-xs" id="sidebarRole">System Admin</div>
+        </div>
+        <button onclick="logout()" class="text-green-300 hover:text-white" title="Đăng xuất">
+          <i class="fas fa-sign-out-alt"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main-content" id="mainContent">
+    <!-- Top Bar -->
+    <div class="top-bar">
+      <button onclick="toggleSidebar()" class="text-gray-600 hover:text-gray-800 mr-4">
+        <i class="fas fa-bars text-xl"></i>
+      </button>
+      <div class="flex-1">
+        <div class="text-sm text-gray-500" id="breadcrumb">Dashboard</div>
+      </div>
+      <div class="flex items-center gap-4">
+        <!-- Notifications -->
+        <div class="relative">
+          <button onclick="toggleNotifications()" class="relative text-gray-600 hover:text-gray-800 p-2">
+            <i class="fas fa-bell text-xl"></i>
+            <span id="notifBadge" class="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs" style="display:none">0</span>
+          </button>
+          <div id="notifDropdown" style="display:none" class="absolute right-0 top-12 w-80 bg-white rounded-xl shadow-xl border z-50 max-h-96 overflow-y-auto">
+            <div class="p-3 border-b flex justify-between items-center">
+              <span class="font-semibold text-gray-800">Thông báo</span>
+              <button onclick="markAllRead()" class="text-xs text-primary hover:underline">Đọc tất cả</button>
+            </div>
+            <div id="notifList" class="divide-y"></div>
+          </div>
+        </div>
+        <!-- User Menu -->
+        <div class="relative">
+          <button onclick="toggleUserMenu()" class="flex items-center gap-2 hover:bg-gray-100 rounded-lg p-2">
+            <div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white font-bold text-sm" id="topbarAvatar">A</div>
+            <div class="hidden md:block text-left">
+              <div class="text-sm font-medium text-gray-800" id="topbarName">Admin</div>
+              <div class="text-xs text-gray-500" id="topbarRole">System Admin</div>
+            </div>
+            <i class="fas fa-chevron-down text-gray-400 text-xs"></i>
+          </button>
+          <div id="userMenu" style="display:none" class="absolute right-0 top-12 w-48 bg-white rounded-xl shadow-xl border z-50">
+            <div class="py-1">
+              <button onclick="navigate('profile'); closeUserMenu()" class="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 flex items-center gap-2">
+                <i class="fas fa-user text-gray-400"></i>Hồ sơ cá nhân
+              </button>
+              <hr>
+              <button onclick="logout()" class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
+                <i class="fas fa-sign-out-alt"></i>Đăng xuất
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pages Container -->
+    <div class="p-6">
+
+      <!-- ========== DASHBOARD ========== -->
+      <div id="page-dashboard" class="page active">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Dashboard</h1>
+            <p class="text-gray-500 text-sm mt-1">Tổng quan hệ thống quản lý dự án BIM</p>
+          </div>
+          <div class="text-right text-sm text-gray-500">
+            <div class="font-medium" id="currentDate"></div>
+            <div id="currentTime"></div>
+          </div>
+        </div>
+
+        <!-- KPI Cards -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div class="kpi-card" style="border-color:#00A651">
+            <div class="flex justify-between items-start">
+              <div>
+                <p class="text-xs text-gray-500 font-medium">TỔNG DỰ ÁN</p>
+                <p class="text-3xl font-bold text-gray-800 mt-1" id="kpiProjects">-</p>
+                <p class="text-xs text-green-600 mt-1"><i class="fas fa-circle text-green-500 mr-1"></i><span id="kpiActiveProjects">-</span> đang hoạt động</p>
+              </div>
+              <div class="w-12 h-12 rounded-xl bg-green-100 flex items-center justify-center">
+                <i class="fas fa-project-diagram text-xl text-primary"></i>
+              </div>
+            </div>
+          </div>
+          <div class="kpi-card" style="border-color:#0066CC">
+            <div class="flex justify-between items-start">
+              <div>
+                <p class="text-xs text-gray-500 font-medium">TỔNG TASK</p>
+                <p class="text-3xl font-bold text-gray-800 mt-1" id="kpiTasks">-</p>
+                <p class="text-xs text-blue-600 mt-1"><i class="fas fa-check-circle mr-1"></i><span id="kpiCompleted">-</span> hoàn thành</p>
+              </div>
+              <div class="w-12 h-12 rounded-xl bg-blue-100 flex items-center justify-center">
+                <i class="fas fa-tasks text-xl text-accent"></i>
+              </div>
+            </div>
+          </div>
+          <div class="kpi-card" style="border-color:#FF6B00">
+            <div class="flex justify-between items-start">
+              <div>
+                <p class="text-xs text-gray-500 font-medium">TASK TRỄ HẠN</p>
+                <p class="text-3xl font-bold text-red-600 mt-1" id="kpiOverdue">-</p>
+                <p class="text-xs text-orange-600 mt-1"><i class="fas fa-exclamation-triangle mr-1"></i>Cần xử lý</p>
+              </div>
+              <div class="w-12 h-12 rounded-xl bg-orange-100 flex items-center justify-center">
+                <i class="fas fa-exclamation-triangle text-xl text-warning"></i>
+              </div>
+            </div>
+          </div>
+          <div class="kpi-card" style="border-color:#8B5CF6">
+            <div class="flex justify-between items-start">
+              <div>
+                <p class="text-xs text-gray-500 font-medium">TỶ LỆ HOÀN THÀNH</p>
+                <p class="text-3xl font-bold text-purple-600 mt-1" id="kpiRate">-</p>
+                <p class="text-xs text-purple-600 mt-1"><i class="fas fa-chart-line mr-1"></i>Tiến độ chung</p>
+              </div>
+              <div class="w-12 h-12 rounded-xl bg-purple-100 flex items-center justify-center">
+                <i class="fas fa-chart-pie text-xl text-purple-600"></i>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Charts Row 1 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+          <div class="card">
+            <div class="flex justify-between items-center mb-4">
+              <h3 class="font-bold text-gray-800"><i class="fas fa-chart-bar text-primary mr-2"></i>Năng suất nhân sự (30 ngày)</h3>
+            </div>
+            <canvas id="productivityChart" height="200"></canvas>
+          </div>
+          <div class="card">
+            <div class="flex justify-between items-center mb-4">
+              <h3 class="font-bold text-gray-800"><i class="fas fa-chart-pie text-accent mr-2"></i>Phân bổ theo bộ môn</h3>
+            </div>
+            <canvas id="disciplineChart" height="200"></canvas>
+          </div>
+        </div>
+
+        <!-- Charts Row 2 -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+          <div class="card md:col-span-2">
+            <div class="flex justify-between items-center mb-4">
+              <h3 class="font-bold text-gray-800"><i class="fas fa-chart-line text-primary mr-2"></i>Giờ làm việc theo tháng</h3>
+            </div>
+            <canvas id="hoursChart" height="180"></canvas>
+          </div>
+          <div class="card">
+            <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-list-check text-accent mr-2"></i>Tiến độ dự án</h3>
+            <div id="projectProgressList" class="space-y-3"></div>
+          </div>
+        </div>
+
+        <!-- Recent Tasks -->
+        <div class="card">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="font-bold text-gray-800"><i class="fas fa-exclamation-circle text-warning mr-2"></i>Task cần chú ý</h3>
+            <button onclick="navigate('tasks')" class="text-sm text-primary hover:underline">Xem tất cả →</button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500 border-b">
+                <th class="pb-2 font-medium">Tên task</th>
+                <th class="pb-2 font-medium">Dự án</th>
+                <th class="pb-2 font-medium">Phụ trách</th>
+                <th class="pb-2 font-medium">Hạn hoàn thành</th>
+                <th class="pb-2 font-medium">Trạng thái</th>
+                <th class="pb-2 font-medium">Tiến độ</th>
+              </tr></thead>
+              <tbody id="recentTasksTable" class="divide-y"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== PROJECTS ========== -->
+      <div id="page-projects" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Quản lý Dự án</h1>
+            <p class="text-gray-500 text-sm">Danh sách và quản lý các dự án BIM</p>
+          </div>
+          <button id="btnNewProject" onclick="openProjectModal()" class="btn-primary flex items-center gap-2 hidden">
+            <i class="fas fa-plus"></i>Tạo dự án mới
+          </button>
+        </div>
+
+        <!-- Filters -->
+        <div class="card mb-4">
+          <div class="flex flex-wrap gap-3 items-center">
+            <input type="text" id="projectSearch" placeholder="🔍 Tìm kiếm dự án..." class="input-field" style="width:250px" oninput="filterProjects()">
+            <select id="projectStatusFilter" class="select-field" style="width:150px" onchange="filterProjects()">
+              <option value="">Tất cả trạng thái</option>
+              <option value="planning">Lập kế hoạch</option>
+              <option value="active">Đang hoạt động</option>
+              <option value="on_hold">Tạm dừng</option>
+              <option value="completed">Hoàn thành</option>
+            </select>
+            <select id="projectTypeFilter" class="select-field" style="width:160px" onchange="filterProjects()">
+              <option value="">Tất cả loại</option>
+              <option value="building">Công trình</option>
+              <option value="infrastructure">Hạ tầng</option>
+              <option value="transport">Giao thông</option>
+              <option value="energy">Năng lượng</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" id="projectsGrid"></div>
+      </div>
+
+      <!-- PROJECT DETAIL (sub-page) -->
+      <div id="page-project-detail" class="page">
+        <div class="flex items-center gap-3 mb-6">
+          <button onclick="navigate('projects')" class="text-gray-500 hover:text-gray-800"><i class="fas fa-arrow-left text-lg"></i></button>
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800" id="projectDetailName">Chi tiết dự án</h1>
+            <p class="text-gray-500 text-sm" id="projectDetailCode"></p>
+          </div>
+          <span id="projectDetailStatus" class="badge ml-auto"></span>
+        </div>
+        <div id="projectDetailContent"></div>
+      </div>
+
+      <!-- ========== TASKS ========== -->
+      <div id="page-tasks" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Quản lý Công việc</h1>
+            <p class="text-gray-500 text-sm">Theo dõi và quản lý task BIM</p>
+          </div>
+          <button id="btnNewTask" onclick="openTaskModal()" class="btn-primary flex items-center gap-2">
+            <i class="fas fa-plus"></i>Tạo task mới
+          </button>
+        </div>
+
+        <!-- Filters -->
+        <div class="card mb-4">
+          <div class="flex flex-wrap gap-3">
+            <input type="text" id="taskSearch" placeholder="🔍 Tìm kiếm task..." class="input-field" style="width:220px" oninput="filterTasks()">
+            <select id="taskStatusFilter" class="select-field" style="width:140px" onchange="filterTasks()">
+              <option value="">Tất cả TT</option>
+              <option value="todo">Chờ thực hiện</option>
+              <option value="in_progress">Đang làm</option>
+              <option value="review">Đang duyệt</option>
+              <option value="completed">Hoàn thành</option>
+            </select>
+            <select id="taskPriorityFilter" class="select-field" style="width:130px" onchange="filterTasks()">
+              <option value="">Tất cả ưu tiên</option>
+              <option value="urgent">Khẩn cấp</option>
+              <option value="high">Cao</option>
+              <option value="medium">Trung bình</option>
+              <option value="low">Thấp</option>
+            </select>
+            <select id="taskProjectFilter" class="select-field" style="width:180px" onchange="filterTasks()">
+              <option value="">Tất cả dự án</option>
+            </select>
+            <label class="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" id="taskOverdueFilter" onchange="filterTasks()"> Chỉ task trễ hạn
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase tracking-wide">
+                <th class="pb-3 pr-3 font-medium min-w-48">Tên công việc</th>
+                <th class="pb-3 pr-3 font-medium">Dự án</th>
+                <th class="pb-3 pr-3 font-medium">Bộ môn</th>
+                <th class="pb-3 pr-3 font-medium">Ưu tiên</th>
+                <th class="pb-3 pr-3 font-medium">Phụ trách</th>
+                <th class="pb-3 pr-3 font-medium">Hạn</th>
+                <th class="pb-3 pr-3 font-medium">Tiến độ</th>
+                <th class="pb-3 pr-3 font-medium">Trạng thái</th>
+                <th class="pb-3 font-medium">Thao tác</th>
+              </tr></thead>
+              <tbody id="tasksTable" class="divide-y"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== TIMESHEET ========== -->
+      <div id="page-timesheet" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Quản lý Timesheet</h1>
+            <p class="text-gray-500 text-sm">Theo dõi giờ làm việc hàng ngày</p>
+          </div>
+          <button onclick="openTimesheetModal()" class="btn-primary flex items-center gap-2">
+            <i class="fas fa-plus"></i>Thêm timesheet
+          </button>
+        </div>
+
+        <div class="card mb-4">
+          <div class="flex flex-wrap gap-3 items-center">
+            <select id="tsMonthFilter" class="select-field" style="width:120px" onchange="loadTimesheets()">
+              <option value="">Tháng</option>
+            </select>
+            <select id="tsYearFilter" class="select-field" style="width:100px" onchange="loadTimesheets()">
+              <option value="">Năm</option>
+            </select>
+            <select id="tsProjectFilter" class="select-field" style="width:180px" onchange="loadTimesheets()">
+              <option value="">Tất cả dự án</option>
+            </select>
+            <select id="tsUserFilter" class="select-field" style="width:160px" onchange="loadTimesheets()" id="tsUserFilterAdmin">
+              <option value="">Tất cả nhân viên</option>
+            </select>
+            <div class="ml-auto flex gap-2 text-sm text-gray-600 bg-gray-50 px-4 py-2 rounded-lg">
+              <span>Tổng giờ HC: <strong id="tsTotalRegular" class="text-primary">0</strong></span>
+              <span class="mx-2">|</span>
+              <span>Tổng tăng ca: <strong id="tsTotalOvertime" class="text-warning">0</strong></span>
+              <span class="mx-2">|</span>
+              <span>Tổng cộng: <strong id="tsTotalHours" class="text-accent">0</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+                <th class="pb-3 pr-3 font-medium">Ngày</th>
+                <th class="pb-3 pr-3 font-medium">Nhân viên</th>
+                <th class="pb-3 pr-3 font-medium">Dự án</th>
+                <th class="pb-3 pr-3 font-medium">Task</th>
+                <th class="pb-3 pr-3 font-medium text-center">Giờ HC</th>
+                <th class="pb-3 pr-3 font-medium text-center">Tăng ca</th>
+                <th class="pb-3 pr-3 font-medium text-center">Tổng</th>
+                <th class="pb-3 pr-3 font-medium">Mô tả</th>
+                <th class="pb-3 pr-3 font-medium">Trạng thái</th>
+                <th class="pb-3 font-medium">Thao tác</th>
+              </tr></thead>
+              <tbody id="timesheetTable" class="divide-y"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== GANTT ========== -->
+      <div id="page-gantt" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Tiến độ Gantt</h1>
+            <p class="text-gray-500 text-sm">Timeline tổng quan tiến độ dự án</p>
+          </div>
+          <select id="ganttProjectSelect" class="select-field" style="width:220px" onchange="renderGantt()">
+            <option value="">Chọn dự án...</option>
+          </select>
+        </div>
+        <div class="card" id="ganttContainer">
+          <div class="text-center text-gray-400 py-12">
+            <i class="fas fa-chart-gantt text-5xl mb-3"></i>
+            <p>Chọn dự án để xem tiến độ Gantt</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== COSTS ========== -->
+      <div id="page-costs" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Quản lý Chi phí & Doanh thu</h1>
+            <p class="text-gray-500 text-sm">Theo dõi tài chính dự án</p>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="openCostModal('revenue')" class="btn-accent flex items-center gap-2 text-sm"><i class="fas fa-plus"></i>Doanh thu</button>
+            <button onclick="openCostModal('cost')" class="btn-primary flex items-center gap-2 text-sm"><i class="fas fa-plus"></i>Chi phí</button>
+          </div>
+        </div>
+
+        <!-- KPI -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div class="kpi-card" style="border-color:#00A651">
+            <p class="text-xs text-gray-500">TỔNG DOANH THU</p>
+            <p class="text-2xl font-bold text-green-600 mt-1" id="costKpiRevenue">-</p>
+          </div>
+          <div class="kpi-card" style="border-color:#EF4444">
+            <p class="text-xs text-gray-500">TỔNG CHI PHÍ</p>
+            <p class="text-2xl font-bold text-red-600 mt-1" id="costKpiCost">-</p>
+          </div>
+          <div class="kpi-card" style="border-color:#8B5CF6">
+            <p class="text-xs text-gray-500">LỢI NHUẬN</p>
+            <p class="text-2xl font-bold text-purple-600 mt-1" id="costKpiProfit">-</p>
+          </div>
+          <div class="kpi-card" style="border-color:#F59E0B">
+            <p class="text-xs text-gray-500">TỶ SUẤT LỢI NHUẬN</p>
+            <p class="text-2xl font-bold text-yellow-600 mt-1" id="costKpiMargin">-</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+          <div class="card">
+            <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-chart-bar text-primary mr-2"></i>Doanh thu/Chi phí theo dự án</h3>
+            <canvas id="costProjectChart" height="220"></canvas>
+          </div>
+          <div class="card">
+            <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-chart-line text-accent mr-2"></i>Xu hướng tài chính theo tháng</h3>
+            <canvas id="costMonthlyChart" height="220"></canvas>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="card">
+          <div class="flex gap-2 mb-4">
+            <button onclick="switchCostTab('costs')" id="tabCosts" class="tab-btn active">Chi phí</button>
+            <button onclick="switchCostTab('revenues')" id="tabRevenues" class="tab-btn">Doanh thu</button>
+          </div>
+          <div id="costFilter" class="flex gap-3 mb-4 flex-wrap">
+            <select id="costProjectFilter" class="select-field" style="width:180px" onchange="loadCosts()">
+              <option value="">Tất cả dự án</option>
+            </select>
+            <select id="costYearFilter" class="select-field" style="width:100px" onchange="loadCosts()">
+              <option value="2024">2024</option>
+              <option value="2025">2025</option>
+            </select>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm" id="costTable">
+              <thead id="costTableHead"></thead>
+              <tbody id="costTableBody" class="divide-y"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== ASSETS ========== -->
+      <div id="page-assets" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Quản lý Tài sản</h1>
+            <p class="text-gray-500 text-sm">Theo dõi thiết bị và tài sản công ty</p>
+          </div>
+          <button onclick="openAssetModal()" class="btn-primary flex items-center gap-2">
+            <i class="fas fa-plus"></i>Thêm tài sản
+          </button>
+        </div>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6" id="assetStats"></div>
+
+        <!-- Filters -->
+        <div class="card mb-4">
+          <div class="flex flex-wrap gap-3">
+            <input type="text" id="assetSearch" placeholder="🔍 Tìm tài sản..." class="input-field" style="width:220px" oninput="filterAssets()">
+            <select id="assetCategoryFilter" class="select-field" style="width:150px" onchange="filterAssets()">
+              <option value="">Tất cả loại</option>
+              <option value="computer">Máy tính</option>
+              <option value="laptop">Laptop</option>
+              <option value="software">Phần mềm</option>
+              <option value="equipment">Thiết bị</option>
+              <option value="furniture">Nội thất</option>
+              <option value="vehicle">Phương tiện</option>
+              <option value="other">Khác</option>
+            </select>
+            <select id="assetStatusFilter" class="select-field" style="width:140px" onchange="filterAssets()">
+              <option value="">Tất cả TT</option>
+              <option value="active">Đang dùng</option>
+              <option value="maintenance">Bảo trì</option>
+              <option value="repair">Sửa chữa</option>
+              <option value="retired">Thanh lý</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+                <th class="pb-3 pr-3">Mã tài sản</th>
+                <th class="pb-3 pr-3">Tên tài sản</th>
+                <th class="pb-3 pr-3">Loại</th>
+                <th class="pb-3 pr-3">Thương hiệu/Model</th>
+                <th class="pb-3 pr-3">Phòng ban</th>
+                <th class="pb-3 pr-3">Người sử dụng</th>
+                <th class="pb-3 pr-3 text-right">Giá trị</th>
+                <th class="pb-3 pr-3">Trạng thái</th>
+                <th class="pb-3">Thao tác</th>
+              </tr></thead>
+              <tbody id="assetsTable" class="divide-y"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== USERS ========== -->
+      <div id="page-users" class="page">
+        <div class="flex justify-between items-center mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-gray-800">Quản lý Nhân sự</h1>
+            <p class="text-gray-500 text-sm">Danh sách tài khoản và phân quyền</p>
+          </div>
+          <button onclick="openUserModal()" class="btn-primary flex items-center gap-2">
+            <i class="fas fa-user-plus"></i>Tạo tài khoản
+          </button>
+        </div>
+
+        <div class="card mb-4">
+          <div class="flex gap-3 flex-wrap">
+            <input type="text" id="userSearch" placeholder="🔍 Tìm nhân sự..." class="input-field" style="width:220px" oninput="filterUsers()">
+            <select id="userRoleFilter" class="select-field" style="width:160px" onchange="filterUsers()">
+              <option value="">Tất cả vai trò</option>
+              <option value="system_admin">System Admin</option>
+              <option value="project_admin">Project Admin</option>
+              <option value="project_leader">Project Leader</option>
+              <option value="member">Member</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500 border-b text-xs uppercase">
+                <th class="pb-3 pr-3">Nhân viên</th>
+                <th class="pb-3 pr-3">Tài khoản</th>
+                <th class="pb-3 pr-3">Email</th>
+                <th class="pb-3 pr-3">Phòng ban</th>
+                <th class="pb-3 pr-3">Vai trò</th>
+                <th class="pb-3 pr-3">Trạng thái</th>
+                <th class="pb-3">Thao tác</th>
+              </tr></thead>
+              <tbody id="usersTable" class="divide-y"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== PROFILE ========== -->
+      <div id="page-profile" class="page">
+        <h1 class="text-2xl font-bold text-gray-800 mb-6">Hồ sơ cá nhân</h1>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div class="card text-center">
+            <div class="w-24 h-24 rounded-full bg-primary flex items-center justify-center text-white text-4xl font-bold mx-auto mb-4" id="profileAvatar">A</div>
+            <h3 class="text-xl font-bold text-gray-800" id="profileName">Admin</h3>
+            <p class="text-gray-500 text-sm" id="profileRole">System Admin</p>
+            <p class="text-gray-400 text-sm mt-1" id="profileDept">-</p>
+            <div class="mt-4 pt-4 border-t text-sm text-gray-600 space-y-2">
+              <div class="flex items-center gap-2"><i class="fas fa-envelope text-primary w-4"></i><span id="profileEmail">-</span></div>
+              <div class="flex items-center gap-2"><i class="fas fa-phone text-primary w-4"></i><span id="profilePhone">-</span></div>
+            </div>
+          </div>
+          <div class="md:col-span-2 space-y-6">
+            <div class="card">
+              <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-user-edit text-primary mr-2"></i>Cập nhật thông tin</h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="label">Họ tên đầy đủ</label>
+                  <input type="text" id="profileFullName" class="input-field">
+                </div>
+                <div>
+                  <label class="label">Email</label>
+                  <input type="email" id="profileEmailInput" class="input-field">
+                </div>
+                <div>
+                  <label class="label">Số điện thoại</label>
+                  <input type="tel" id="profilePhoneInput" class="input-field">
+                </div>
+                <div>
+                  <label class="label">Phòng ban</label>
+                  <input type="text" id="profileDeptInput" class="input-field">
+                </div>
+              </div>
+              <button onclick="updateProfile()" class="btn-primary mt-4 px-6">Lưu thay đổi</button>
+            </div>
+            <div class="card">
+              <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-lock text-primary mr-2"></i>Đổi mật khẩu</h3>
+              <div class="space-y-3">
+                <div>
+                  <label class="label">Mật khẩu hiện tại</label>
+                  <input type="password" id="oldPassword" class="input-field" placeholder="Nhập mật khẩu hiện tại">
+                </div>
+                <div>
+                  <label class="label">Mật khẩu mới</label>
+                  <input type="password" id="newPassword" class="input-field" placeholder="Ít nhất 8 ký tự">
+                </div>
+                <div>
+                  <label class="label">Xác nhận mật khẩu mới</label>
+                  <input type="password" id="confirmPassword" class="input-field" placeholder="Nhập lại mật khẩu mới">
+                </div>
+                <button onclick="changePassword()" class="btn-primary px-6">Đổi mật khẩu</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- End Pages -->
+  </div><!-- End Main Content -->
+</div><!-- End Main App -->
+
+<!-- ========== MODALS ========== -->
+
+<!-- Project Modal -->
+<div id="projectModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="projectModalTitle">Tạo dự án mới</h3>
+      <button onclick="closeModal('projectModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="projectForm" class="space-y-4">
+      <input type="hidden" id="projectId">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Mã dự án *</label>
+          <input type="text" id="projectCode" class="input-field" placeholder="VD: PRJ001" required>
+        </div>
+        <div>
+          <label class="label">Tên dự án *</label>
+          <input type="text" id="projectName" class="input-field" placeholder="Tên đầy đủ của dự án" required>
+        </div>
+      </div>
+      <div>
+        <label class="label">Mô tả</label>
+        <textarea id="projectDesc" class="input-field" rows="2" placeholder="Mô tả ngắn về dự án"></textarea>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Chủ đầu tư</label>
+          <input type="text" id="projectClient" class="input-field" placeholder="Tên chủ đầu tư">
+        </div>
+        <div>
+          <label class="label">Loại dự án</label>
+          <select id="projectType" class="select-field">
+            <option value="building">Công trình</option>
+            <option value="infrastructure">Hạ tầng</option>
+            <option value="transport">Giao thông</option>
+            <option value="energy">Năng lượng</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Ngày bắt đầu</label>
+          <input type="date" id="projectStartDate" class="input-field">
+        </div>
+        <div>
+          <label class="label">Ngày kết thúc</label>
+          <input type="date" id="projectEndDate" class="input-field">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Giá trị hợp đồng (VNĐ)</label>
+          <input type="number" id="projectContractValue" class="input-field" placeholder="0">
+        </div>
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="projectStatus" class="select-field">
+            <option value="planning">Lập kế hoạch</option>
+            <option value="active">Đang hoạt động</option>
+            <option value="on_hold">Tạm dừng</option>
+            <option value="completed">Hoàn thành</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="label">Địa điểm</label>
+        <input type="text" id="projectLocation" class="input-field" placeholder="Địa điểm thực hiện dự án">
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Project Admin</label>
+          <select id="projectAdmin" class="select-field"></select>
+        </div>
+        <div>
+          <label class="label">Project Leader</label>
+          <select id="projectLeader" class="select-field"><option value="">-- Chọn leader --</option></select>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" onclick="closeModal('projectModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary">Lưu dự án</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Task Modal -->
+<div id="taskModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="taskModalTitle">Tạo task mới</h3>
+      <button onclick="closeModal('taskModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="taskForm" class="space-y-4">
+      <input type="hidden" id="taskId">
+      <div>
+        <label class="label">Tên công việc *</label>
+        <input type="text" id="taskTitle" class="input-field" placeholder="Mô tả ngắn về công việc" required>
+      </div>
+      <div>
+        <label class="label">Mô tả chi tiết</label>
+        <textarea id="taskDesc" class="input-field" rows="2" placeholder="Yêu cầu, tiêu chí nghiệm thu..."></textarea>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Dự án *</label>
+          <select id="taskProject" class="select-field" onchange="loadTaskCategories()" required></select>
+        </div>
+        <div>
+          <label class="label">Hạng mục</label>
+          <select id="taskCategory" class="select-field"></select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Bộ môn</label>
+          <select id="taskDiscipline" class="select-field"></select>
+        </div>
+        <div>
+          <label class="label">Giai đoạn</label>
+          <select id="taskPhase" class="select-field">
+            <option value="basic_design">Thiết kế cơ sở</option>
+            <option value="technical_design">Thiết kế kỹ thuật</option>
+            <option value="construction_design">Thiết kế thi công</option>
+            <option value="as_built">Hoàn công</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Ưu tiên</label>
+          <select id="taskPriority" class="select-field">
+            <option value="low">Thấp</option>
+            <option value="medium" selected>Trung bình</option>
+            <option value="high">Cao</option>
+            <option value="urgent">Khẩn cấp</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="taskStatus" class="select-field">
+            <option value="todo">Chờ thực hiện</option>
+            <option value="in_progress">Đang thực hiện</option>
+            <option value="review">Đang duyệt</option>
+            <option value="completed">Hoàn thành</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Phụ trách</label>
+          <select id="taskAssignee" class="select-field"></select>
+        </div>
+        <div>
+          <label class="label">Giờ dự kiến</label>
+          <input type="number" id="taskEstHours" class="input-field" placeholder="0">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Ngày bắt đầu</label>
+          <input type="date" id="taskStartDate" class="input-field">
+        </div>
+        <div>
+          <label class="label">Ngày hết hạn</label>
+          <input type="date" id="taskDueDate" class="input-field">
+        </div>
+      </div>
+      <div>
+        <label class="label">% Hoàn thành: <span id="taskProgressLabel">0</span>%</label>
+        <input type="range" id="taskProgress" min="0" max="100" value="0" class="w-full" oninput="document.getElementById('taskProgressLabel').textContent=this.value">
+      </div>
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" onclick="closeModal('taskModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary">Lưu công việc</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Timesheet Modal -->
+<div id="timesheetModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="tsModalTitle">Thêm Timesheet</h3>
+      <button onclick="closeModal('timesheetModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="tsForm" class="space-y-4">
+      <input type="hidden" id="tsId">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Ngày làm việc *</label>
+          <input type="date" id="tsDate" class="input-field" required>
+        </div>
+        <div>
+          <label class="label">Dự án *</label>
+          <select id="tsProject" class="select-field" onchange="loadTsTasks()" required></select>
+        </div>
+      </div>
+      <div>
+        <label class="label">Task (tùy chọn)</label>
+        <select id="tsTask" class="select-field"></select>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Giờ hành chính</label>
+          <input type="number" id="tsRegularHours" class="input-field" value="8" min="0" max="24" step="0.5">
+        </div>
+        <div>
+          <label class="label">Giờ tăng ca</label>
+          <input type="number" id="tsOvertimeHours" class="input-field" value="0" min="0" max="24" step="0.5">
+        </div>
+      </div>
+      <div>
+        <label class="label">Mô tả công việc</label>
+        <textarea id="tsDescription" class="input-field" rows="2" placeholder="Tóm tắt công việc đã thực hiện trong ngày"></textarea>
+      </div>
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" onclick="closeModal('timesheetModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary">Lưu timesheet</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Cost Modal -->
+<div id="costModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="costModalTitle">Thêm Chi phí</h3>
+      <button onclick="closeModal('costModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="costForm" class="space-y-4">
+      <input type="hidden" id="costId">
+      <input type="hidden" id="costMode">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Dự án *</label>
+          <select id="costProject" class="select-field" required></select>
+        </div>
+        <div id="costTypeGroup">
+          <label class="label">Loại chi phí *</label>
+          <select id="costType" class="select-field" required>
+            <option value="salary">Lương nhân sự</option>
+            <option value="equipment">Thiết bị</option>
+            <option value="material">Vật liệu</option>
+            <option value="travel">Đi lại</option>
+            <option value="office">Văn phòng</option>
+            <option value="other">Khác</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="label">Mô tả *</label>
+        <input type="text" id="costDescription" class="input-field" placeholder="Mô tả chi phí/doanh thu" required>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Số tiền (VNĐ) *</label>
+          <input type="number" id="costAmount" class="input-field" placeholder="0" required>
+        </div>
+        <div>
+          <label class="label">Ngày</label>
+          <input type="date" id="costDate" class="input-field">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Số hóa đơn</label>
+          <input type="text" id="costInvoice" class="input-field" placeholder="Số hóa đơn">
+        </div>
+        <div>
+          <label class="label">Nhà cung cấp</label>
+          <input type="text" id="costVendor" class="input-field" placeholder="Tên nhà cung cấp">
+        </div>
+      </div>
+      <div>
+        <label class="label">Ghi chú</label>
+        <textarea id="costNotes" class="input-field" rows="2"></textarea>
+      </div>
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" onclick="closeModal('costModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary" id="costSaveBtn">Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Asset Modal -->
+<div id="assetModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="assetModalTitle">Thêm tài sản mới</h3>
+      <button onclick="closeModal('assetModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="assetForm" class="space-y-4">
+      <input type="hidden" id="assetId">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Mã tài sản *</label>
+          <input type="text" id="assetCode" class="input-field" placeholder="VD: PC-001" required>
+        </div>
+        <div>
+          <label class="label">Tên tài sản *</label>
+          <input type="text" id="assetName" class="input-field" placeholder="Tên đầy đủ" required>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Loại *</label>
+          <select id="assetCategory" class="select-field" required>
+            <option value="computer">Máy tính</option>
+            <option value="laptop">Laptop</option>
+            <option value="software">Phần mềm</option>
+            <option value="equipment">Thiết bị</option>
+            <option value="furniture">Nội thất</option>
+            <option value="vehicle">Phương tiện</option>
+            <option value="other">Khác</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Trạng thái</label>
+          <select id="assetStatus" class="select-field">
+            <option value="active">Đang sử dụng</option>
+            <option value="maintenance">Bảo trì</option>
+            <option value="repair">Sửa chữa</option>
+            <option value="retired">Thanh lý</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Thương hiệu</label>
+          <input type="text" id="assetBrand" class="input-field" placeholder="Dell, HP, Apple...">
+        </div>
+        <div>
+          <label class="label">Model</label>
+          <input type="text" id="assetModel" class="input-field" placeholder="Model cụ thể">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Serial Number</label>
+          <input type="text" id="assetSerial" class="input-field" placeholder="Số serial">
+        </div>
+        <div>
+          <label class="label">Ngày mua</label>
+          <input type="date" id="assetPurchaseDate" class="input-field">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Giá mua (VNĐ)</label>
+          <input type="number" id="assetPurchasePrice" class="input-field" placeholder="0">
+        </div>
+        <div>
+          <label class="label">Giá trị hiện tại (VNĐ)</label>
+          <input type="number" id="assetCurrentValue" class="input-field" placeholder="0">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Phòng ban</label>
+          <input type="text" id="assetDepartment" class="input-field" placeholder="Tên phòng ban">
+        </div>
+        <div>
+          <label class="label">Người sử dụng</label>
+          <select id="assetAssignedTo" class="select-field"></select>
+        </div>
+      </div>
+      <div>
+        <label class="label">Thông số kỹ thuật</label>
+        <textarea id="assetSpecs" class="input-field" rows="2" placeholder="CPU, RAM, ổ cứng..."></textarea>
+      </div>
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" onclick="closeModal('assetModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary">Lưu tài sản</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- User Modal -->
+<div id="userModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="userModalTitle">Tạo tài khoản mới</h3>
+      <button onclick="closeModal('userModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="userForm" class="space-y-4">
+      <input type="hidden" id="userId">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Tên đăng nhập *</label>
+          <input type="text" id="userUsername" class="input-field" placeholder="VD: nguyen.van.a" required>
+        </div>
+        <div>
+          <label class="label">Mật khẩu *</label>
+          <input type="password" id="userPassword" class="input-field" placeholder="Mật khẩu ban đầu">
+        </div>
+      </div>
+      <div>
+        <label class="label">Họ tên đầy đủ *</label>
+        <input type="text" id="userFullName" class="input-field" placeholder="Họ và tên đầy đủ" required>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Email</label>
+          <input type="email" id="userEmail" class="input-field" placeholder="email@onecad.vn">
+        </div>
+        <div>
+          <label class="label">Số điện thoại</label>
+          <input type="tel" id="userPhone" class="input-field" placeholder="0901234567">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Vai trò *</label>
+          <select id="userRole" class="select-field" required>
+            <option value="member">Member</option>
+            <option value="project_leader">Project Leader</option>
+            <option value="project_admin">Project Admin</option>
+            <option value="system_admin">System Admin</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Phòng ban</label>
+          <input type="text" id="userDepartment" class="input-field" placeholder="Kiến trúc, Kết cấu...">
+        </div>
+      </div>
+      <div>
+        <label class="label">Lương tháng (VNĐ)</label>
+        <input type="number" id="userSalary" class="input-field" placeholder="Lương hàng tháng">
+      </div>
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" onclick="closeModal('userModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary">Tạo tài khoản</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Category Modal -->
+<div id="categoryModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="catModalTitle">Thêm hạng mục</h3>
+      <button onclick="closeModal('categoryModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <form id="categoryForm" class="space-y-4">
+      <input type="hidden" id="catId">
+      <input type="hidden" id="catProjectId">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Tên hạng mục *</label>
+          <input type="text" id="catName" class="input-field" placeholder="Tên hạng mục" required>
+        </div>
+        <div>
+          <label class="label">Mã hạng mục</label>
+          <input type="text" id="catCode" class="input-field" placeholder="VD: CAT-AA">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Bộ môn</label>
+          <select id="catDiscipline" class="select-field"></select>
+        </div>
+        <div>
+          <label class="label">Giai đoạn</label>
+          <select id="catPhase" class="select-field">
+            <option value="basic_design">Thiết kế cơ sở</option>
+            <option value="technical_design">Thiết kế kỹ thuật</option>
+            <option value="construction_design">Thiết kế thi công</option>
+            <option value="as_built">Hoàn công</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="label">Ngày bắt đầu</label>
+          <input type="date" id="catStartDate" class="input-field">
+        </div>
+        <div>
+          <label class="label">Ngày kết thúc</label>
+          <input type="date" id="catEndDate" class="input-field">
+        </div>
+      </div>
+      <div>
+        <label class="label">Mô tả</label>
+        <textarea id="catDescription" class="input-field" rows="2"></textarea>
+      </div>
+      <div class="flex justify-end gap-3">
+        <button type="button" onclick="closeModal('categoryModal')" class="btn-secondary">Hủy</button>
+        <button type="submit" class="btn-primary">Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Add Member Modal -->
+<div id="addMemberModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800">Thêm thành viên dự án</h3>
+      <button onclick="closeModal('addMemberModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <div class="space-y-4">
+      <input type="hidden" id="memberProjectId">
+      <div>
+        <label class="label">Nhân viên</label>
+        <select id="memberUserId" class="select-field"></select>
+      </div>
+      <div>
+        <label class="label">Vai trò trong dự án</label>
+        <select id="memberRole" class="select-field">
+          <option value="member">Member</option>
+          <option value="project_leader">Project Leader</option>
+          <option value="project_admin">Project Admin</option>
+        </select>
+      </div>
+      <div class="flex justify-end gap-3">
+        <button type="button" onclick="closeModal('addMemberModal')" class="btn-secondary">Hủy</button>
+        <button onclick="addMemberToProject()" class="btn-primary">Thêm</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Task Detail Modal -->
+<div id="taskDetailModal" class="modal-overlay" style="display:none">
+  <div class="modal p-6 max-w-2xl">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-bold text-gray-800" id="taskDetailTitle">Chi tiết Task</h3>
+      <button onclick="closeModal('taskDetailModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+    </div>
+    <div id="taskDetailContent"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
