@@ -1108,16 +1108,16 @@ async function loadTimesheets() {
     if (!allProjects.length) allProjects = await api('/projects')
     if (!allUsers.length) allUsers = await api('/users')
 
-    const isAdmin  = currentUser.role === 'system_admin'
+    const isAdmin     = currentUser.role === 'system_admin'
     const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
-    const canSeeAll = isAdmin || isProjAdmin
+    const canSeeAll   = isAdmin || isProjAdmin
 
     // Subtitle theo role
     const subtitle = $('tsPageSubtitle')
     if (subtitle) {
-      if (isAdmin)       subtitle.textContent = 'Xem toàn bộ timesheet tất cả thành viên, tất cả dự án'
+      if (isAdmin)          subtitle.textContent = 'Xem toàn bộ timesheet tất cả thành viên, tất cả dự án'
       else if (isProjAdmin) subtitle.textContent = 'Xem & duyệt timesheet của các thành viên trong dự án bạn quản lý'
-      else               subtitle.textContent = 'Timesheet cá nhân của bạn'
+      else                  subtitle.textContent = 'Timesheet cá nhân của bạn'
     }
 
     // Summary cards — chỉ admin / project_admin
@@ -1148,22 +1148,19 @@ async function loadTimesheets() {
       })
     }
 
-    // Project filter — tất cả đều có
+    // Project filter
     const tsProj = $('tsProjectFilter')
     if (tsProj) {
       tsProj.innerHTML = '<option value="">Tất cả dự án</option>' +
         allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
     }
 
-    // User filter — chỉ hiện với project_admin / system_admin
+    // User filter — only admin/project_admin
     const tsUserF = $('tsUserFilter')
     if (tsUserF) {
       if (canSeeAll) {
         tsUserF.classList.remove('hidden')
-        // system_admin thấy tất cả user; project_admin chỉ thấy member trong dự án mình
-        const usersForFilter = isAdmin
-          ? allUsers
-          : allUsers.filter(u => u.role !== 'system_admin')
+        const usersForFilter = isAdmin ? allUsers : allUsers.filter(u => u.role !== 'system_admin')
         tsUserF.innerHTML = '<option value="">Tất cả nhân viên</option>' +
           usersForFilter.map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
       } else {
@@ -1171,7 +1168,7 @@ async function loadTimesheets() {
       }
     }
 
-    // Status filter — chỉ hiện với admin / project_admin
+    // Status filter
     const tsStatusF = $('tsStatusFilter')
     if (tsStatusF) tsStatusF.classList.toggle('hidden', !canSeeAll)
 
@@ -1189,20 +1186,23 @@ async function loadTimesheets() {
     if (userId)    url += `user_id=${userId}&`
     if (status)    url += `status=${status}&`
 
-    allTimesheets = await api(url)
-    renderTimesheetTable(allTimesheets)
+    const resp = await api(url)
+    // API now returns { timesheets: [...], summary: {...} }
+    allTimesheets = Array.isArray(resp) ? resp : (resp.timesheets || [])
+    const apiSummary = (!Array.isArray(resp) && resp.summary) ? resp.summary : null
 
-    // Cập nhật summary cards
-    if (canSeeAll && allTimesheets.length) {
-      const pending  = allTimesheets.filter(t => t.status === 'submitted').length
-      const approved = allTimesheets.filter(t => t.status === 'approved').length
-      const totalH   = allTimesheets.reduce((s, t) => s + (t.regular_hours||0) + (t.overtime_hours||0), 0)
-      if ($('tsCardTotal'))    $('tsCardTotal').textContent   = allTimesheets.length
-      if ($('tsCardPending'))  $('tsCardPending').textContent = pending
+    renderTimesheetTable(allTimesheets, apiSummary)
+
+    // Update summary cards from API summary (accurate, no JOIN inflation)
+    if (canSeeAll) {
+      const pending   = allTimesheets.filter(t => t.status === 'submitted').length
+      const approved  = allTimesheets.filter(t => t.status === 'approved').length
+      const totalH    = apiSummary ? apiSummary.total_hours : allTimesheets.reduce((s, t) => s + (t.regular_hours||0) + (t.overtime_hours||0), 0)
+      if ($('tsCardTotal'))    $('tsCardTotal').textContent    = allTimesheets.length
+      if ($('tsCardPending'))  $('tsCardPending').textContent  = pending
       if ($('tsCardApproved')) $('tsCardApproved').textContent = approved
-      if ($('tsCardHours'))    $('tsCardHours').textContent   = totalH + 'h'
+      if ($('tsCardHours'))    $('tsCardHours').textContent    = totalH + 'h'
 
-      // Show bulk approve button if there are pending timesheets
       const bulkBtn = $('tsBulkApproveBtn')
       if (bulkBtn) {
         if (pending > 0) {
@@ -1216,10 +1216,114 @@ async function loadTimesheets() {
       const bulkBtn = $('tsBulkApproveBtn')
       if (bulkBtn) bulkBtn.classList.add('hidden')
     }
+
+    // Monthly breakdown panel — admin/project_admin only
+    const dashPanel = $('tsDashboardPanel')
+    if (dashPanel) {
+      if (canSeeAll) {
+        dashPanel.classList.remove('hidden')
+        const mon = $('tsMonthFilter')?.value
+        const yr  = $('tsYearFilter')?.value
+        if (mon && yr) {
+          try {
+            const dash = await api(`/timesheet-dashboard/${mon}/${yr}`)
+            // Member breakdown
+            const memberDiv = $('tsMemberBreakdown')
+            if (memberDiv) {
+              if (dash.by_member && dash.by_member.length) {
+                memberDiv.innerHTML = dash.by_member.map(m => `
+                  <div class="flex items-center justify-between py-1 border-b border-gray-50">
+                    <div class="flex items-center gap-2">
+                      <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(m.full_name||'?').split(' ').pop()?.charAt(0)}</div>
+                      <span class="font-medium text-gray-700">${m.full_name}</span>
+                    </div>
+                    <div class="text-right text-xs">
+                      <span class="font-bold text-primary">${m.total_hours}h</span>
+                      <span class="text-gray-400 ml-1">(HC: ${m.regular_hours}h + OT: ${m.overtime_hours}h)</span>
+                    </div>
+                  </div>`).join('')
+              } else {
+                memberDiv.innerHTML = '<p class="text-gray-400 text-center py-4">Không có dữ liệu</p>'
+              }
+            }
+            // Project breakdown
+            const projDiv = $('tsProjectBreakdown')
+            if (projDiv) {
+              if (dash.by_project && dash.by_project.length) {
+                projDiv.innerHTML = dash.by_project.map(p => `
+                  <div class="flex items-center justify-between py-1 border-b border-gray-50">
+                    <div>
+                      <span class="font-medium text-gray-700">${p.code}</span>
+                      <span class="text-gray-500 ml-1 text-xs">${p.name}</span>
+                    </div>
+                    <div class="text-right text-xs">
+                      <span class="font-bold text-accent">${p.total_hours}h</span>
+                      <span class="text-gray-400 ml-1">${p.member_count} người</span>
+                    </div>
+                  </div>`).join('')
+              } else {
+                projDiv.innerHTML = '<p class="text-gray-400 text-center py-4">Không có dữ liệu</p>'
+              }
+            }
+            // Warn if duplicates detected
+            if (dash.summary?.duplicate_groups > 0) {
+              toast(`⚠️ Phát hiện ${dash.summary.duplicate_groups} nhóm timesheet trùng lặp! Liên hệ admin để dọn dẹp.`, 'warning')
+            }
+          } catch (_) { /* silent fallback */ }
+        }
+      } else {
+        dashPanel.classList.add('hidden')
+      }
+    }
   } catch (e) { toast('Lỗi tải timesheet: ' + e.message, 'error') }
 }
 
-function renderTimesheetTable(timesheets) {
+function resetTimesheetFilters() {
+  // Reset month to current
+  const now = new Date()
+  const m = $('tsMonthFilter'); if (m) m.value = String(now.getMonth() + 1).padStart(2, '0')
+  const y = $('tsYearFilter');  if (y) y.value = String(now.getFullYear())
+  const p = $('tsProjectFilter'); if (p) p.value = ''
+  const u = $('tsUserFilter');    if (u) u.value = ''
+  const s = $('tsStatusFilter'); if (s) s.value = ''
+  loadTimesheets()
+}
+
+function exportTimesheetExcel() {
+  if (!allTimesheets.length) { toast('Không có dữ liệu để xuất', 'warning'); return }
+  const isAdmin     = currentUser.role === 'system_admin'
+  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
+  const canSeeAll   = isAdmin || isProjAdmin
+  const statusLabels = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
+
+  // Build CSV rows
+  const headers = ['Ngày', canSeeAll ? 'Nhân viên' : '', 'Dự án', 'Task', 'Giờ HC', 'Tăng ca', 'Tổng giờ', 'Mô tả', 'Trạng thái'].filter(Boolean)
+  const rows = allTimesheets.map(t => {
+    const base = [t.work_date, t.project_code || '', t.task_title || '', t.regular_hours, t.overtime_hours, (t.regular_hours + t.overtime_hours), (t.description || '').replace(/"/g, '""'), statusLabels[t.status] || t.status]
+    return canSeeAll ? [t.work_date, t.user_name || '', t.project_code || '', t.task_title || '', t.regular_hours, t.overtime_hours, (t.regular_hours + t.overtime_hours), (t.description || '').replace(/"/g, '""'), statusLabels[t.status] || t.status] : base
+  })
+
+  // Totals row
+  let totalReg = 0, totalOT = 0
+  allTimesheets.forEach(t => { totalReg += t.regular_hours || 0; totalOT += t.overtime_hours || 0 })
+  const totalRow = canSeeAll
+    ? ['TỔNG CỘNG', '', '', '', totalReg, totalOT, totalReg + totalOT, '', '']
+    : ['TỔNG CỘNG', '', '', totalReg, totalOT, totalReg + totalOT, '', '']
+
+  const csvLines = [headers, ...rows, totalRow].map(r => r.map(v => `"${v}"`).join(','))
+  const csvContent = '\uFEFF' + csvLines.join('\n') // BOM for Excel UTF-8
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  const month = $('tsMonthFilter')?.value || ''
+  const year  = $('tsYearFilter')?.value  || new Date().getFullYear()
+  a.href = url; a.download = `timesheet_${year}_${month}.csv`
+  a.click(); URL.revokeObjectURL(url)
+  toast('Xuất Excel thành công', 'success')
+}
+
+function renderTimesheetTable(timesheets, apiSummary = null) {
   const tbody = $('timesheetTable')
   if (!tbody) return
 
@@ -1228,11 +1332,18 @@ function renderTimesheetTable(timesheets) {
   const canSeeAll   = isAdmin || isProjAdmin
   const canApprove  = isAdmin || isProjAdmin
 
-  let totalReg = 0, totalOT = 0
-  timesheets.forEach(t => { totalReg += t.regular_hours || 0; totalOT += t.overtime_hours || 0 })
-  $('tsTotalRegular').textContent = totalReg + 'h'
+  // Use API summary if available (avoids JS re-sum from potentially stale allTimesheets)
+  let totalReg, totalOT
+  if (apiSummary) {
+    totalReg = apiSummary.total_regular_hours || 0
+    totalOT  = apiSummary.total_overtime_hours || 0
+  } else {
+    totalReg = 0; totalOT = 0
+    timesheets.forEach(t => { totalReg += t.regular_hours || 0; totalOT += t.overtime_hours || 0 })
+  }
+  $('tsTotalRegular').textContent  = totalReg + 'h'
   $('tsTotalOvertime').textContent = totalOT + 'h'
-  $('tsTotalHours').textContent = (totalReg + totalOT) + 'h'
+  $('tsTotalHours').textContent    = (totalReg + totalOT) + 'h'
 
   // Ẩn/hiện cột "Nhân viên"
   document.querySelectorAll('.ts-col-user').forEach(el => {

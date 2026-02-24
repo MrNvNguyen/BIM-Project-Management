@@ -768,6 +768,131 @@ async function isProjectAdmin(db: D1Database, userId: number, projectId: number)
   return !!mem
 }
 
+// ===================================================
+// GET /api/members — list all non-admin active users (for dropdowns)
+// ===================================================
+app.get('/api/members', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const result = await db.prepare(
+      `SELECT id, full_name, department, role, email
+       FROM users
+       WHERE is_active = 1 AND role != 'system_admin'
+       ORDER BY full_name ASC`
+    ).all()
+    return c.json(result.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// POST /api/admin/dedup-timesheets — remove duplicate timesheet rows
+// (same user_id, project_id, work_date) keeping earliest id
+// ===================================================
+app.post('/api/admin/dedup-timesheets', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    // Find duplicates
+    const dups = await db.prepare(`
+      SELECT user_id, project_id, work_date, COUNT(*) as cnt
+      FROM timesheets
+      GROUP BY user_id, project_id, work_date
+      HAVING COUNT(*) > 1
+    `).all()
+    let removed = 0
+    for (const row of (dups.results as any[])) {
+      const del = await db.prepare(`
+        DELETE FROM timesheets
+        WHERE user_id = ? AND project_id = ? AND work_date = ?
+          AND id NOT IN (
+            SELECT MIN(id) FROM timesheets
+            WHERE user_id = ? AND project_id = ? AND work_date = ?
+          )
+      `).bind(row.user_id, row.project_id, row.work_date,
+               row.user_id, row.project_id, row.work_date).run()
+      removed += (del.meta?.changes || 0)
+    }
+    const total = await db.prepare('SELECT COUNT(*) as cnt FROM timesheets').first() as any
+    return c.json({ success: true, duplicates_found: dups.results.length, rows_removed: removed, total_remaining: total?.cnt || 0 })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// GET /api/timesheet-dashboard/:month/:year — monthly summary
+// ===================================================
+app.get('/api/timesheet-dashboard/:month/:year', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const m = c.req.param('month').padStart(2, '0')
+    const y = c.req.param('year')
+
+    // Total hours — simple SUM, no JOIN
+    const totals = await db.prepare(`
+      SELECT
+        SUM(regular_hours)              AS total_regular_hours,
+        SUM(IFNULL(overtime_hours, 0))  AS total_overtime_hours,
+        SUM(regular_hours + IFNULL(overtime_hours, 0)) AS total_hours,
+        COUNT(DISTINCT work_date)       AS working_days,
+        COUNT(DISTINCT user_id)         AS active_members,
+        COUNT(*)                        AS total_entries
+      FROM timesheets
+      WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+    `).bind(y, m).first() as any
+
+    // Per-member breakdown
+    const byMember = await db.prepare(`
+      SELECT ts.user_id, u.full_name, u.department,
+        SUM(ts.regular_hours)             AS regular_hours,
+        SUM(IFNULL(ts.overtime_hours, 0)) AS overtime_hours,
+        SUM(ts.regular_hours + IFNULL(ts.overtime_hours, 0)) AS total_hours,
+        COUNT(DISTINCT ts.work_date)      AS working_days
+      FROM timesheets ts
+      JOIN users u ON u.id = ts.user_id
+      WHERE strftime('%Y', ts.work_date) = ? AND strftime('%m', ts.work_date) = ?
+      GROUP BY ts.user_id
+      ORDER BY total_hours DESC
+    `).bind(y, m).all()
+
+    // Per-project breakdown
+    const byProject = await db.prepare(`
+      SELECT ts.project_id, p.code, p.name,
+        SUM(ts.regular_hours)             AS regular_hours,
+        SUM(IFNULL(ts.overtime_hours, 0)) AS overtime_hours,
+        SUM(ts.regular_hours + IFNULL(ts.overtime_hours, 0)) AS total_hours,
+        COUNT(DISTINCT ts.user_id)        AS member_count
+      FROM timesheets ts
+      JOIN projects p ON p.id = ts.project_id
+      WHERE strftime('%Y', ts.work_date) = ? AND strftime('%m', ts.work_date) = ?
+      GROUP BY ts.project_id
+      ORDER BY total_hours DESC
+    `).bind(y, m).all()
+
+    // Duplicate check
+    const dupCheck = await db.prepare(`
+      SELECT COUNT(*) as dup_groups FROM (
+        SELECT user_id, project_id, work_date
+        FROM timesheets
+        GROUP BY user_id, project_id, work_date
+        HAVING COUNT(*) > 1
+      )
+    `).first() as any
+
+    return c.json({
+      month: `${y}-${m}`,
+      summary: {
+        total_regular_hours: totals?.total_regular_hours || 0,
+        total_overtime_hours: totals?.total_overtime_hours || 0,
+        total_hours: totals?.total_hours || 0,
+        working_days: totals?.working_days || 0,
+        active_members: totals?.active_members || 0,
+        total_entries: totals?.total_entries || 0,
+        duplicate_groups: dupCheck?.dup_groups || 0
+      },
+      by_member: byMember.results,
+      by_project: byProject.results
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 app.get('/api/timesheets', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
@@ -788,11 +913,9 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
     const params: any[] = []
 
     if (user.role === 'system_admin') {
-      // Xem tất cả — chỉ lọc thêm nếu client yêu cầu
       if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
       if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
     } else if (user.role === 'project_admin' || user.role === 'project_leader') {
-      // Xem toàn bộ timesheets của dự án mình quản lý/làm leader
       query += `
         AND ts.project_id IN (
           SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
@@ -802,11 +925,9 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
         )
       `
       params.push(user.id, user.id, user.id)
-      // Cho phép lọc thêm theo user_id hoặc project_id cụ thể
       if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
       if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
     } else {
-      // member: chỉ xem của chính mình
       query += ` AND ts.user_id = ?`
       params.push(user.id)
       if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
@@ -818,7 +939,55 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
 
     query += ' ORDER BY ts.work_date DESC, ts.id DESC'
     const result = await db.prepare(query).bind(...params).all()
-    return c.json(result.results)
+
+    // Summary: simple SUM — no extra JOIN
+    const sumQuery = `
+      SELECT
+        SUM(regular_hours)              AS total_regular_hours,
+        SUM(IFNULL(overtime_hours, 0))  AS total_overtime_hours,
+        SUM(regular_hours + IFNULL(overtime_hours, 0)) AS total_hours
+      FROM timesheets ts
+      WHERE 1=1
+    `
+    // Build identical WHERE conditions for summary
+    let sumQ = sumQuery
+    const sumParams: any[] = []
+    if (user.role === 'system_admin') {
+      if (user_id) { sumQ += ` AND ts.user_id = ?`; sumParams.push(parseInt(user_id)) }
+      if (project_id) { sumQ += ` AND ts.project_id = ?`; sumParams.push(parseInt(project_id)) }
+    } else if (user.role === 'project_admin' || user.role === 'project_leader') {
+      sumQ += `
+        AND ts.project_id IN (
+          SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+          UNION
+          SELECT project_id FROM project_members
+          WHERE user_id = ? AND role IN ('project_admin','project_leader')
+        )
+      `
+      sumParams.push(user.id, user.id, user.id)
+      if (user_id) { sumQ += ` AND ts.user_id = ?`; sumParams.push(parseInt(user_id)) }
+      if (project_id) { sumQ += ` AND ts.project_id = ?`; sumParams.push(parseInt(project_id)) }
+    } else {
+      sumQ += ` AND ts.user_id = ?`
+      sumParams.push(user.id)
+      if (project_id) { sumQ += ` AND ts.project_id = ?`; sumParams.push(parseInt(project_id)) }
+    }
+    if (status) { sumQ += ` AND ts.status = ?`; sumParams.push(status) }
+    if (month)  { sumQ += ` AND strftime('%m', ts.work_date) = ?`; sumParams.push(month.padStart(2, '0')) }
+    if (year)   { sumQ += ` AND strftime('%Y', ts.work_date) = ?`; sumParams.push(year) }
+
+    const summary = sumParams.length
+      ? await db.prepare(sumQ).bind(...sumParams).first() as any
+      : await db.prepare(sumQ).first() as any
+
+    return c.json({
+      timesheets: result.results,
+      summary: {
+        total_regular_hours: summary?.total_regular_hours || 0,
+        total_overtime_hours: summary?.total_overtime_hours || 0,
+        total_hours: summary?.total_hours || 0
+      }
+    })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1839,7 +2008,7 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, code TEXT, description TEXT, discipline_code TEXT, phase TEXT DEFAULT 'basic_design', start_date DATE, end_date DATE, progress INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', parent_id INTEGER, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, category_id INTEGER, title TEXT NOT NULL, description TEXT, discipline_code TEXT, phase TEXT DEFAULT 'basic_design', priority TEXT DEFAULT 'medium', status TEXT DEFAULT 'todo', assigned_to INTEGER, assigned_by INTEGER, start_date DATE, due_date DATE, actual_start_date DATE, actual_end_date DATE, estimated_hours REAL DEFAULT 0, actual_hours REAL DEFAULT 0, progress INTEGER DEFAULT 0, is_overdue INTEGER DEFAULT 0, tags TEXT, attachments TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, user_id INTEGER NOT NULL, field_changed TEXT NOT NULL, old_value TEXT, new_value TEXT, comment TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
-      `CREATE TABLE IF NOT EXISTS timesheets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, task_id INTEGER, work_date DATE NOT NULL, regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, description TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+      `CREATE TABLE IF NOT EXISTS timesheets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, task_id INTEGER, work_date DATE NOT NULL, regular_hours REAL DEFAULT 0, overtime_hours REAL DEFAULT 0, description TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, project_id, work_date))`,
       `CREATE TABLE IF NOT EXISTS project_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, cost_type TEXT NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', cost_date DATE, invoice_number TEXT, vendor TEXT, approved_by INTEGER, notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS project_revenues (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, description TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'VND', revenue_date DATE, invoice_number TEXT, payment_status TEXT DEFAULT 'pending', notes TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE IF NOT EXISTS assets (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL, brand TEXT, model TEXT, serial_number TEXT, specifications TEXT, purchase_date DATE, purchase_price REAL DEFAULT 0, current_value REAL DEFAULT 0, warranty_expiry DATE, status TEXT DEFAULT 'unused', location TEXT, department TEXT, assigned_to INTEGER, assigned_date DATE, notes TEXT, image_url TEXT, created_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
@@ -1996,7 +2165,7 @@ app.post('/api/system/init', async (c) => {
     } catch (_) { /* ignore if no duplicates */ }
 
 
-    // Sample timesheets
+    // Sample timesheets — INSERT OR IGNORE to prevent duplicates on re-init
     const today = new Date()
     for (let i = 30; i >= 0; i--) {
       const d = new Date(today)
@@ -2005,11 +2174,11 @@ app.post('/api/system/init', async (c) => {
       if (d.getDay() !== 0 && d.getDay() !== 6) {
         try {
           await db.prepare(
-            `INSERT INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status)
+            `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status)
              VALUES (?, ?, ?, ?, ?, ?, 'approved')`
           ).bind(2, 1, dateStr, 8, i % 5 === 0 ? 2 : 0, 'Cong viec hang ngay').run()
           await db.prepare(
-            `INSERT INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status)
+            `INSERT OR IGNORE INTO timesheets (user_id, project_id, work_date, regular_hours, overtime_hours, description, status)
              VALUES (?, ?, ?, ?, ?, ?, 'approved')`
           ).bind(3, 1, dateStr, 8, i % 7 === 0 ? 3 : 0, 'Cong viec hang ngay').run()
         } catch (_) { /* skip */ }
@@ -2017,6 +2186,16 @@ app.post('/api/system/init', async (c) => {
     }
 
     // Sample costs & revenues - for year 2026
+    // Also clean up any pre-existing timesheet duplicates (for dbs created before UNIQUE constraint)
+    try {
+      await db.prepare(`
+        DELETE FROM timesheets
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM timesheets GROUP BY user_id, project_id, work_date
+        )
+      `).run()
+    } catch (_) { /* ignore */ }
+
     const costTypes2 = ['salary', 'equipment', 'material', 'transport']
     for (let m = 1; m <= 2; m++) {
       const monthStr = m.toString().padStart(2, '0')
