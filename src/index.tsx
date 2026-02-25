@@ -883,6 +883,180 @@ app.post('/api/timesheets/cleanup-duplicates', authMiddleware, adminOnly, async 
 })
 
 // ===================================================
+// GET /api/timesheets/summary — aggregated totals for current filters
+// Accepts: project_id, user_id/member_id, month, year, status
+// ===================================================
+app.get('/api/timesheets/summary', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user  = c.get('user') as any
+    const qp   = c.req.query()
+    const { project_id, month, year, status } = qp
+    const user_id = qp.user_id || qp.member_id || ''
+
+    let query = `
+      SELECT
+        COUNT(*)                              AS record_count,
+        SUM(regular_hours)                    AS total_regular_hours,
+        SUM(IFNULL(overtime_hours, 0))        AS total_overtime_hours,
+        SUM(regular_hours + IFNULL(overtime_hours, 0)) AS total_hours,
+        COUNT(DISTINCT ts.user_id)            AS member_count,
+        COUNT(DISTINCT ts.project_id)         AS project_count,
+        COUNT(DISTINCT ts.work_date)          AS working_days
+      FROM timesheets ts
+      WHERE 1=1
+    `
+    const params: any[] = []
+
+    if (user.role === 'system_admin') {
+      if (user_id)    { query += ` AND ts.user_id = ?`;    params.push(parseInt(user_id)) }
+      if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
+    } else if (user.role === 'project_admin' || user.role === 'project_leader') {
+      query += `
+        AND ts.project_id IN (
+          SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+          UNION
+          SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader')
+        )
+      `
+      params.push(user.id, user.id, user.id)
+      if (user_id)    { query += ` AND ts.user_id = ?`;    params.push(parseInt(user_id)) }
+      if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
+    } else {
+      query += ` AND ts.user_id = ?`
+      params.push(user.id)
+      if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
+    }
+
+    if (status) { query += ` AND ts.status = ?`;                  params.push(status) }
+    if (month)  { query += ` AND strftime('%m', ts.work_date) = ?`; params.push(month.padStart(2,'0')) }
+    if (year)   { query += ` AND strftime('%Y', ts.work_date) = ?`; params.push(year) }
+
+    const row = params.length
+      ? await db.prepare(query).bind(...params).first() as any
+      : await db.prepare(query).first() as any
+
+    return c.json({
+      record_count:         row?.record_count          || 0,
+      total_regular_hours:  row?.total_regular_hours   || 0,
+      total_overtime_hours: row?.total_overtime_hours  || 0,
+      total_hours:          row?.total_hours           || 0,
+      member_count:         row?.member_count          || 0,
+      project_count:        row?.project_count         || 0,
+      working_days:         row?.working_days          || 0
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// GET /api/timesheets/members — list of members who have timesheets
+// Role-scoped: system_admin sees all; project_admin/leader sees their projects;
+// member sees only themselves
+// ===================================================
+app.get('/api/timesheets/members', authMiddleware, async (c) => {
+  try {
+    const db  = c.env.DB
+    const user = c.get('user') as any
+    const { project_id, month, year } = c.req.query()
+
+    let query = `
+      SELECT DISTINCT u.id, u.full_name, u.department, u.role,
+        COUNT(ts.id) as timesheet_count,
+        SUM(ts.regular_hours) as total_regular_hours,
+        SUM(IFNULL(ts.overtime_hours,0)) as total_overtime_hours,
+        SUM(ts.regular_hours + IFNULL(ts.overtime_hours,0)) as total_hours
+      FROM users u
+      JOIN timesheets ts ON ts.user_id = u.id
+      WHERE 1=1
+    `
+    const params: any[] = []
+
+    // Scope to projects the requester can see
+    if (user.role === 'system_admin') {
+      // no extra restriction
+    } else if (user.role === 'project_admin' || user.role === 'project_leader') {
+      query += `
+        AND ts.project_id IN (
+          SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+          UNION
+          SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader')
+        )
+      `
+      params.push(user.id, user.id, user.id)
+    } else {
+      // member: only their own row
+      query += ` AND ts.user_id = ?`
+      params.push(user.id)
+    }
+
+    if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
+    if (month)      { query += ` AND strftime('%m', ts.work_date) = ?`; params.push(month.padStart(2, '0')) }
+    if (year)       { query += ` AND strftime('%Y', ts.work_date) = ?`; params.push(year) }
+
+    query += ' GROUP BY u.id, u.full_name, u.department, u.role ORDER BY total_hours DESC'
+
+    const result = params.length
+      ? await db.prepare(query).bind(...params).all()
+      : await db.prepare(query).all()
+
+    return c.json(result.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// GET /api/timesheets/projects — list of projects that have timesheets
+// Role-scoped similarly to /api/timesheets
+// ===================================================
+app.get('/api/timesheets/projects', authMiddleware, async (c) => {
+  try {
+    const db   = c.env.DB
+    const user  = c.get('user') as any
+    const { user_id, month, year } = c.req.query()
+
+    let query = `
+      SELECT DISTINCT p.id, p.code, p.name, p.status,
+        COUNT(ts.id) as timesheet_count,
+        COUNT(DISTINCT ts.user_id) as member_count,
+        SUM(ts.regular_hours) as total_regular_hours,
+        SUM(IFNULL(ts.overtime_hours,0)) as total_overtime_hours,
+        SUM(ts.regular_hours + IFNULL(ts.overtime_hours,0)) as total_hours
+      FROM projects p
+      JOIN timesheets ts ON ts.project_id = p.id
+      WHERE 1=1
+    `
+    const params: any[] = []
+
+    if (user.role === 'system_admin') {
+      // no extra restriction
+    } else if (user.role === 'project_admin' || user.role === 'project_leader') {
+      query += `
+        AND p.id IN (
+          SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+          UNION
+          SELECT project_id FROM project_members WHERE user_id = ? AND role IN ('project_admin','project_leader')
+        )
+      `
+      params.push(user.id, user.id, user.id)
+    } else {
+      query += ` AND ts.user_id = ?`
+      params.push(user.id)
+    }
+
+    if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
+    if (month)   { query += ` AND strftime('%m', ts.work_date) = ?`; params.push(month.padStart(2, '0')) }
+    if (year)    { query += ` AND strftime('%Y', ts.work_date) = ?`; params.push(year) }
+
+    query += ' GROUP BY p.id, p.code, p.name, p.status ORDER BY total_hours DESC'
+
+    const result = params.length
+      ? await db.prepare(query).bind(...params).all()
+      : await db.prepare(query).all()
+
+    return c.json(result.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
 // GET /api/timesheet-dashboard/:month/:year — monthly summary
 // ===================================================
 app.get('/api/timesheet-dashboard/:month/:year', authMiddleware, adminOnly, async (c) => {
@@ -963,7 +1137,10 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    const { project_id, user_id, month, year, status } = c.req.query()
+    // Support both user_id and member_id (alias) for backwards compat
+    const qp = c.req.query()
+    const { project_id, month, year, status } = qp
+    const user_id = qp.user_id || qp.member_id || ''
 
     let query = `
       SELECT ts.*,

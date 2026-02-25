@@ -708,7 +708,7 @@
 
         <!-- Filter bar -->
         <div class="card mb-4">
-          <div class="flex flex-wrap gap-2 items-center">
+          <div class="flex flex-wrap gap-2 items-end">
             <!-- Month -->
             <div class="flex flex-col gap-0.5">
               <label class="text-xs text-gray-500 font-medium">Tháng</label>
@@ -747,6 +747,13 @@
                 <option value="approved">Đã duyệt</option>
                 <option value="rejected">Từ chối</option>
               </select>
+            </div>
+            <!-- Search button -->
+            <div class="flex flex-col gap-0.5">
+              <label class="text-xs text-gray-500 font-medium opacity-0">.</label>
+              <button onclick="loadTimesheets()" class="btn-primary text-sm flex items-center gap-1 h-9 px-4" title="Tìm kiếm với bộ lọc hiện tại">
+                <i class="fas fa-search"></i> Tìm kiếm
+              </button>
             </div>
             <!-- Action buttons -->
             <div class="flex items-end gap-2 ml-auto flex-wrap">

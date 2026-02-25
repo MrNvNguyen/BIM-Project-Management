@@ -160,6 +160,12 @@ function logout() {
 // NAVIGATION
 // ================================================================
 function navigate(page) {
+  // Reset timesheet page state when leaving timesheet
+  if (typeof _tsDropdownsInitialised !== 'undefined') {
+    const currentPage = document.querySelector('.page.active')?.id?.replace('page-', '')
+    if (currentPage === 'timesheet' && page !== 'timesheet') resetTsPageState()
+  }
+
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'))
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'))
 
@@ -1110,16 +1116,112 @@ async function openTaskDetail(id) {
 // ================================================================
 // TIMESHEET
 // ================================================================
+// ================================================================
+// TIMESHEET FILTER STATE — preserved between loadTimesheets calls
+// ================================================================
+let _tsDropdownsInitialised = false   // run dropdown population only once per page visit
+let _tsMembersCache = []              // cached result from /api/timesheets/members
+let _tsProjectsCache = []             // cached result from /api/timesheets/projects
+
+// Initialise dropdowns ONCE using /api/timesheets/members & /api/timesheets/projects
+async function initTsFilterDropdowns() {
+  if (_tsDropdownsInitialised) return
+  _tsDropdownsInitialised = true
+
+  const isAdmin     = currentUser.role === 'system_admin'
+  const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
+  const canSeeAll   = isAdmin || isProjAdmin
+
+  // ------ Month ------
+  const monthSel = $('tsMonthFilter')
+  if (monthSel && monthSel.options.length <= 1) {
+    const monthNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6',
+                        'Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
+    monthNames.forEach((name, i) => {
+      const opt = document.createElement('option')
+      opt.value = String(i + 1).padStart(2, '0')
+      opt.textContent = name
+      if (i + 1 === new Date().getMonth() + 1) opt.selected = true
+      monthSel.appendChild(opt)
+    })
+  }
+
+  // ------ Year ------
+  const yearSel = $('tsYearFilter')
+  if (yearSel && yearSel.options.length <= 1) {
+    ;[2023, 2024, 2025, 2026, 2027].forEach(y => {
+      const opt = document.createElement('option')
+      opt.value = y; opt.textContent = y
+      if (y === new Date().getFullYear()) opt.selected = true
+      yearSel.appendChild(opt)
+    })
+  }
+
+  // ------ Project dropdown — from /api/timesheets/projects ------
+  try {
+    const projSel = $('tsProjectFilter')
+    if (projSel) {
+      const savedVal = projSel.value  // preserve current selection
+      const projects = await api('/timesheets/projects')
+      _tsProjectsCache = projects
+      // Backfill allProjects cache for other uses
+      if (!allProjects.length) allProjects = projects
+      projSel.innerHTML = '<option value="">📁 Tất cả dự án</option>' +
+        projects.map(p => `<option value="${p.id}">${p.code} – ${p.name} (${p.total_hours || 0}h)</option>`).join('')
+      // Restore selection after rebuild
+      if (savedVal) projSel.value = savedVal
+    }
+  } catch (_) {
+    // fallback to allProjects cache
+    if (!allProjects.length) { try { allProjects = await api('/projects') } catch(__) {} }
+    const projSel = $('tsProjectFilter')
+    if (projSel && projSel.options.length <= 1) {
+      projSel.innerHTML = '<option value="">📁 Tất cả dự án</option>' +
+        allProjects.map(p => `<option value="${p.id}">${p.code} – ${p.name}</option>`).join('')
+    }
+  }
+
+  // ------ Member dropdown — from /api/timesheets/members (admin/projAdmin only) ------
+  const tsUserWrap = $('tsUserFilterWrap')
+  const tsUserF    = $('tsUserFilter')
+  const tsStatusW  = $('tsStatusFilterWrap')
+
+  if (canSeeAll && tsUserWrap && tsUserF) {
+    tsUserWrap.classList.remove('hidden'); tsUserWrap.classList.add('flex')
+    try {
+      const savedUserId = tsUserF.value
+      const members = await api('/timesheets/members')
+      _tsMembersCache = members
+      // Backfill allUsers cache
+      if (!allUsers.length) allUsers = members
+      const membersForFilter = isAdmin ? members : members.filter(m => m.role !== 'system_admin')
+      tsUserF.innerHTML = '<option value="">👤 Tất cả nhân viên</option>' +
+        membersForFilter.map(m => `<option value="${m.id}">${m.full_name} (${m.total_hours || 0}h)</option>`).join('')
+      // Restore selection
+      if (savedUserId) tsUserF.value = savedUserId
+    } catch (_) {
+      if (!allUsers.length) { try { allUsers = await api('/users') } catch(__) {} }
+      const usersForFilter = isAdmin ? allUsers : allUsers.filter(u => u.role !== 'system_admin')
+      tsUserF.innerHTML = '<option value="">👤 Tất cả nhân viên</option>' +
+        usersForFilter.map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+    }
+    if (tsStatusW) { tsStatusW.classList.remove('hidden'); tsStatusW.classList.add('flex') }
+  } else {
+    if (tsUserWrap) { tsUserWrap.classList.add('hidden'); tsUserWrap.classList.remove('flex') }
+    if (tsStatusW)  { tsStatusW.classList.add('hidden');  tsStatusW.classList.remove('flex') }
+  }
+}
+
+// ================================================================
+// loadTimesheets — fetch data + render; does NOT rebuild dropdowns
+// ================================================================
 async function loadTimesheets() {
   try {
-    if (!allProjects.length) allProjects = await api('/projects')
-    if (!allUsers.length) allUsers = await api('/users')
-
     const isAdmin     = currentUser.role === 'system_admin'
     const isProjAdmin = currentUser.role === 'project_admin' || currentUser.role === 'project_leader'
     const canSeeAll   = isAdmin || isProjAdmin
 
-    // Subtitle theo role
+    // Subtitle
     const subtitle = $('tsPageSubtitle')
     if (subtitle) {
       if (isAdmin)          subtitle.textContent = 'Xem toàn bộ timesheet tất cả thành viên, tất cả dự án'
@@ -1127,100 +1229,51 @@ async function loadTimesheets() {
       else                  subtitle.textContent = 'Timesheet cá nhân của bạn'
     }
 
-    // Show cleanup button for admins
+    // Show/hide cleanup button
     const cleanupBtn = $('tsCleanupBtn')
     if (cleanupBtn) cleanupBtn.classList.toggle('hidden', !isAdmin)
 
-    // Init month filter
-    const monthSel = $('tsMonthFilter')
-    if (monthSel && monthSel.options.length <= 1) {
-      const monthNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6','Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
-      monthNames.forEach((name, i) => {
-        const opt = document.createElement('option')
-        opt.value = String(i + 1).padStart(2, '0')
-        opt.textContent = name
-        if (i + 1 === new Date().getMonth() + 1) opt.selected = true
-        monthSel.appendChild(opt)
-      })
-    }
+    // Populate dropdowns only on first load of this page
+    await initTsFilterDropdowns()
 
-    // Init year filter
-    const yearSel = $('tsYearFilter')
-    if (yearSel && yearSel.options.length <= 1) {
-      ;[2023, 2024, 2025, 2026, 2027].forEach(y => {
-        const opt = document.createElement('option')
-        opt.value = y; opt.textContent = y
-        if (y === new Date().getFullYear()) opt.selected = true
-        yearSel.appendChild(opt)
-      })
-    }
-
-    // Project filter
-    const tsProj = $('tsProjectFilter')
-    if (tsProj) {
-      tsProj.innerHTML = '<option value="">Tất cả dự án</option>' +
-        allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
-    }
-
-    // User filter — only admin/project_admin; show wrapper div
-    const tsUserWrap = $('tsUserFilterWrap')
-    const tsUserF = $('tsUserFilter')
-    if (tsUserWrap && tsUserF) {
-      if (canSeeAll) {
-        tsUserWrap.classList.remove('hidden')
-        tsUserWrap.classList.add('flex')
-        const usersForFilter = isAdmin ? allUsers : allUsers.filter(u => u.role !== 'system_admin')
-        tsUserF.innerHTML = '<option value="">Tất cả nhân viên</option>' +
-          usersForFilter.map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
-      } else {
-        tsUserWrap.classList.add('hidden')
-        tsUserWrap.classList.remove('flex')
-      }
-    }
-
-    // Status filter wrapper
-    const tsStatusWrap = $('tsStatusFilterWrap')
-    if (tsStatusWrap) {
-      if (canSeeAll) { tsStatusWrap.classList.remove('hidden'); tsStatusWrap.classList.add('flex') }
-      else { tsStatusWrap.classList.add('hidden'); tsStatusWrap.classList.remove('flex') }
-    }
-
-    // Build query URL
-    const month     = $('tsMonthFilter')?.value
-    const year      = $('tsYearFilter')?.value
-    const projectId = $('tsProjectFilter')?.value
-    const userId    = canSeeAll ? ($('tsUserFilter')?.value || '') : ''
+    // ------ Read current filter values ------
+    const month     = $('tsMonthFilter')?.value   || ''
+    const year      = $('tsYearFilter')?.value    || ''
+    const projectId = $('tsProjectFilter')?.value || ''
+    const memberId  = canSeeAll ? ($('tsUserFilter')?.value   || '') : ''
     const status    = canSeeAll ? ($('tsStatusFilter')?.value || '') : ''
 
+    // Build API URL
     let url = '/timesheets?'
     if (month)     url += `month=${month}&`
     if (year)      url += `year=${year}&`
     if (projectId) url += `project_id=${projectId}&`
-    if (userId)    url += `user_id=${userId}&`
+    if (memberId)  url += `member_id=${memberId}&`
     if (status)    url += `status=${status}&`
 
     const resp = await api(url)
-    // API returns { timesheets: [...], summary: {...} }
     allTimesheets = Array.isArray(resp) ? resp : (resp.timesheets || [])
     const apiSummary = (!Array.isArray(resp) && resp.summary) ? resp.summary : null
 
     renderTimesheetTable(allTimesheets, apiSummary)
 
-    // Update summary KPI cards (visible to all users)
-    const pending   = allTimesheets.filter(t => t.status === 'submitted').length
-    const approved  = allTimesheets.filter(t => t.status === 'approved').length
-    const totalReg  = apiSummary ? (apiSummary.total_regular_hours || 0) : allTimesheets.reduce((s, t) => s + (t.regular_hours||0), 0)
-    const totalOT   = apiSummary ? (apiSummary.total_overtime_hours || 0) : allTimesheets.reduce((s, t) => s + (t.overtime_hours||0), 0)
-    const totalH    = apiSummary ? (apiSummary.total_hours || 0) : totalReg + totalOT
+    // ------ Summary KPI cards ------
+    const pending  = allTimesheets.filter(t => t.status === 'submitted').length
+    const approved = allTimesheets.filter(t => t.status === 'approved').length
+    const totalReg = apiSummary ? (apiSummary.total_regular_hours || 0)
+                                : allTimesheets.reduce((s, t) => s + (t.regular_hours  || 0), 0)
+    const totalOT  = apiSummary ? (apiSummary.total_overtime_hours || 0)
+                                : allTimesheets.reduce((s, t) => s + (t.overtime_hours || 0), 0)
+    const totalH   = apiSummary ? (apiSummary.total_hours || 0) : totalReg + totalOT
 
-    if ($('tsCardTotal'))    $('tsCardTotal').textContent    = allTimesheets.length
-    if ($('tsCardPending'))  $('tsCardPending').textContent  = pending
-    if ($('tsCardApproved')) $('tsCardApproved').textContent = approved
-    if ($('tsCardHours'))    $('tsCardHours').textContent    = totalH + 'h'
+    if ($('tsCardTotal'))       $('tsCardTotal').textContent       = allTimesheets.length
+    if ($('tsCardPending'))     $('tsCardPending').textContent     = pending
+    if ($('tsCardApproved'))    $('tsCardApproved').textContent    = approved
+    if ($('tsCardHours'))       $('tsCardHours').textContent       = totalH + 'h'
     if ($('tsCardHoursDetail')) $('tsCardHoursDetail').textContent = `HC: ${totalReg}h | OT: ${totalOT}h`
-    if ($('tsFilterCount')) $('tsFilterCount').textContent = allTimesheets.length
+    if ($('tsFilterCount'))     $('tsFilterCount').textContent     = allTimesheets.length
 
-    // Bulk approve button
+    // Bulk-approve button
     const bulkBtn = $('tsBulkApproveBtn')
     if (bulkBtn) {
       if (canSeeAll && pending > 0) {
@@ -1231,52 +1284,57 @@ async function loadTimesheets() {
       }
     }
 
-    // Monthly breakdown panel — admin/project_admin only
-    // Now uses filtered allTimesheets data (respects all filters)
+    // ------ Breakdown panel (admin / project_admin) ------
     const dashPanel = $('tsDashboardPanel')
     if (dashPanel) {
       if (canSeeAll) {
         dashPanel.classList.remove('hidden')
-        const mon = $('tsMonthFilter')?.value
-        const yr  = $('tsYearFilter')?.value
 
-        // Build breakdowns from the ALREADY FILTERED allTimesheets data
-        // This ensures the breakdown reflects the current project/user/status filter
+        // Aggregate from the already-filtered allTimesheets
         const memberMap = {}
-        const projMap = {}
-        let dupGroupsCount = 0
+        const projMap   = {}
 
         allTimesheets.forEach(t => {
-          // Per-member aggregation
           const mk = String(t.user_id)
-          if (!memberMap[mk]) memberMap[mk] = { full_name: t.user_name || '?', department: t.department || '', regular_hours: 0, overtime_hours: 0, total_hours: 0 }
+          if (!memberMap[mk]) memberMap[mk] = {
+            user_id: t.user_id,
+            full_name: t.user_name || '?', department: t.department || '',
+            regular_hours: 0, overtime_hours: 0, total_hours: 0
+          }
           memberMap[mk].regular_hours  += (t.regular_hours  || 0)
           memberMap[mk].overtime_hours += (t.overtime_hours || 0)
           memberMap[mk].total_hours    += (t.regular_hours  || 0) + (t.overtime_hours || 0)
-          // Per-project aggregation
+
           const pk = String(t.project_id)
-          if (!projMap[pk]) projMap[pk] = { code: t.project_code || '?', name: t.project_name || '?', total_hours: 0, member_ids: new Set() }
+          if (!projMap[pk]) projMap[pk] = {
+            project_id: t.project_id,
+            code: t.project_code || '?', name: t.project_name || '?',
+            total_hours: 0, member_ids: new Set()
+          }
           projMap[pk].total_hours += (t.regular_hours || 0) + (t.overtime_hours || 0)
           projMap[pk].member_ids.add(t.user_id)
         })
 
         const byMember  = Object.values(memberMap).sort((a, b) => b.total_hours - a.total_hours)
-        const byProject = Object.values(projMap).sort((a, b) => b.total_hours - a.total_hours).map(p => ({ ...p, member_count: p.member_ids.size }))
+        const byProject = Object.values(projMap)
+          .sort((a, b) => b.total_hours - a.total_hours)
+          .map(p => ({ ...p, member_count: p.member_ids.size }))
 
-        // Member breakdown
+        // -- member breakdown --
         const memberDiv = $('tsMemberBreakdown')
         if (memberDiv) {
-          // Show filter context label
-          const filterLabel = projectId ? ` (${(allProjects.find(p => String(p.id) === projectId) || {}).code || ''})` : ''
-          if (byMember.length) {
-            memberDiv.innerHTML = (filterLabel ? `<p class="text-xs text-blue-500 mb-2">📋 Theo dự án${filterLabel}</p>` : '') +
-              byMember.map(m => `
-              <div class="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
+          const proj = allProjects.find(p => String(p.id) === projectId) ||
+                       _tsProjectsCache.find(p => String(p.id) === projectId)
+          const lbl  = proj ? `<p class="text-xs text-blue-500 mb-2">📋 Dự án: ${proj.code}</p>` : ''
+          memberDiv.innerHTML = byMember.length
+            ? lbl + byMember.map(m => `
+              <div class="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0 hover:bg-gray-50 rounded px-1 cursor-pointer"
+                   onclick="filterTsByMember('${m.user_id}')">
                 <div class="flex items-center gap-2">
                   <div class="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center text-green-700 font-bold text-xs">${(m.full_name||'?').split(' ').pop()?.charAt(0)}</div>
                   <div>
                     <span class="font-medium text-gray-700 text-xs">${m.full_name}</span>
-                    <span class="text-gray-400 text-xs ml-1">${m.department || ''}</span>
+                    <span class="text-gray-400 text-xs ml-1">${m.department}</span>
                   </div>
                 </div>
                 <div class="text-right text-xs">
@@ -1284,61 +1342,81 @@ async function loadTimesheets() {
                   <span class="text-gray-400 ml-1">(${m.regular_hours}h + OT:${m.overtime_hours}h)</span>
                 </div>
               </div>`).join('')
-          } else {
-            memberDiv.innerHTML = '<p class="text-gray-400 text-center py-4 text-xs">Không có dữ liệu</p>'
-          }
+            : '<p class="text-gray-400 text-center py-4 text-xs">Không có dữ liệu</p>'
         }
 
-        // Project breakdown
+        // -- project breakdown --
         const projDiv = $('tsProjectBreakdown')
         if (projDiv) {
-          const userFilterLabel = userId ? ` (${(allUsers.find(u => String(u.id) === userId) || {}).full_name || ''})` : ''
-          if (byProject.length) {
-            projDiv.innerHTML = (userFilterLabel ? `<p class="text-xs text-blue-500 mb-2">👤 Theo nhân viên${userFilterLabel}</p>` : '') +
-              byProject.map(p => `
-              <div class="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
+          const memUser = (_tsMembersCache.length ? _tsMembersCache : allUsers).find(u => String(u.id) === memberId)
+          const lbl = memUser ? `<p class="text-xs text-blue-500 mb-2">👤 Nhân viên: ${memUser.full_name}</p>` : ''
+          projDiv.innerHTML = byProject.length
+            ? lbl + byProject.map(p => `
+              <div class="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0 hover:bg-gray-50 rounded px-1 cursor-pointer"
+                   onclick="filterTsByProject('${p.project_id}')">
                 <div>
                   <span class="font-medium text-gray-700 text-xs">${p.code}</span>
-                  <span class="text-gray-500 ml-1 text-xs truncate" style="max-width:140px;display:inline-block;vertical-align:bottom">${p.name}</span>
+                  <span class="text-gray-500 ml-1 text-xs truncate"
+                        style="max-width:140px;display:inline-block;vertical-align:bottom">${p.name}</span>
                 </div>
                 <div class="text-right text-xs">
                   <span class="font-bold text-accent">${p.total_hours}h</span>
                   <span class="text-gray-400 ml-1">${p.member_count} người</span>
                 </div>
               </div>`).join('')
-          } else {
-            projDiv.innerHTML = '<p class="text-gray-400 text-center py-4 text-xs">Không có dữ liệu</p>'
-          }
+            : '<p class="text-gray-400 text-center py-4 text-xs">Không có dữ liệu</p>'
         }
 
-        // Check for duplicate groups from API (only when no specific filter active)
-        if (!projectId && !userId && mon && yr) {
+        // Duplicate check (cheap — only when no filter active)
+        if (!projectId && !memberId) {
           try {
-            const dupCheck = await api(`/timesheets/cleanup-duplicates`)
-            dupGroupsCount = dupCheck.duplicate_groups || 0
+            const dupCheck = await api('/timesheets/cleanup-duplicates')
+            const dc = dupCheck.duplicate_groups || 0
+            const dupWarn = $('tsDupWarning'); const dupTxt = $('tsDupWarningText')
+            const dupSt   = $('tsDupStatus');  const dupStTxt = $('tsDupStatusText')
+            if (dc > 0) {
+              if (dupWarn) dupWarn.classList.remove('hidden')
+              if (dupTxt)  dupTxt.textContent = `⚠️ Phát hiện ${dc} nhóm timesheet trùng lặp!`
+              if (dupSt)   dupSt.classList.remove('hidden')
+              if (dupStTxt) dupStTxt.textContent = `${dc} nhóm trùng lặp`
+            } else {
+              if (dupWarn) dupWarn.classList.add('hidden')
+              if (dupSt)   dupSt.classList.add('hidden')
+            }
           } catch (_) { /* silent */ }
-        }
-        if (dupGroupsCount > 0) {
-          const dupWarn = $('tsDupWarning'); const dupTxt = $('tsDupWarningText')
-          if (dupWarn) dupWarn.classList.remove('hidden')
-          if (dupTxt) dupTxt.textContent = `⚠️ Phát hiện ${dupGroupsCount} nhóm timesheet trùng lặp!`
-          const dupStatus = $('tsDupStatus'); const dupStatusTxt = $('tsDupStatusText')
-          if (dupStatus) dupStatus.classList.remove('hidden')
-          if (dupStatusTxt) dupStatusTxt.textContent = `${dupGroupsCount} nhóm trùng lặp`
-        } else {
-          const dupWarn = $('tsDupWarning'); if (dupWarn) dupWarn.classList.add('hidden')
-          const dupStatus = $('tsDupStatus'); if (dupStatus) dupStatus.classList.add('hidden')
         }
       } else {
         dashPanel.classList.add('hidden')
       }
     }
 
-    // Show empty state
+    // Empty state
     const emptyState = $('tsEmptyState')
     if (emptyState) emptyState.classList.toggle('hidden', allTimesheets.length > 0)
 
   } catch (e) { toast('Lỗi tải timesheet: ' + e.message, 'error') }
+}
+
+// Convenience: click a row in the breakdown to quick-filter by that member/project
+function filterTsByMember(userId) {
+  const tsUserF = $('tsUserFilter')
+  if (!tsUserF) return
+  // userId can be a number or string
+  const opt = Array.from(tsUserF.options).find(o => String(o.value) === String(userId))
+  if (opt) { tsUserF.value = opt.value; loadTimesheets() }
+}
+function filterTsByProject(projectId) {
+  const tsProj = $('tsProjectFilter')
+  if (!tsProj) return
+  const opt = Array.from(tsProj.options).find(o => String(o.value) === String(projectId))
+  if (opt) { tsProj.value = opt.value; loadTimesheets() }
+}
+
+// When navigating away (page change), reset init flag so dropdowns reload
+function resetTsPageState() {
+  _tsDropdownsInitialised = false
+  _tsMembersCache = []
+  _tsProjectsCache = []
 }
 
 // Cleanup duplicate timesheets (admin only)
@@ -1358,13 +1436,15 @@ async function runTimesheetCleanup() {
 }
 
 function resetTimesheetFilters() {
-  // Reset month to current
+  // Reset filter dropdowns to defaults
   const now = new Date()
   const m = $('tsMonthFilter'); if (m) m.value = String(now.getMonth() + 1).padStart(2, '0')
-  const y = $('tsYearFilter');  if (y) y.value = String(now.getFullYear())
+  const y = $('tsYearFilter');  if (y) y.value  = String(now.getFullYear())
   const p = $('tsProjectFilter'); if (p) p.value = ''
   const u = $('tsUserFilter');    if (u) u.value = ''
-  const s = $('tsStatusFilter'); if (s) s.value = ''
+  const s = $('tsStatusFilter');  if (s) s.value = ''
+  // Force re-populate dropdowns with latest data on next load
+  _tsDropdownsInitialised = false
   loadTimesheets()
 }
 
