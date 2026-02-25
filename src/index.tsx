@@ -3143,11 +3143,24 @@ app.get('/api/productivity', authMiddleware, async (c) => {
       const overdue    = Math.max(0, r.overdue_tasks)
 
       // -------------------------------------------------------
-      // Core formulas (per spec):
-      //   % TL Hoàn thành  = da_xong / task_giao * 100
-      //   Chính xác        = dung_han / da_xong  * 100  (0 if da_xong=0)
-      //   Năng suất        = (% hoàn + chính xác) / 2
-      //   Điểm             = Năng suất  (0-100 integer)
+      // CÔNG THỨC NĂNG SUẤT (chính thức):
+      //
+      //   % Hoàn thành (completion_rate) = da_xong / task_giao × 100
+      //                                     (0 nếu task_giao = 0)
+      //
+      //   Chính xác    (ontime_rate)     = dung_han / da_xong × 100
+      //                                     (0 nếu da_xong = 0)
+      //
+      //   Năng suất    (productivity)    = (completion_rate + ontime_rate) / 2
+      //
+      //   Điểm         (score)           = (productivity + ontime_rate) / 2
+      //                ↑ KHÁC với Năng suất — có thêm trọng số chính xác
+      //
+      // Ví dụ (Test case B — 2 task giao, 1 xong, 0 đúng hạn):
+      //   completion_rate = 1/2×100 = 50%
+      //   ontime_rate     = 0/1×100 = 0%
+      //   productivity    = (50+0)/2 = 25%
+      //   score           = (25+0)/2 = 13  (Math.round(12.5)=13)
       // -------------------------------------------------------
       const completion_rate = task_giao > 0
         ? Math.min(100, Math.round((da_xong / task_giao) * 100))
@@ -3159,7 +3172,7 @@ app.get('/api/productivity', authMiddleware, async (c) => {
         : 0
 
       const productivity = Math.round((completion_rate + ontime_rate) / 2)
-      const score        = productivity   // Điểm = Năng suất
+      const score        = Math.round((productivity + ontime_rate) / 2)  // Điểm ≠ Năng suất
 
       return {
         id:               r.id,
@@ -3172,10 +3185,10 @@ app.get('/api/productivity', authMiddleware, async (c) => {
         overdue_tasks:    overdue,
         total_hours_period: r.total_hours_period,
         // computed metrics
-        completion_rate,   // % TL Hoàn thành  (da_xong/task_giao)
-        ontime_rate,       // Chính xác         (dung_han/da_xong)
-        productivity,      // Năng suất          (completion+ontime)/2
-        score              // Điểm               = productivity
+        completion_rate,   // % Hoàn thành   = da_xong / task_giao × 100
+        ontime_rate,       // Chính xác       = dung_han / da_xong × 100
+        productivity,      // Năng suất        = (completion_rate + ontime_rate) / 2
+        score              // Điểm             = (productivity + ontime_rate) / 2
       }
     })
     return c.json(data)
@@ -3234,10 +3247,15 @@ app.get('/api/productivity-report', authMiddleware, async (c) => {
       const dung_han   = Math.min(da_xong, Math.max(0, r.ontime_tasks))
       const late       = Math.max(0, r.late_completed)
       const overdue    = Math.max(0, r.overdue_tasks)
+      // CÔNG THỨC (giống /api/productivity):
+      //   completion_rate = da_xong / task_giao × 100  (% Hoàn thành)
+      //   ontime_rate     = dung_han / da_xong × 100   (Chính xác)
+      //   productivity    = (completion_rate + ontime_rate) / 2  (Năng suất)
+      //   score           = (productivity + ontime_rate) / 2     (Điểm)
       const completion_rate = task_giao > 0 ? Math.min(100, Math.round((da_xong / task_giao) * 100)) : 0
       const ontime_rate     = da_xong > 0   ? Math.min(100, Math.round((dung_han / da_xong)  * 100)) : 0
       const productivity    = Math.round((completion_rate + ontime_rate) / 2)
-      const score           = productivity
+      const score           = Math.round((productivity + ontime_rate) / 2)  // Điểm = (NS + CX) / 2
       return { id: r.id, full_name: r.full_name, department: r.department,
         total_tasks: task_giao, completed_tasks: da_xong, ontime_tasks: dung_han,
         late_completed: late, overdue_tasks: overdue, total_hours_period: r.total_hours_period,

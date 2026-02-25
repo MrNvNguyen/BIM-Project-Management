@@ -335,9 +335,10 @@ function renderProductivityChart(data) {
     data: {
       labels: top10.map(u => u.full_name?.split(' ').pop() || u.full_name),
       datasets: [
-        { label: '% Hoàn thành', data: top10.map(getRate), backgroundColor: '#00A651', borderRadius: 4 },
-        { label: 'Chính xác (%)', data: top10.map(u => u.ontime_rate || 0), backgroundColor: '#0066CC', borderRadius: 4 },
-        { label: 'Điểm', data: top10.map(u => u.score || 0), backgroundColor: '#8B5CF6', borderRadius: 4 }
+        { label: '% Hoàn Thành',  data: top10.map(getRate),                    backgroundColor: '#00A651', borderRadius: 4 },
+        { label: 'Chính xác (%)', data: top10.map(u => u.ontime_rate    || 0), backgroundColor: '#0066CC', borderRadius: 4 },
+        { label: 'Năng suất (%)', data: top10.map(u => u.productivity   || 0), backgroundColor: '#F59E0B', borderRadius: 4 },
+        { label: 'Điểm',          data: top10.map(u => u.score          || 0), backgroundColor: '#8B5CF6', borderRadius: 4 }
       ]
     },
     options: {
@@ -2953,18 +2954,48 @@ function sortProductivity(key) {
 }
 
 function renderProductivityPage(data) {
-  // ----------------------------------------------------------------
-  // Column mapping (per spec):
-  //   % TB  (col-5) = completion_rate  = da_xong/task_giao × 100
-  //   Năng suất (col-8) = productivity = (completion_rate + ontime_rate) / 2
-  //   Chính xác (col-9) = ontime_rate  = dung_han/da_xong  × 100
-  //   Điểm    (col-10) = score         = productivity
-  // Score color: green ≥75, yellow 50-74, red <50
-  // ----------------------------------------------------------------
+  // ================================================================
+  // CÔNG THỨC NĂNG SUẤT (chính thức):
+  //
+  //   % Hoàn thành  = completed_tasks / total_tasks × 100
+  //   Chính xác     = ontime_tasks / completed_tasks × 100  (0 nếu done=0)
+  //   Năng suất     = (% Hoàn thành + Chính xác) / 2
+  //   Điểm          = (Năng suất + Chính xác) / 2          ← KHÁC Năng suất!
+  //
+  // Test case B (2 task giao, 1 xong, 0 đúng hạn):
+  //   % Hoàn thành = 1/2×100 = 50%
+  //   Chính xác    = 0/1×100 = 0%
+  //   Năng suất    = (50+0)/2 = 25%
+  //   Điểm         = (25+0)/2 = 13  [Math.round(12.5)=13]
+  //
+  // Màu Điểm: xanh ≥75 | vàng 50-74 | đỏ <50
+  // ================================================================
+
+  // Log công thức tính ra console để debug
+  console.group('%c📊 Năng Suất Nhân Sự — Công thức tính', 'color:#00A651;font-weight:bold;font-size:13px')
+  console.log('%c% Hoàn thành  = completed / total × 100', 'color:#6b7280')
+  console.log('%cChính xác     = ontime / completed × 100  (0 khi completed=0)', 'color:#6b7280')
+  console.log('%cNăng suất     = (% Hoàn thành + Chính xác) / 2', 'color:#8B5CF6')
+  console.log('%cĐiểm          = (Năng suất + Chính xác) / 2  ← KHÁC Năng suất', 'color:#EF4444;font-weight:bold')
+  console.log('─'.repeat(60))
+  data.forEach(u => {
+    const cr  = u.completion_rate || 0
+    const cx  = u.ontime_rate     || 0
+    const ns  = u.productivity    || 0
+    const d   = u.score           || 0
+    console.log(
+      `%c${(u.full_name||'?').padEnd(20)}` +
+      `  Giao=${u.total_tasks} Xong=${u.completed_tasks} ĐúngHạn=${u.ontime_tasks}` +
+      `  %Hoàn=${cr}%  CX=${cx}%  NS=(${cr}+${cx})/2=${Math.round((cr+cx)/2)}%  Điểm=(${ns}+${cx})/2=${Math.round((ns+cx)/2)}`,
+      'color:#374151'
+    )
+  })
+  console.groupEnd()
+
   const getScoreColor = s => s >= 75 ? 'text-green-600' : s >= 50 ? 'text-yellow-600' : 'text-red-600'
   const getBadgeClass = s => s >= 75 ? 'badge-completed' : s >= 50 ? 'badge-review' : 'badge-overdue'
 
-  // ---- Bar chart: 3 datasets ----
+  // ---- Bar chart: 4 datasets ----
   destroyChart('prodBar')
   const ctx1 = $('prodBarChart')
   if (ctx1 && data.length) {
@@ -2975,7 +3006,7 @@ function renderProductivityPage(data) {
         labels: top.map(u => u.full_name?.split(' ').pop() || u.full_name),
         datasets: [
           {
-            label: '% TL Hoàn thành',
+            label: '% Hoàn Thành',
             data: top.map(u => u.completion_rate || 0),
             backgroundColor: '#00A651', borderRadius: 4
           },
@@ -2985,7 +3016,12 @@ function renderProductivityPage(data) {
             backgroundColor: '#0066CC', borderRadius: 4
           },
           {
-            label: 'Điểm Năng suất',
+            label: 'Năng suất (%)',
+            data: top.map(u => u.productivity || 0),
+            backgroundColor: '#F59E0B', borderRadius: 4
+          },
+          {
+            label: 'Điểm',
             data: top.map(u => u.score || 0),
             backgroundColor: '#8B5CF6', borderRadius: 4
           }
@@ -3031,10 +3067,10 @@ function renderProductivityPage(data) {
   }
 
   tbody.innerHTML = data.map((u, i) => {
-    const completionRate = u.completion_rate || 0   // % TL Hoàn thành
-    const ontimeRate     = u.ontime_rate     || 0   // Chính xác
-    const productivity   = u.productivity   || 0    // Năng suất = (hoàn + chính xác)/2
-    const score          = u.score          || 0    // Điểm = productivity
+    const completionRate = u.completion_rate || 0   // % Hoàn Thành = completed/total×100
+    const ontimeRate     = u.ontime_rate     || 0   // Chính xác    = ontime/completed×100
+    const productivity   = u.productivity    || 0   // Năng suất    = (%Hoàn + Chính xác)/2
+    const score          = u.score           || 0   // Điểm         = (Năng suất + Chính xác)/2
 
     return `
     <tr class="table-row">
@@ -3056,14 +3092,14 @@ function renderProductivityPage(data) {
       <td class="py-2 pr-3 text-center text-red-500">${u.late_completed}</td>
       <td class="py-2 pr-3 text-center">
         <div class="flex items-center gap-1 justify-center">
-          <div class="progress-bar w-12"><div class="progress-fill" style="width:${productivity}%;background:#8B5CF6"></div></div>
-          <span class="text-xs ${getScoreColor(productivity)}">${productivity}%</span>
+          <div class="progress-bar w-12"><div class="progress-fill" style="width:${ontimeRate}%;background:#0066CC"></div></div>
+          <span class="text-xs text-blue-600">${ontimeRate}%</span>
         </div>
       </td>
       <td class="py-2 pr-3 text-center">
         <div class="flex items-center gap-1 justify-center">
-          <div class="progress-bar w-12"><div class="progress-fill" style="width:${ontimeRate}%;background:#0066CC"></div></div>
-          <span class="text-xs text-blue-600">${ontimeRate}%</span>
+          <div class="progress-bar w-12"><div class="progress-fill" style="width:${productivity}%;background:#F59E0B"></div></div>
+          <span class="text-xs ${getScoreColor(productivity)}">${productivity}%</span>
         </div>
       </td>
       <td class="py-2 text-center">

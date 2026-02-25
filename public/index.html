@@ -1283,11 +1283,26 @@
         <!-- Charts row -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <div class="card">
-            <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-chart-bar text-primary mr-2"></i>Điểm năng suất nhân sự</h3>
+            <div class="flex items-start justify-between mb-3">
+              <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-bar text-primary mr-2"></i>Biểu đồ năng suất nhân sự</h3>
+              <div class="text-xs text-gray-400 text-right leading-relaxed">
+                <div><span class="inline-block w-3 h-3 rounded-sm bg-green-600 mr-1"></span>% Hoàn Thành</div>
+                <div><span class="inline-block w-3 h-3 rounded-sm bg-blue-600 mr-1"></span>Chính xác</div>
+                <div><span class="inline-block w-3 h-3 rounded-sm bg-amber-400 mr-1"></span>Năng suất</div>
+                <div><span class="inline-block w-3 h-3 rounded-sm bg-purple-500 mr-1"></span>Điểm</div>
+              </div>
+            </div>
             <div class="chart-container-fixed"><canvas id="prodBarChart"></canvas></div>
           </div>
           <div class="card">
-            <h3 class="font-bold text-gray-800 text-sm mb-3"><i class="fas fa-chart-pie text-accent mr-2"></i>Tỷ lệ hoàn thành đúng hạn</h3>
+            <h3 class="font-bold text-gray-800 text-sm mb-2"><i class="fas fa-chart-pie text-accent mr-2"></i>Phân bổ task hoàn thành</h3>
+            <div class="text-xs text-gray-400 mb-3 bg-gray-50 rounded-lg p-2 leading-relaxed">
+              <div class="font-semibold text-gray-600 mb-1">📐 Công thức:</div>
+              <div>% Hoàn Thành = <em>xong / giao</em> × 100</div>
+              <div>Chính xác &nbsp;&nbsp;&nbsp;= <em>đúng_hạn / xong</em> × 100</div>
+              <div>Năng suất &nbsp;&nbsp;&nbsp;= <em>(% Hoàn + Chính xác)</em> / 2</div>
+              <div class="font-semibold text-red-600">Điểm &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= <em>(Năng suất + Chính xác)</em> / 2</div>
+            </div>
             <div class="chart-container-fixed"><canvas id="prodPieChart"></canvas></div>
           </div>
         </div>
@@ -1295,7 +1310,7 @@
         <!-- Table -->
         <div class="card">
           <div class="flex justify-between items-center mb-4">
-            <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-table text-primary mr-2"></i>Bảng chi tiết năng suất</h3>
+            <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-table text-primary mr-2"></i>Bảng chi tiết năng suất <span class="font-normal text-gray-400 text-xs ml-2">(Điểm = (Năng suất + Chính xác) / 2)</span></h3>
             <div class="flex gap-2">
               <button onclick="sortProductivity('score')" class="btn-secondary text-xs px-2 py-1">Sắp xếp theo Điểm</button>
               <button onclick="sortProductivity('completed_tasks')" class="btn-secondary text-xs px-2 py-1">Sắp xếp theo Hoàn thành</button>
@@ -1308,12 +1323,12 @@
                 <th class="pb-3 pr-3">Phòng ban/Bộ môn</th>
                 <th class="pb-3 pr-3 text-center" title="Tổng số task được giao">Task giao</th>
                 <th class="pb-3 pr-3 text-center" title="Số task đã hoàn thành">Đã xong</th>
-                <th class="pb-3 pr-3 text-center" title="% Tỉ lệ Hoàn thành = Đã xong / Task giao × 100">% TL Hoàn</th>
-                <th class="pb-3 pr-3 text-center" title="Task hoàn thành đúng hạn">Đúng hạn</th>
-                <th class="pb-3 pr-3 text-center" title="Task hoàn thành trễ hạn">Trễ hạn</th>
-                <th class="pb-3 pr-3 text-center" title="Năng suất = (% Hoàn thành + Chính xác) / 2">Năng suất</th>
-                <th class="pb-3 pr-3 text-center" title="Chính xác = Đúng hạn / Đã xong × 100">Chính xác</th>
-                <th class="pb-3 text-center" title="Điểm = Năng suất (0-100). Xanh ≥75, Vàng 50-74, Đỏ &lt;50">Điểm</th>
+                <th class="pb-3 pr-3 text-center" title="% Hoàn Thành = Đã xong / Task giao × 100">% Hoàn Thành</th>
+                <th class="pb-3 pr-3 text-center" title="Task hoàn thành đúng hạn (actual_end_date ≤ due_date)">Đúng hạn</th>
+                <th class="pb-3 pr-3 text-center" title="Task hoàn thành trễ hạn (actual_end_date > due_date)">Trễ hạn</th>
+                <th class="pb-3 pr-3 text-center" title="Chính xác = Đúng hạn / Đã xong × 100  (đo mức độ đúng deadline)">Chính xác</th>
+                <th class="pb-3 pr-3 text-center" title="Năng suất = (% Hoàn Thành + Chính xác) / 2">Năng suất</th>
+                <th class="pb-3 text-center" title="Điểm = (Năng suất + Chính xác) / 2 — Xanh ≥75 | Vàng 50-74 | Đỏ &lt;50">Điểm</th>
               </tr></thead>
               <tbody id="productivityTable" class="divide-y"></tbody>
             </table>
