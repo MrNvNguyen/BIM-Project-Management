@@ -3047,35 +3047,13 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
       GROUP BY p.id
     `).bind(parseInt(currentYear)).all()
 
-    // FIX 2: Với các dự án chưa có project_labor_costs (labor_cost=0),
-    // tính real-time từ timesheets × cost_per_hour (salary_pool / total_hours)
-    // Chỉ fallback khi có giờ thực tế trong năm
-    const totalHoursYear = await db.prepare(`
-      SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
-      FROM timesheets WHERE strftime('%Y', work_date) = ?
-    `).bind(currentYear).first() as any
-    const salaryPoolYear = await db.prepare(`
-      SELECT SUM(salary_monthly) as total FROM users WHERE is_active = 1 AND role != 'system_admin'
-    `).first() as any
-    const manualLaborYear = await db.prepare(`
-      SELECT SUM(total_labor_cost) as total FROM monthly_labor_costs
-      WHERE year = ?
-    `).bind(parseInt(currentYear)).first() as any
-    const totalYearHours = totalHoursYear?.total || 0
-    // Ước tính quỹ lương cả năm = 12 tháng × salary_pool (chỉ dùng khi có giờ)
-    const annualPoolFallback = totalYearHours > 0 ? (manualLaborYear?.total || ((salaryPoolYear?.total || 0) * 12)) : 0
-    const annualCostPerHour = totalYearHours > 0 ? annualPoolFallback / totalYearHours : 0
-
-    const laborByProject = await Promise.all((laborByProjectRaw.results as any[]).map(async (p) => {
-      if ((p.labor_cost || 0) > 0) return p  // đã có dữ liệu sync → dùng luôn
-      // Fallback: tính real-time từ timesheet năm
-      if (annualCostPerHour === 0) return p
-      const projHrs = await db.prepare(`
-        SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total
-        FROM timesheets WHERE project_id = ? AND strftime('%Y', work_date) = ?
-      `).bind(p.id, currentYear).first() as any
-      const hrs = projHrs?.total || 0
-      return { ...p, labor_cost: Math.round(hrs * annualCostPerHour), total_hours: hrs, labor_source: 'realtime' }
+    // FIX: Chỉ dùng chi phí lương đã nhập thủ công (monthly_labor_costs)
+    // KHÔNG fallback sang salary_pool × 12 — tránh hiển thị chi phí ảo
+    // Nếu chưa nhập → labor_cost = 0 cho dự án đó
+    const laborByProject = (laborByProjectRaw.results as any[]).map(p => ({
+      ...p,
+      labor_cost: p.labor_cost || 0,  // chỉ từ project_labor_costs đã sync
+      labor_source: p.labor_cost > 0 ? 'synced' : 'none'
     }))
 
     // Monthly summary: other costs only (salary excluded — in project_labor_costs)

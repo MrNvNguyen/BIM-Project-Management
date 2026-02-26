@@ -3690,8 +3690,7 @@ async function loadLaborCost() {
       } else if (data.cost_source === 'manual') {
         badge.innerHTML = `<span class="badge" style="background:#dcfce7;color:#166534;font-size:11px">✏️ Chi phí đã nhập tháng ${data.month_int}/${data.year_int}: ${fmtMoney(data.manual_labor_cost)}</span>`
       } else {
-        // Có giờ làm nhưng chưa nhập chi phí → gợi ý nhập + hiển thị quỹ lương tham khảo
-        badge.innerHTML = `<span class="badge" style="background:#fee2e2;color:#991b1b;font-size:11px">⚠️ Chưa nhập chi phí lương tháng ${data.month_int}/${data.year_int} — Quỹ lương tham khảo: ${fmtMoney(data.salary_pool)}</span>`
+        badge.innerHTML = `<span class="badge" style="background:#fee2e2;color:#991b1b;font-size:11px">⚠️ Chưa nhập chi phí lương tháng ${data.month_int}/${data.year_int}</span>`
       }
     }
 
@@ -3712,7 +3711,7 @@ async function loadLaborCost() {
       } else if (data.cost_source === 'manual') {
         fd.textContent = `${fmtMoney(data.manual_labor_cost)} ÷ ${fmt(data.total_hours)}h = ${fmtMoney(data.cost_per_hour)}/h (nguồn: nhập thủ công tháng ${data.month_int}/${data.year_int})`
       } else {
-        fd.textContent = `Có ${fmt(data.total_hours)}h làm việc nhưng chưa nhập chi phí lương tháng ${data.month_int}/${data.year_int}. Quỹ lương nhân sự tham khảo: ${fmtMoney(data.salary_pool)} — Vui lòng nhập để tính chi phí/giờ.`
+        fd.textContent = `Có ${fmt(data.total_hours)}h làm việc nhưng chưa nhập chi phí lương tháng ${data.month_int}/${data.year_int}. Vui lòng nhập chi phí lương để tính chi phí/giờ.`
       }
     }
 
