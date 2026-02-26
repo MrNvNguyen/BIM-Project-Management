@@ -3804,6 +3804,7 @@ app.post('/api/system/init', async (c) => {
       `CREATE TABLE IF NOT EXISTS cost_types (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT, color TEXT DEFAULT '#6B7280', is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0)`,
       `CREATE TABLE IF NOT EXISTS monthly_labor_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, month INTEGER NOT NULL, year INTEGER NOT NULL, total_labor_cost REAL NOT NULL, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(month, year))`,
       `CREATE TABLE IF NOT EXISTS project_labor_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, month INTEGER NOT NULL, year INTEGER NOT NULL, total_labor_cost REAL NOT NULL DEFAULT 0, total_hours REAL NOT NULL DEFAULT 0, cost_per_hour REAL NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(project_id, month, year), FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
     ]
 
     for (const stmt of tables) {
@@ -3827,6 +3828,15 @@ app.post('/api/system/init', async (c) => {
       `INSERT OR IGNORE INTO users (username, password_hash, full_name, email, role, department)
        VALUES ('admin', ?, 'System Administrator', 'admin@onecad.vn', 'system_admin', 'Quản lý hệ thống')`
     ).bind(adminHash).run()
+
+    // ---- CHECK SEED FLAG: Skip demo data if already initialized ----
+    const seedFlag = await db.prepare(`SELECT value FROM system_settings WHERE key = 'seed_data_initialized'`).first() as any
+    if (seedFlag && seedFlag.value === '1') {
+      // Already initialized — only run safe maintenance tasks, skip re-seeding
+      await db.prepare(`UPDATE tasks SET is_overdue = 0 WHERE due_date >= date('now') AND status NOT IN ('completed','cancelled')`).run()
+      await db.prepare(`UPDATE tasks SET is_overdue = 1 WHERE due_date < date('now') AND status NOT IN ('completed','cancelled')`).run()
+      return c.json({ success: true, message: 'System already initialized — skipped demo data re-seed' })
+    }
 
     // ---- Migrate old 2024 dates to 2026 to fix overdue tasks ----
     await db.prepare(`UPDATE tasks SET due_date = REPLACE(due_date, '2024-', '2026-') WHERE due_date LIKE '2024-%'`).run()
@@ -4317,6 +4327,9 @@ app.post('/api/system/init', async (c) => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1)`
       ).bind(code, name, cat, brand, model, price, Math.floor(Number(price) * 0.85), assigned, dept).run()
     }
+
+    // ---- MARK AS SEEDED: Set flag so demo data is never re-inserted ----
+    await db.prepare(`INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES ('seed_data_initialized', '1', CURRENT_TIMESTAMP)`).run()
 
     return c.json({ success: true, message: 'Database initialized successfully' })
   } catch (e: any) {
