@@ -1543,7 +1543,7 @@
         <!-- Summary cards -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div class="kpi-card" style="border-color:#00A651">
-            <p class="text-xs text-gray-500 font-medium">QUỸ LƯƠNG SỬ DỤNG</p>
+            <p class="text-xs text-gray-500 font-medium">CHI PHÍ LƯƠNG ĐÃ XÁC NHẬN</p>
             <p class="text-xl font-bold text-green-600 mt-1" id="laborKpiPool">-</p>
             <p class="text-xs text-gray-400 mt-1" id="laborKpiSource">-</p>
           </div>
@@ -1555,7 +1555,7 @@
           <div class="kpi-card" style="border-color:#8B5CF6">
             <p class="text-xs text-gray-500 font-medium">CHI PHÍ/GIỜ</p>
             <p class="text-xl font-bold text-purple-600 mt-1" id="laborKpiRate">-</p>
-            <p class="text-xs text-gray-400 mt-1">= Lương ÷ Tổng giờ</p>
+            <p class="text-xs text-gray-400 mt-1">= Chi phí đã nhập ÷ Tổng giờ</p>
           </div>
           <div class="kpi-card" style="border-color:#F59E0B">
             <p class="text-xs text-gray-500 font-medium">SỐ DỰ ÁN</p>
@@ -1569,12 +1569,13 @@
           <div class="flex items-start gap-3">
             <i class="fas fa-calculator text-green-600 mt-1 text-lg"></i>
             <div class="text-sm">
-              <p class="font-bold text-green-800 mb-1">Công thức tính tự động:</p>
+              <p class="font-bold text-green-800 mb-1">Công thức tính chi phí lương:</p>
               <div class="flex flex-wrap gap-4 text-green-700">
-                <span><strong>Chi phí/giờ</strong> = Tổng lương công ty ÷ Tổng giờ làm công ty</span>
+                <span><strong>Chi phí/giờ</strong> = Chi phí lương đã nhập tháng ÷ Tổng giờ làm công ty</span>
                 <span class="text-green-400">→</span>
                 <span><strong>Chi phí lương dự án</strong> = Giờ làm dự án × Chi phí/giờ</span>
               </div>
+              <p class="text-xs text-orange-600 mt-1">⚠️ Chi phí lương chỉ được tính khi Admin đã nhập chi phí lương tháng. Quỹ lương nhân sự chỉ là tham khảo.</p>
               <p class="text-xs text-green-600 mt-1" id="laborFormulaDetail">-</p>
             </div>
           </div>

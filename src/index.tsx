@@ -2509,10 +2509,12 @@ async function computeMonthLaborCost(db: any, mInt: number, yInt: number) {
     `SELECT SUM(regular_hours + IFNULL(overtime_hours,0)) as total FROM timesheets
      WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
   ).bind(y, m).first() as any
-  const laborCostSource = manualEntry ? manualEntry.total_labor_cost : (totalHrs > 0 ? (salaryPool?.total || 0) : 0)
   const totalHrs = totalHoursRow?.total || 0
-  const costPerHour = totalHrs > 0 ? laborCostSource / totalHrs : 0
-  return { laborCostSource, totalHrs, costPerHour, isManual: !!manualEntry, notes: manualEntry?.notes || '' }
+  // FIX: Chi phí lương CHỈ dùng khi admin đã nhập thủ công (monthly_labor_costs)
+  // Không tự động lấy salary_pool khi chưa nhập — salary_pool chỉ là thông tin tham khảo
+  const laborCostSource = manualEntry ? manualEntry.total_labor_cost : 0
+  const costPerHour = (totalHrs > 0 && laborCostSource > 0) ? laborCostSource / totalHrs : 0
+  return { laborCostSource, totalHrs, costPerHour, isManual: !!manualEntry, notes: manualEntry?.notes || '', salaryPoolRef: salaryPool?.total || 0 }
 }
 
 // GET /api/data-audit/consistency-check
@@ -3683,12 +3685,10 @@ app.get('/api/finance/labor-cost', authMiddleware, adminOnly, async (c) => {
     const salaryPoolTotal = salaryPool?.total || 0
     const totalHoursAll = totalHours?.total || 0
 
-    // FIX 1: Chỉ dùng salary_pool khi có giờ làm thực tế trong tháng
-    // Nếu không có timesheet nào → cost = 0, không hiển thị quỹ lương ảo
-    const laborCostSource = manualEntry
-      ? manualEntry.total_labor_cost
-      : (totalHoursAll > 0 ? salaryPoolTotal : 0)
-    const costPerHour = totalHoursAll > 0 ? laborCostSource / totalHoursAll : 0
+    // FIX 2: Chi phí lương CHỈ dùng khi admin đã nhập thủ công (monthly_labor_costs)
+    // Salary_pool chỉ là tham chiếu — KHÔNG tự động áp dụng khi chưa nhập
+    const laborCostSource = manualEntry ? manualEntry.total_labor_cost : 0
+    const costPerHour = (totalHoursAll > 0 && laborCostSource > 0) ? laborCostSource / totalHoursAll : 0
 
     // Per-project labor cost
     const byProject = await db.prepare(`
@@ -3714,10 +3714,11 @@ app.get('/api/finance/labor-cost', authMiddleware, adminOnly, async (c) => {
       month: `${y}-${m}`,
       month_int: mInt,
       year_int: yInt,
-      salary_pool: salaryPoolTotal,
+      salary_pool: salaryPoolTotal,          // tổng lương nhân sự (chỉ tham khảo)
+      salary_pool_ref: salaryPoolTotal,      // alias rõ nghĩa hơn
       manual_labor_cost: manualEntry ? manualEntry.total_labor_cost : null,
-      labor_cost_used: laborCostSource,
-      cost_source: manualEntry ? 'manual' : 'salary_pool',
+      labor_cost_used: laborCostSource,      // = 0 nếu chưa nhập, = manual nếu đã nhập
+      cost_source: manualEntry ? 'manual' : 'not_entered',  // không còn 'salary_pool' tự động
       total_hours: totalHoursAll,
       cost_per_hour: Math.round(costPerHour),
       notes: manualEntry?.notes || '',

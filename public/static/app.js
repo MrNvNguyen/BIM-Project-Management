@@ -3674,11 +3674,12 @@ async function loadLaborCost() {
     const data = await api(url)
 
     // KPI cards
-    const laborUsed = data.manual_labor_cost ?? (data.total_hours > 0 ? data.salary_pool : 0)
+    // FIX: laborUsed = 0 nếu chưa nhập thủ công, KHÔNG tự dùng salary_pool
+    const laborUsed = data.manual_labor_cost ?? 0
     if ($('laborKpiPool'))     $('laborKpiPool').textContent     = fmtMoney(laborUsed)
-    if ($('laborKpiSource'))   $('laborKpiSource').textContent   = data.cost_source === 'manual' ? '✏️ Đã nhập thủ công' : (data.total_hours > 0 ? '⚙️ Tự động từ bảng lương' : '— Không có timesheet tháng này')
+    if ($('laborKpiSource'))   $('laborKpiSource').textContent   = data.cost_source === 'manual' ? '✏️ Đã nhập thủ công' : (data.total_hours > 0 ? '⚠️ Chưa nhập chi phí lương' : '— Không có timesheet tháng này')
     if ($('laborKpiHours'))    $('laborKpiHours').textContent    = fmt(data.total_hours) + 'h'
-    if ($('laborKpiRate'))     $('laborKpiRate').textContent     = fmtMoney(data.cost_per_hour) + '/h'
+    if ($('laborKpiRate'))     $('laborKpiRate').textContent     = data.cost_source === 'manual' ? fmtMoney(data.cost_per_hour) + '/h' : '— chưa nhập'
     if ($('laborKpiProjects')) $('laborKpiProjects').textContent = data.projects?.length || 0
 
     // Source badge
@@ -3687,9 +3688,10 @@ async function loadLaborCost() {
       if (data.total_hours === 0) {
         badge.innerHTML = `<span class="badge" style="background:#f3f4f6;color:#6b7280;font-size:11px">ℹ️ Không có timesheet tháng ${data.month_int}/${data.year_int} — Chi phí lương = 0</span>`
       } else if (data.cost_source === 'manual') {
-        badge.innerHTML = `<span class="badge" style="background:#dcfce7;color:#166534;font-size:11px">✏️ Chi phí đã nhập tháng ${data.month_int}/${data.year_int}</span>`
+        badge.innerHTML = `<span class="badge" style="background:#dcfce7;color:#166534;font-size:11px">✏️ Chi phí đã nhập tháng ${data.month_int}/${data.year_int}: ${fmtMoney(data.manual_labor_cost)}</span>`
       } else {
-        badge.innerHTML = `<span class="badge" style="background:#fef9c3;color:#713f12;font-size:11px">⚠️ Chưa nhập — đang dùng quỹ lương từ bảng lương</span>`
+        // Có giờ làm nhưng chưa nhập chi phí → gợi ý nhập + hiển thị quỹ lương tham khảo
+        badge.innerHTML = `<span class="badge" style="background:#fee2e2;color:#991b1b;font-size:11px">⚠️ Chưa nhập chi phí lương tháng ${data.month_int}/${data.year_int} — Quỹ lương tham khảo: ${fmtMoney(data.salary_pool)}</span>`
       }
     }
 
@@ -3707,9 +3709,10 @@ async function loadLaborCost() {
     if (fd) {
       if (data.total_hours === 0) {
         fd.textContent = `Không có dữ liệu timesheet tháng ${data.month_int}/${data.year_int} → Chi phí lương = 0 ₫`
+      } else if (data.cost_source === 'manual') {
+        fd.textContent = `${fmtMoney(data.manual_labor_cost)} ÷ ${fmt(data.total_hours)}h = ${fmtMoney(data.cost_per_hour)}/h (nguồn: nhập thủ công tháng ${data.month_int}/${data.year_int})`
       } else {
-        fd.textContent = `${fmtMoney(laborUsed)} ÷ ${fmt(data.total_hours)}h = ${fmtMoney(data.cost_per_hour)}/h`
-          + (data.cost_source === 'manual' ? ` (nguồn: nhập thủ công tháng ${data.month_int}/${data.year_int})` : ' (nguồn: tổng lương nhân sự)')
+        fd.textContent = `Có ${fmt(data.total_hours)}h làm việc nhưng chưa nhập chi phí lương tháng ${data.month_int}/${data.year_int}. Quỹ lương nhân sự tham khảo: ${fmtMoney(data.salary_pool)} — Vui lòng nhập để tính chi phí/giờ.`
       }
     }
 
