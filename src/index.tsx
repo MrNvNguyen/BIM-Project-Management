@@ -1855,13 +1855,80 @@ app.get('/api/projects/:id/labor-costs-check', authMiddleware, adminOnly, async 
 app.post('/api/projects/:id/labor-costs/sync', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
+    const OVERTIME_FACTOR = await getOvertimeFactor(db)   // FIX: was missing, caused ReferenceError → 500
     const projectId = parseInt(c.req.param('id'))
     const body = await c.req.json().catch(() => ({})) as any
-    const { month, year, force_recalculate = false } = body
-    const mInt = month ? parseInt(month) : new Date().getMonth() + 1
+    const { month, year, force_recalculate = false, all_months = false } = body
     const yInt = year ? parseInt(year) : new Date().getFullYear()
-    const m = String(mInt).padStart(2, '0')
     const y = String(yInt)
+
+    // ── all_months mode: sync every month that has timesheet data ────
+    if (all_months) {
+      // Find all months in the year that have timesheet data for this project
+      const tsMonths = await db.prepare(`
+        SELECT DISTINCT CAST(strftime('%m', work_date) AS INTEGER) as month
+        FROM timesheets
+        WHERE project_id = ? AND strftime('%Y', work_date) = ?
+        ORDER BY month
+      `).bind(projectId, y).all()
+
+      const months = (tsMonths.results as any[]).map((r: any) => r.month)
+      if (months.length === 0) {
+        return c.json({ success: false, error: `Không có dữ liệu timesheet năm ${yInt} cho dự án này` }, 400)
+      }
+
+      let totalSynced = 0, totalCost = 0, created = 0, updated = 0
+      const results: any[] = []
+
+      for (const mInt of months) {
+        const m = String(mInt).padStart(2, '0')
+        const { totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt, OVERTIME_FACTOR)
+        if (totalHrs === 0) continue
+
+        const projRow = await db.prepare(
+          `SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as eff_hours,
+                  SUM(regular_hours + IFNULL(overtime_hours,0))     as raw_hours
+           FROM timesheets
+           WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?`
+        ).bind(OVERTIME_FACTOR, projectId, y, m).first() as any
+        const projectEffHours = projRow?.eff_hours || 0
+        const projectHours    = projRow?.raw_hours || 0
+        if (projectHours === 0) continue
+        const projectLaborCost = Math.round(projectEffHours * costPerHour)
+
+        const existing = await db.prepare(
+          `SELECT id FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
+        ).bind(projectId, mInt, yInt).first() as any
+
+        if (existing) {
+          await db.prepare(
+            `UPDATE project_labor_costs SET total_hours = ?, cost_per_hour = ?, total_labor_cost = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE project_id = ? AND month = ? AND year = ?`
+          ).bind(projectHours, Math.round(costPerHour), projectLaborCost, projectId, mInt, yInt).run()
+          updated++
+        } else {
+          await db.prepare(
+            `INSERT INTO project_labor_costs (project_id, month, year, total_hours, cost_per_hour, total_labor_cost) VALUES (?, ?, ?, ?, ?, ?)`
+          ).bind(projectId, mInt, yInt, projectHours, Math.round(costPerHour), projectLaborCost).run()
+          created++
+        }
+        totalSynced++
+        totalCost += projectLaborCost
+        results.push({ month: mInt, total_hours: projectHours, cost_per_hour: Math.round(costPerHour), total_labor_cost: projectLaborCost })
+      }
+
+      return c.json({
+        success: true, action: 'synced_all',
+        months_synced: totalSynced, created, updated,
+        total_labor_cost: totalCost,
+        data: { total_labor_cost: totalCost, months_synced: totalSynced, results },
+        message: `Đã đồng bộ ${totalSynced} tháng (tổng ${Math.round(totalCost).toLocaleString('vi-VN')} ₫)`
+      })
+    }
+
+    // ── single month mode ────────────────────────────────────────────
+    const mInt = month ? parseInt(month) : new Date().getMonth() + 1
+    const m = String(mInt).padStart(2, '0')
 
     // Check existing
     const existing = await db.prepare(
@@ -1873,7 +1940,7 @@ app.post('/api/projects/:id/labor-costs/sync', authMiddleware, adminOnly, async 
     }
 
     // Calculate với overtime x1.5
-    const { laborCostSource, totalHrs, totalEffectHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt)
+    const { totalHrs, costPerHour } = await computeMonthLaborCost(db, mInt, yInt, OVERTIME_FACTOR)
     if (totalHrs === 0) {
       return c.json({ success: false, error: `Không có dữ liệu timesheet tháng ${mInt}/${yInt}` }, 400)
     }
@@ -1894,12 +1961,12 @@ app.post('/api/projects/:id/labor-costs/sync', authMiddleware, adminOnly, async 
         `UPDATE project_labor_costs SET total_hours = ?, cost_per_hour = ?, total_labor_cost = ?, updated_at = CURRENT_TIMESTAMP
          WHERE project_id = ? AND month = ? AND year = ?`
       ).bind(projectHours, Math.round(costPerHour), projectLaborCost, projectId, mInt, yInt).run()
-      return c.json({ success: true, action: 'updated', data: { total_hours: projectHours, cost_per_hour: Math.round(costPerHour), total_labor_cost: projectLaborCost }, message: `Đã cập nhật chi phí lương` })
+      return c.json({ success: true, action: 'updated', data: { total_hours: projectHours, cost_per_hour: Math.round(costPerHour), total_labor_cost: projectLaborCost }, message: `Đã cập nhật chi phí lương tháng ${mInt}/${yInt}` })
     } else {
       await db.prepare(
         `INSERT INTO project_labor_costs (project_id, month, year, total_hours, cost_per_hour, total_labor_cost) VALUES (?, ?, ?, ?, ?, ?)`
       ).bind(projectId, mInt, yInt, projectHours, Math.round(costPerHour), projectLaborCost).run()
-      return c.json({ success: true, action: 'created', data: { total_hours: projectHours, cost_per_hour: Math.round(costPerHour), total_labor_cost: projectLaborCost }, message: `Đã tạo chi phí lương` })
+      return c.json({ success: true, action: 'created', data: { total_hours: projectHours, cost_per_hour: Math.round(costPerHour), total_labor_cost: projectLaborCost }, message: `Đã tạo chi phí lương tháng ${mInt}/${yInt}` })
     }
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })

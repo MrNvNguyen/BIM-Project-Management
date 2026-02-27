@@ -3431,8 +3431,16 @@ async function loadFinanceProject() {
           ${summary.labor_hours > 0 ? `<div><i class="fas fa-clock mr-1"></i>${summary.labor_hours}h × ${fmtMoney(summary.labor_per_hour)}/h</div>` : ''}
           <div><i class="fas fa-calendar mr-1"></i>Kỳ: <strong>${periodLabel}</strong></div>
           ${summary.labor_months_count > 0 ? `<div><i class="fas fa-layer-group mr-1"></i>${summary.labor_months_count} tháng có dữ liệu lương</div>` : ''}
-          ${summary.labor_source !== 'project_labor_costs' ? `<button onclick="syncLaborForFinProject(${projectId}, '${yf}')" class="ml-auto btn-secondary text-xs py-1 px-2"><i class="fas fa-sync mr-1"></i>Đồng bộ ngay</button>` : ''}
-        </div>` : ''}
+          <button onclick="syncLaborForFinProject(${projectId}, '${yf}')" class="ml-auto btn-secondary text-xs py-1 px-2">
+            <i class="fas fa-sync mr-1"></i>${summary.labor_source === 'project_labor_costs' ? 'Đồng bộ lại' : 'Đồng bộ ngay'}
+          </button>
+        </div>` : `
+        <div class="mt-3 bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-600 flex flex-wrap gap-3 items-center">
+          <div><i class="fas fa-exclamation-circle mr-1 text-orange-500"></i>Chưa có dữ liệu chi phí lương cho dự án này</div>
+          <button onclick="syncLaborForFinProject(${projectId}, '${yf}')" class="ml-auto btn-secondary text-xs py-1 px-2">
+            <i class="fas fa-sync mr-1"></i>Đồng bộ ngay
+          </button>
+        </div>`}
         ${summary.shared_cost > 0 ? `
         <div class="mt-3 bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800 flex flex-wrap gap-3 items-center">
           <i class="fas fa-share-alt text-yellow-600"></i>
@@ -3528,15 +3536,25 @@ async function loadFinanceProject() {
 
 // Sync labor cost for finance project page
 async function syncLaborForFinProject(projectId, year) {
+  const btn = event?.target?.closest('button')
+  const origLabel = btn?.innerHTML || ''
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Đang đồng bộ...' }
   try {
-    const month = new Date().getMonth() + 1
+    // FIX: sync ALL months of the year (all_months=true) instead of just current month
+    // FIX: use result.data?.total_labor_cost (API wraps value in data object)
     const result = await api(`/projects/${projectId}/labor-costs/sync`, {
       method: 'POST',
-      data: { month, year: parseInt(year), force_recalculate: true }
+      data: { year: parseInt(year), all_months: true, force_recalculate: true }
     })
-    toast(`Đã đồng bộ chi phí lương: ${fmtMoney(result.total_labor_cost)}`, 'success')
+    const synced = result.months_synced || 0
+    const total  = result.data?.total_labor_cost || result.total_labor_cost || 0
+    toast(`✅ Đã đồng bộ ${synced} tháng – tổng lương: ${fmtMoney(total)}`, 'success')
     loadFinanceProject()
-  } catch(e) { toast('Lỗi đồng bộ: ' + e.message, 'error') }
+  } catch(e) {
+    toast('Lỗi đồng bộ: ' + e.message, 'error')
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = origLabel }
+  }
 }
 
 // ================================================================
