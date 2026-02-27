@@ -3614,14 +3614,14 @@ async function loadLaborCost() {
       // For per-project totals calculate aggregate hours & avg rate
       const projs = aggData.projects || []
       const totalHrs = projs.reduce((s, p) => s + (p.total_hours || 0), 0)
-      const avgRate = projs.length > 0 ? projs.reduce((s, p) => s + (p.avg_cost_per_hour || 0), 0) / projs.length : 0
+      // grand_avg_cost_per_hour từ API = grand_total_labor_cost / grand_total_eff_hours
+      // Nhất quán với single-month (budget / comp_eff_hours), tránh sai lệch do làm tròn từng dự án
+      const avgRate = aggData.grand_avg_cost_per_hour || 0
       if ($('laborYearlyTotalHours')) $('laborYearlyTotalHours').textContent = fmt(totalHrs) + 'h'
       if ($('laborYearlyAvgRate')) $('laborYearlyAvgRate').textContent = fmtMoney(Math.round(avgRate)) + '/h'
 
-      // Month-by-month breakdown — fetch from labor-costs-yearly for first project
-      // Actually show the per-project aggregation as a "monthly" breakdown if we have it
-      // For "all months" we fetch monthly breakdown per project separately
-      // Show project table in the existing labor table
+      // Hiển thị bảng tổng hợp theo dự án
+      // Chi phí/giờ mỗi dự án = grand_avg_cost_per_hour (tất cả dự án trong cùng kỳ dùng cùng đơn giá)
       const tbody2 = $('laborTable')
       if (tbody2) {
         const rateLabel = fmtMoney(Math.round(avgRate))
@@ -3635,7 +3635,7 @@ async function loadLaborCost() {
             <td class="py-2 pr-3 text-right">
               <span class="badge" style="background:#e0f2fe;color:#0369a1">${totalHrs > 0 ? ((p.total_hours||0)/totalHrs*100).toFixed(1) : 0}%</span>
             </td>
-            <td class="py-2 pr-3 text-right text-purple-600">${fmtMoney(Math.round(p.avg_cost_per_hour||0))}/h</td>
+            <td class="py-2 pr-3 text-right text-purple-600">${rateLabel}/h</td>
             <td class="py-2 text-right font-semibold text-green-700">
               ${fmtMoney(p.total_labor_cost||0)}
               <div class="text-xs text-gray-400">${p.months_count} tháng</div>
