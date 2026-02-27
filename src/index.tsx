@@ -2226,11 +2226,15 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
 
     // ── Totals & profit ─────────────────────────────────────────────
     // Chi phí chung phân bổ về dự án này (theo năm + tháng được chọn)
+    // FIX: Chi phí có month=NULL là chi phí CẢ NĂM → chỉ tính khi query toàn năm (all_months)
+    //      Chi phí có month=M chỉ tính khi M nằm trong danh sách tháng được chọn
     let sharedWhere = `WHERE sca.project_id = ? AND sc.status != 'deleted' AND sc.year = ?`
     const sharedParams: any[] = [projectId, yInt]
     if (selectedMonths !== null) {
-      sharedWhere += ` AND (sc.month IS NULL OR sc.month IN (${selectedMonths.join(',')}))`
+      // Specific months selected: only include shared costs tied to those months (exclude NULL-month annual costs)
+      sharedWhere += ` AND sc.month IN (${selectedMonths.join(',')})`
     }
+    // all_months=true (selectedMonths === null): include all costs for the year (both NULL-month and specific-month)
     const sharedRow = await db.prepare(`
       SELECT COALESCE(SUM(sca.allocated_amount), 0) as total,
              COUNT(DISTINCT sca.shared_cost_id) as cnt
@@ -2397,13 +2401,15 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
     const monthPendingRevenue = revenueMonth?.pending_total || 0
 
     // ── Chi phí chung được phân bổ về dự án này (tháng/năm) ──────────
+    // FIX: Chi phí có month=NULL là chi phí CẢ NĂM → chỉ tính khi query toàn năm
+    //      Khi query theo tháng cụ thể chỉ tính chi phí có month = tháng đó
     const sharedAllocRow = await db.prepare(`
       SELECT COALESCE(SUM(sca.allocated_amount), 0) as shared_total,
              COUNT(DISTINCT sca.shared_cost_id) as shared_count
       FROM shared_cost_allocations sca
       JOIN shared_costs sc ON sc.id = sca.shared_cost_id
       WHERE sca.project_id = ? AND sc.status != 'deleted'
-        AND sc.year = ? AND (sc.month = ? OR sc.month IS NULL)
+        AND sc.year = ? AND sc.month = ?
     `).bind(projectId, yInt, mInt).first() as any
     const sharedCostAllocated = sharedAllocRow?.shared_total || 0
     const sharedCostCount = sharedAllocRow?.shared_count || 0
@@ -3202,12 +3208,13 @@ app.get('/api/data-audit/consistency-check', authMiddleware, adminOnly, async (c
       const otherCosts = otherRow?.total || 0
 
       // Chi phí chung được phân bổ về dự án này tháng đó
+      // FIX: Chi phí có month=NULL là chi phí CẢ NĂM → không tính vào tháng cụ thể
       const sharedRow2 = await db.prepare(
         `SELECT COALESCE(SUM(sca.allocated_amount), 0) as total
          FROM shared_cost_allocations sca
          JOIN shared_costs sc ON sc.id = sca.shared_cost_id
          WHERE sca.project_id = ? AND sc.status != 'deleted'
-           AND sc.year = ? AND (sc.month = ? OR sc.month IS NULL)`
+           AND sc.year = ? AND sc.month = ?`
       ).bind(proj.id, yInt, mInt).first() as any
       const sharedCost = sharedRow2?.total || 0
 
@@ -4251,11 +4258,14 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     `).bind(projectId).all()
 
     // --- Shared cost allocated to this project ---
+    // FIX: Chi phí có month=NULL là chi phí CẢ NĂM → chỉ tính khi query toàn năm (finMonthList === null)
+    //      Khi query theo tháng cụ thể chỉ tính chi phí có month nằm trong danh sách tháng đó
     let sharedWhereFin = `WHERE sca.project_id = ? AND sc.status != 'deleted' AND sc.year = ?`
     const sharedParamsFin: any[] = [projectId, yInt]
     if (finMonthList !== null && finMonthList.length > 0) {
-      sharedWhereFin += ` AND (sc.month IS NULL OR sc.month IN (${finMonthList.join(',')}))`
+      sharedWhereFin += ` AND sc.month IN (${finMonthList.join(',')})`
     }
+    // finMonthList === null means all_months → include all costs for the year (NULL-month + specific-month)
     const sharedRowFin = await db.prepare(`
       SELECT COALESCE(SUM(sca.allocated_amount), 0) as total,
              COUNT(DISTINCT sca.shared_cost_id) as cnt
