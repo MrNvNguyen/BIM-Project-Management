@@ -1969,6 +1969,18 @@
           <input type="text" id="costVendor" class="input-field" placeholder="Tên nhà cung cấp">
         </div>
       </div>
+      <!-- Payment status — chỉ hiện cho mode revenue -->
+      <div id="paymentStatusGroup" style="display:none">
+        <label class="label">Trạng thái thanh toán *</label>
+        <select id="costPaymentStatus" class="select-field">
+          <option value="pending">⏳ Chờ thanh toán</option>
+          <option value="partial">🔶 Thanh toán một phần</option>
+          <option value="paid">✅ Đã thanh toán</option>
+        </select>
+        <p class="text-xs text-amber-600 mt-1" id="paymentStatusHint">
+          ⚠️ Chỉ doanh thu <strong>Đã thanh toán</strong> hoặc <strong>TT một phần</strong> mới được tính vào doanh thu thực tế.
+        </p>
+      </div>
       <div>
         <label class="label">Ghi chú</label>
         <textarea id="costNotes" class="input-field" rows="2"></textarea>

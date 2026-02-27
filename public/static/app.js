@@ -2041,7 +2041,8 @@ async function loadCostAnalysis() {
 
     // Map from new costs-revenue-summary response
     const fin = data.financial || {}
-    const revVal   = fin.revenue?.value || 0
+    const revVal      = fin.revenue?.value || 0
+    const pendingRev  = fin.revenue?.pending_revenue || 0
     const laborVal = fin.costs?.labor?.value || 0
     const otherVal = fin.costs?.other?.value || 0
     const totalVal = fin.costs?.total?.value || 0
@@ -2053,8 +2054,14 @@ async function loadCostAnalysis() {
     $('anaOtherCost').textContent = fmtMoney(otherVal)
     $('anaTotalCost').textContent = fmtMoney(totalVal)
     $('anaProfit').textContent    = fmtMoney(profitVal)
-    // Hiển thị tỷ suất LN: chỉ tính được khi có doanh thu
-    $('anaProfitMargin').textContent = revVal > 0 ? `Tỷ suất LN: ${margin ?? 'N/A'}%` : '⚠️ Chưa có doanh thu'
+    // Hiển thị tỷ suất LN và cảnh báo pending revenue
+    if (revVal > 0) {
+      $('anaProfitMargin').textContent = `Tỷ suất LN: ${margin ?? 'N/A'}%`
+    } else if (pendingRev > 0) {
+      $('anaProfitMargin').textContent = `⏳ Chờ TT: ${fmtMoney(pendingRev)} (chưa tính DT)`
+    } else {
+      $('anaProfitMargin').textContent = '⚠️ Chưa có doanh thu'
+    }
 
     const profitCard = $('anaProfitCard')
     if (profitCard) {
@@ -2446,6 +2453,10 @@ async function openCostModal(mode, id = null) {
   const typeGroup = $('costTypeGroup')
   typeGroup.style.display = mode === 'cost' ? 'block' : 'none'
 
+  // Hiện/ẩn trường trạng thái thanh toán (chỉ cho revenue)
+  const payGroup = $('paymentStatusGroup')
+  if (payGroup) payGroup.style.display = mode === 'revenue' ? 'block' : 'none'
+
   $('costProject').innerHTML = '<option value="">-- Chọn dự án --</option>' + allProjects.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')
 
   if (id) {
@@ -2459,6 +2470,7 @@ async function openCostModal(mode, id = null) {
       $('costVendor').value = item.vendor || ''
       $('costNotes').value = item.notes || ''
       if (mode === 'cost') $('costType').value = item.cost_type || 'other'
+      if (mode === 'revenue' && $('costPaymentStatus')) $('costPaymentStatus').value = item.payment_status || 'pending'
     }
   } else {
     $('costProject').value = ''
@@ -2469,6 +2481,8 @@ async function openCostModal(mode, id = null) {
     $('costVendor').value = ''
     $('costNotes').value = ''
     if (mode === 'cost') $('costType').value = 'other'
+    // Mặc định "Chờ thanh toán" khi tạo mới doanh thu
+    if (mode === 'revenue' && $('costPaymentStatus')) $('costPaymentStatus').value = 'pending'
   }
 
   openModal('costModal')
@@ -2490,6 +2504,10 @@ $('costForm').addEventListener('submit', async (e) => {
   if (mode === 'cost') {
     data.cost_type = $('costType').value
     data.vendor = $('costVendor').value
+  }
+  if (mode === 'revenue') {
+    // Gửi trạng thái thanh toán — bắt buộc cho revenue
+    data.payment_status = $('costPaymentStatus')?.value || 'pending'
   }
   try {
     const endpoint = mode === 'cost' ? '/costs' : '/revenues'
@@ -3209,6 +3227,7 @@ async function loadFinanceProject() {
 
     // Revenue progress vs contract
     const revenueProgress = project.contract_value > 0 ? Math.min(100, Math.round(summary.total_revenue / project.contract_value * 100)) : 0
+    const pendingRevenue = summary.pending_revenue || 0
     const costProgress = project.contract_value > 0 ? Math.min(100, Math.round(summary.total_cost / project.contract_value * 100)) : 0
 
     // Labor source badge
@@ -3269,9 +3288,13 @@ async function loadFinanceProject() {
                <div class="mt-2">
                  <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>Tiến độ HĐ</span><span>${revenueProgress}%</span></div>
                  <div class="w-full bg-gray-200 rounded-full h-1.5"><div class="bg-green-500 h-1.5 rounded-full" style="width:${revenueProgress}%"></div></div>
-               </div>`
-            : `<p class="text-xl font-bold text-gray-400 mt-1">— 0 ₫</p>
-               <p class="text-xs text-orange-500 mt-1">⚠️ Chưa khai báo doanh thu</p>`
+               </div>
+               ${pendingRevenue > 0 ? `<p class="text-xs text-amber-600 mt-1">⏳ Chờ TT: ${fmtMoney(pendingRevenue)}</p>` : ''}`
+            : pendingRevenue > 0
+              ? `<p class="text-xl font-bold text-amber-500 mt-1">${fmtMoney(pendingRevenue)}</p>
+                 <p class="text-xs text-amber-600 mt-1">⏳ Chờ thanh toán (chưa tính DT)</p>`
+              : `<p class="text-xl font-bold text-gray-400 mt-1">— 0 ₫</p>
+                 <p class="text-xs text-orange-500 mt-1">⚠️ Chưa khai báo doanh thu</p>`
           }
         </div>
         <div class="kpi-card" style="border-color:#2196F3">
@@ -3372,12 +3395,16 @@ async function loadFinanceProject() {
       <div class="card mb-4">
         <h3 class="font-bold text-sm mb-3"><i class="fas fa-money-bill-wave text-green-600 mr-2"></i>Thông tin doanh thu</h3>
         <div class="grid grid-cols-3 gap-4 text-center">
-          <div class="${summary.total_revenue > 0 ? 'bg-green-50' : 'bg-orange-50'} rounded-lg p-3">
-            <p class="text-xs text-gray-500">Doanh thu thực tế</p>
+          <div class="${summary.total_revenue > 0 ? 'bg-green-50' : (pendingRevenue > 0 ? 'bg-amber-50' : 'bg-orange-50')} rounded-lg p-3">
+            <p class="text-xs text-gray-500">Doanh thu đã TT</p>
             ${summary.total_revenue > 0
-              ? `<p class="font-bold text-green-700 text-base mt-1">${fmtMoney(summary.total_revenue)}</p>`
-              : `<p class="font-bold text-orange-500 text-base mt-1">— 0 ₫</p>
-                 <p class="text-xs text-orange-400">⚠️ Chưa khai báo</p>`
+              ? `<p class="font-bold text-green-700 text-base mt-1">${fmtMoney(summary.total_revenue)}</p>
+                 ${pendingRevenue > 0 ? `<p class="text-xs text-amber-600 mt-0.5">⏳ +${fmtMoney(pendingRevenue)} chờ TT</p>` : ''}`
+              : pendingRevenue > 0
+                ? `<p class="font-bold text-amber-600 text-base mt-1">${fmtMoney(pendingRevenue)}</p>
+                   <p class="text-xs text-amber-500">⏳ Chờ thanh toán</p>`
+                : `<p class="font-bold text-orange-500 text-base mt-1">— 0 ₫</p>
+                   <p class="text-xs text-orange-400">⚠️ Chưa khai báo</p>`
             }
           </div>
           <div class="bg-blue-50 rounded-lg p-3">

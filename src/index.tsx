@@ -2206,17 +2206,23 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
     const totalOtherCosts = otherCostArr.reduce((s, r) => s + (r.total_amount || 0), 0)
 
     // ── Step 3: Revenue ─────────────────────────────────────────────
+    // Chỉ tính doanh thu đã thanh toán (paid) hoặc thanh toán một phần (partial)
+    // Chờ TT (pending) chưa về tài khoản → không tính là doanh thu thực tế
     const revRow = await db.prepare(`
-      SELECT SUM(pr.amount) as total FROM project_revenues pr
+      SELECT
+        SUM(CASE WHEN pr.payment_status IN ('paid','partial') THEN pr.amount ELSE 0 END) as total,
+        SUM(CASE WHEN pr.payment_status = 'pending' THEN pr.amount ELSE 0 END) as pending_total
+      FROM project_revenues pr
       WHERE pr.project_id = ? ${revDateFilter}
     `).bind(projectId).first() as any
     const revenue = revRow?.total || 0
+    const pendingRevenue = revRow?.pending_total || 0
 
     // ── Totals & profit ─────────────────────────────────────────────
     const totalCosts = laborCost + totalOtherCosts
     // FIX: Doanh thu thực tế = CHỈ từ project_revenues đã khai báo
     // KHÔNG fallback sang contract_value — chưa khai báo = 0
-    const revenueBase = revenue  // actual entered revenue only
+    const revenueBase = revenue  // chỉ tính paid + partial
     // FIX Bug3: Luôn tính profit = revenue - cost (âm khi chưa có doanh thu nhưng đã có chi phí)
     // Chỉ để null khi KHÔNG có cả doanh thu lẫn chi phí (dự án chưa hoạt động)
     const profit = (revenueBase > 0 || totalCosts > 0) ? revenueBase - totalCosts : null
@@ -2251,8 +2257,8 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
         selected_months: selectedMonths,
         months_count: laborMonthsCount },
       financial: {
-        revenue: { value: revenueBase, actual_revenue: revenue, contract_value: contractValue,
-          label: revenue > 0 ? 'Doanh thu thực thu' : 'Chưa khai báo doanh thu' },
+        revenue: { value: revenueBase, actual_revenue: revenue, pending_revenue: pendingRevenue, contract_value: contractValue,
+          label: revenue > 0 ? 'Doanh thu đã thanh toán' : (pendingRevenue > 0 ? 'Chờ thanh toán' : 'Chưa khai báo doanh thu') },
         costs: {
           labor: { value: laborCost, label: 'Chi phí lương', source: laborSource,
             synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (đã đồng bộ)' : 'Tính real-time từ timesheet',
@@ -2349,13 +2355,17 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
       validation_warnings.push(`Tổng chi phí (${fmtNum(totalCosts)} ₫) vượt 120% giá trị hợp đồng (${fmtNum(contractValue * 1.2)} ₫)`)
     }
 
-    // --- Doanh thu thực tế trong tháng ---
+    // --- Doanh thu thực tế trong tháng (chỉ paid + partial) ---
     const revenueMonth = await db.prepare(
-      `SELECT SUM(amount) as total FROM project_revenues
+      `SELECT
+         SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as total,
+         SUM(CASE WHEN payment_status = 'pending' THEN amount ELSE 0 END) as pending_total
+       FROM project_revenues
        WHERE project_id = ?
        AND strftime('%Y', revenue_date) = ? AND strftime('%m', revenue_date) = ?`
     ).bind(projectId, y, m).first() as any
     const monthRevenue = revenueMonth?.total || 0
+    const monthPendingRevenue = revenueMonth?.pending_total || 0
 
     // FIX Bug3: Luôn tính profit kể cả khi chưa có doanh thu
     // null chỉ khi không có cả doanh thu lẫn chi phí
@@ -2399,7 +2409,8 @@ app.get('/api/projects/:id/costs-summary', authMiddleware, adminOnly, async (c) 
       year: yInt,
       period: `${y}-${m}`,
       revenue: {
-        month_revenue: monthRevenue,
+        month_revenue: monthRevenue,           // đã thanh toán (paid + partial)
+        pending_revenue: monthPendingRevenue,  // chờ thanh toán
         contract_value: contractValue
       },
       costs: {
@@ -2798,12 +2809,16 @@ app.get('/api/data-audit/consistency-check', authMiddleware, adminOnly, async (c
       const otherCosts = otherRow?.total || 0
       const totalCosts = laborCost + otherCosts
 
-      // Revenue for the month
+      // Revenue for the month (chỉ paid + partial)
       const revRow = await db.prepare(
-        `SELECT SUM(amount) as total FROM project_revenues
+        `SELECT
+           SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as total,
+           SUM(CASE WHEN payment_status = 'pending' THEN amount ELSE 0 END) as pending_total
+         FROM project_revenues
          WHERE project_id = ? AND strftime('%Y', revenue_date) = ? AND strftime('%m', revenue_date) = ?`
       ).bind(proj.id, y, m).first() as any
       const revenue = revRow?.total || 0
+      const pendingRev = revRow?.pending_total || 0
 
       const profit = revenue - totalCosts
       const profitMargin = revenue > 0 ? (profit / revenue) * 100 : null
@@ -3234,7 +3249,8 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
 
     const revenueByProject = await db.prepare(`
       SELECT p.id, p.code, p.name, p.contract_value,
-        COALESCE(SUM(pr.amount), 0) as total_revenue
+        COALESCE(SUM(CASE WHEN pr.payment_status IN ('paid','partial') THEN pr.amount ELSE 0 END), 0) as total_revenue,
+        COALESCE(SUM(CASE WHEN pr.payment_status = 'pending' THEN pr.amount ELSE 0 END), 0) as pending_revenue
       FROM projects p
       LEFT JOIN project_revenues pr ON pr.project_id = p.id
         AND strftime('%Y', pr.revenue_date) = ?
@@ -3805,13 +3821,17 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       laborCost = contractValue
     }
 
-    // --- Revenue ---
-    // FIX: Doanh thu thực tế CHỈ từ project_revenues đã khai báo
-    // KHÔNG dùng contract_value làm fallback — chưa khai báo = 0
+    // --- Revenue (chỉ paid + partial) ---
+    // FIX: Doanh thu thực tế CHỈ từ project_revenues đã thanh toán
+    // Chờ TT (pending) chưa về tài khoản → không tính là doanh thu
     const revenues = await db.prepare(
-      `SELECT SUM(amount) as total FROM project_revenues WHERE project_id = ? ${revDateFilter}`
+      `SELECT
+         SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as total,
+         SUM(CASE WHEN payment_status = 'pending' THEN amount ELSE 0 END) as pending_total
+       FROM project_revenues WHERE project_id = ? ${revDateFilter}`
     ).bind(projectId).first() as any
     const totalRevenue = revenues?.total || 0
+    const pendingRevenue2 = revenues?.pending_total || 0
 
     // --- Timeline ---
     const timeline = await db.prepare(`
@@ -3855,7 +3875,8 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       project: { id: project.id, code: project.code, name: project.name, contract_value: contractValue },
       period: { label: periodLabel, year: yInt },
       summary: {
-        total_revenue: totalRevenue,       // doanh thu thực tế đã khai báo (0 nếu chưa có)
+        total_revenue: totalRevenue,       // doanh thu đã thanh toán (paid + partial)
+        pending_revenue: pendingRevenue2,  // chờ thanh toán (chưa tính vào doanh thu)
         contract_value: contractValue,     // giá trị hợp đồng (chỉ tham khảo)
         total_cost: totalCost, labor_cost: laborCost,
         other_cost: totalOtherCost,
