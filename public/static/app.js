@@ -1877,14 +1877,22 @@ async function loadCostDashboard() {
     const profit = totalRevenue - totalCost
     const margin = totalRevenue > 0 ? (profit / totalRevenue * 100).toFixed(1) : 0
     const totalShared = sharedSummary?.total_shared_cost || 0
+    const totalSharedAllocated = sharedByProj.reduce((s, p) => s + (p.allocated_cost || 0), 0)
 
     $('costKpiRevenue').textContent = fmtMoney(totalRevenue)
-    $('costKpiCost').textContent = fmtMoney(totalCost) + (totalShared > 0 ? ` <span class="text-xs font-normal text-yellow-600">(+${fmtMoney(totalShared)} chung)</span>` : '')
-    $('costKpiProfit').textContent = fmtMoney(profit)
+    $('costKpiCost').innerHTML = fmtMoney(totalCost) +
+      (totalSharedAllocated > 0
+        ? `<br><span class="text-xs font-normal text-yellow-600" title="Đã bao gồm ${fmtMoney(totalSharedAllocated)} chi phí chung phân bổ"><i class="fas fa-share-alt mr-1"></i>Gồm ${fmtMoney(totalSharedAllocated)} chi phí chung</span>`
+        : '')
+    $('costKpiProfit').innerHTML = fmtMoney(profit)
+    const profitEl = $('costKpiProfit')
+    if (profitEl) profitEl.className = `text-2xl font-bold mt-1 ${profit < 0 ? 'text-red-600' : 'text-purple-600'}`
     $('costKpiMargin').textContent = margin + '%'
+    const marginEl = $('costKpiMargin')
+    if (marginEl) marginEl.className = `text-2xl font-bold mt-1 ${Number(margin) < 0 ? 'text-red-600' : Number(margin) < 10 ? 'text-orange-500' : 'text-yellow-600'}`
 
     renderCostProjectChart(summary.revenue_by_project, Object.values(costByProject))
-    renderCostMonthlyChart(summary.monthly_summary)
+    renderCostMonthlyChart(summary.monthly_summary, sharedSummary?.by_project || [])
 
     loadCosts()
   } catch (e) { toast('Lỗi tải dữ liệu tài chính: ' + e.message, 'error') }
@@ -1913,11 +1921,12 @@ function renderCostProjectChart(revenues, costs) {
   })
 }
 
-function renderCostMonthlyChart(data) {
+function renderCostMonthlyChart(data, sharedByProject) {
   destroyChart('costMonthly')
   const ctx = $('costMonthlyChart')
   if (!ctx) return
 
+  // Aggregate monthly non-salary + labor costs
   const monthlyMap = {}
   data?.forEach(d => {
     if (!monthlyMap[d.month]) monthlyMap[d.month] = 0
