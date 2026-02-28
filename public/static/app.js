@@ -2142,18 +2142,21 @@ async function loadCostAnalysis() {
       const laborMonths = fin.costs?.labor?.details?.months_count || 0
       const periodType2 = data.period?.type || 'single_month'
       const isMultiPeriod = periodType2 === 'all_months' || periodType2 === 'multiple_months'
-      const colorClass = src === 'project_labor_costs' ? 'bg-green-50 border-green-200' : 'bg-yellow-50 border-yellow-200'
-      const iconClass  = src === 'project_labor_costs' ? 'fa-check-circle text-green-500' : 'fa-exclamation-circle text-yellow-500'
-      const textClass  = src === 'project_labor_costs' ? 'text-green-700' : 'text-yellow-700'
+      const isMixed = src === 'mixed'
+      const isSynced = src === 'project_labor_costs'
+      const colorClass = isSynced ? 'bg-green-50 border-green-200' : isMixed ? 'bg-blue-50 border-blue-200' : 'bg-yellow-50 border-yellow-200'
+      const iconClass  = isSynced ? 'fa-check-circle text-green-500' : isMixed ? 'fa-layer-group text-blue-500' : 'fa-exclamation-circle text-yellow-500'
+      const textClass  = isSynced ? 'text-green-700' : isMixed ? 'text-blue-700' : 'text-yellow-700'
+      const srcLabel = isSynced ? 'Đã đồng bộ' : isMixed ? 'Đồng bộ + Real-time (hybrid)' : 'Real-time từ timesheet'
       syncBadge.innerHTML = `<div class="flex items-center gap-2 mb-3 p-2 rounded-lg ${colorClass} border">
         <i class="fas ${iconClass} text-sm flex-shrink-0"></i>
         <span class="text-xs ${textClass} flex-1">
-          Chi phí lương: <strong>${syncedFrom || (src === 'project_labor_costs' ? 'Đã đồng bộ từ Chi Phí Lương' : 'Real-time từ timesheet')}</strong>
+          Chi phí lương: <strong>${syncedFrom || srcLabel}</strong>
           ${periodLabel ? ` &nbsp;|&nbsp; Kỳ: <strong>${periodLabel}</strong>` : ''}
           ${isMultiPeriod && laborMonths > 0 ? ` &nbsp;|&nbsp; <strong>${laborMonths} tháng</strong> có dữ liệu` : ''}
           ${isMultiPeriod ? ` &nbsp;|&nbsp; Tổng = SUM(${periodType2 === 'all_months' ? 'T1→T12' : 'các tháng chọn'})` : ''}
         </span>
-        ${src !== 'project_labor_costs' && periodType2 === 'single_month'
+        ${!isSynced && !isMixed && periodType2 === 'single_month'
           ? `<button onclick="createLaborForAnalysisProject(${projId})" class="ml-auto text-xs text-yellow-700 underline hover:no-underline flex-shrink-0">Đồng bộ ngay</button>`
           : ''}
       </div>`
@@ -3309,10 +3312,12 @@ async function loadFinanceProject() {
 
     // Labor source badge
     const laborSourceBadge = summary.labor_source === 'project_labor_costs'
-      ? `<span class="inline-flex items-center gap-1 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full"><i class="fas fa-database"></i> project_labor_costs</span>`
-      : summary.labor_source === 'realtime'
-        ? `<span class="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full"><i class="fas fa-clock"></i> Real-time</span>`
-        : `<span class="inline-flex items-center gap-1 text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">Chưa có dữ liệu</span>`
+      ? `<span class="inline-flex items-center gap-1 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full"><i class="fas fa-database"></i> Đã đồng bộ</span>`
+      : summary.labor_source === 'mixed'
+        ? `<span class="inline-flex items-center gap-1 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full"><i class="fas fa-layer-group"></i> Đồng bộ + Real-time</span>`
+        : summary.labor_source === 'realtime'
+          ? `<span class="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full"><i class="fas fa-clock"></i> Real-time</span>`
+          : `<span class="inline-flex items-center gap-1 text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">Chưa có dữ liệu</span>`
 
     // Monthly breakdown from timeline (aggregate by month)
     const timelineByMonth = {}

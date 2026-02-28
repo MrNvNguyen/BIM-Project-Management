@@ -2193,106 +2193,83 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
       revDateFilter  = `AND pr.revenue_date >= '${fyStart}' AND pr.revenue_date <= '${fyEnd}'`
     }
 
-    // ── Step 1: Labor cost — SUM from project_labor_costs ──────────
-    // project_labor_costs dùng (month, year) theo dương lịch — cần map tháng NTC → lịch
-    // Với NTC bắt đầu tháng 2: tháng 2-12 thuộc năm yInt, tháng 1 thuộc năm yInt+1
-    let laborWhere = `WHERE plc.project_id = ?`
-    const laborParams: any[] = [projectId]
-    if (selectedMonths !== null && all_months !== 'true') {
-      // Map tháng NTC → (year, month) lịch
-      const calConds = selectedMonths.map(lm => {
-        const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
-        return `(plc.year = ${calYear} AND plc.month = ${calMonth})`
-      })
-      laborWhere += ` AND (${calConds.join(' OR ')})`
-    } else {
-      // Toàn NTC: tháng 2-12 năm yInt và tháng 1 năm (yInt+1)
-      const fyEnd1Year = fySettings.start_month === 1 ? yInt : yInt + 1
-      if (fySettings.start_month === 1) {
-        // NTC = năm dương lịch bình thường
-        laborWhere += ` AND plc.year = ?`
-        laborParams.push(yInt)
-      } else {
-        // NTC bắc qua 2 năm lịch
-        laborWhere += ` AND ((plc.year = ? AND plc.month >= ?) OR (plc.year = ? AND plc.month < ?))`
-        laborParams.push(yInt, fySettings.start_month, fyEnd1Year, fySettings.start_month)
+    // ── Step 1: Labor cost — HYBRID từng tháng ──────────────────────
+    // Mỗi tháng: ưu tiên project_labor_costs (đã sync), fallback real-time.
+    // Cộng dồn tất cả → đúng kể cả khi chỉ sync 1 phần tháng trong NTC.
+    const monthsToCalcCRS: number[] = selectedMonths !== null
+      ? selectedMonths
+      : (() => {
+          const sm = fySettings.start_month
+          const result: number[] = []
+          for (let i = 0; i < 12; i++) result.push(((sm - 1 + i) % 12) + 1)
+          return result
+        })()
+
+    let laborCost   = 0
+    let laborHours  = 0
+    let laborPerHour = 0
+    let laborMonthsCount = 0
+    let laborSource = 'none'
+    let crsHasSynced = false; let crsHasRealtime = false
+    let crsCphSum = 0; let crsCphCount = 0
+
+    for (const lm of monthsToCalcCRS) {
+      const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
+      const calY = String(calYear)
+      const calM = String(calMonth).padStart(2, '0')
+
+      // Ưu tiên cached
+      const cachedRow = await db.prepare(
+        `SELECT total_labor_cost, total_hours, cost_per_hour
+         FROM project_labor_costs plc WHERE plc.project_id = ? AND plc.month = ? AND plc.year = ?`
+      ).bind(projectId, calMonth, calYear).first() as any
+
+      if (cachedRow?.total_labor_cost) {
+        laborCost += cachedRow.total_labor_cost
+        laborHours += cachedRow.total_hours || 0
+        crsCphSum += cachedRow.cost_per_hour || 0
+        crsCphCount++
+        laborMonthsCount++
+        crsHasSynced = true
+        continue
       }
+
+      // Fallback real-time
+      const mlcRow = await db.prepare(
+        `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
+      ).bind(calMonth, calYear).first() as any
+      if (!mlcRow?.total_labor_cost) continue
+
+      const projHrsRow = await db.prepare(`
+        SELECT SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
+               SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
+        FROM timesheets
+        WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+      `).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
+
+      const compHrsRow = await db.prepare(`
+        SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+        FROM timesheets
+        WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+      `).bind(OVERTIME_FACTOR, calY, calM).first() as any
+
+      const projRaw = projHrsRow?.proj_raw || 0
+      const projEff = projHrsRow?.proj_eff || 0
+      const compEff = compHrsRow?.comp_eff || 0
+      if (projRaw <= 0 || compEff <= 0) continue
+
+      const cph = mlcRow.total_labor_cost / compEff
+      const mc  = Math.round(projEff * cph)
+      laborCost += mc; laborHours += projRaw
+      crsCphSum += cph; crsCphCount++
+      laborMonthsCount++
+      crsHasRealtime = true
     }
-    // For all_months=true: no month filter → SUM all months in the fiscal year
 
-    const laborRow = await db.prepare(
-      `SELECT SUM(plc.total_labor_cost) as total_lc,
-              SUM(plc.total_hours)      as total_hrs,
-              AVG(plc.cost_per_hour)    as avg_cph,
-              COUNT(DISTINCT plc.month) as m_cnt
-       FROM project_labor_costs plc ${laborWhere}`
-    ).bind(...laborParams).first() as any
-
-    let laborCost   = laborRow?.total_lc || 0
-    let laborHours  = laborRow?.total_hrs || 0
-    let laborPerHour = laborRow?.avg_cph || 0
-    let laborMonthsCount = laborRow?.m_cnt || 0
-    let laborSource = laborCost > 0 ? 'project_labor_costs' : 'none'
-
-    // ── Fallback: real-time khi chưa có cached data ─────────────────
-    // Dùng SQL JOIN thay vì vòng lặp để tránh D1 concurrent bug
-    // Overtime x1.5: effective_hours = regular + overtime*1.5 (nội bộ)
-    if (laborCost === 0) {
-      // Danh sách tháng NTC cần tính (dạng logic 1-12 trong NTC)
-      const monthsToCalc: number[] = selectedMonths !== null
-        ? selectedMonths
-        : (() => {
-            // Tất cả tháng trong NTC theo thứ tự: từ start_month đến end_month
-            const sm = fySettings.start_month
-            const result: number[] = []
-            for (let i = 0; i < 12; i++) {
-              result.push(((sm - 1 + i) % 12) + 1)
-            }
-            return result
-          })()
-
-      // Tính từng tháng vì mỗi tháng có thể thuộc calendar year khác nhau
-      let rtLaborCost = 0; let rtHours = 0; let rtCphSum = 0; let rtMonths = 0
-
-      for (const lm of monthsToCalc) {
-        const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
-        const calY = String(calYear)
-        const calM = String(calMonth).padStart(2, '0')
-
-        const mlcRow = await db.prepare(
-          `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
-        ).bind(calMonth, calYear).first() as any
-        if (!mlcRow?.total_labor_cost) continue
-
-        const projHrsRow = await db.prepare(`
-          SELECT SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
-                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
-          FROM timesheets
-          WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
-        `).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
-
-        const compHrsRow = await db.prepare(`
-          SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
-          FROM timesheets
-          WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
-        `).bind(OVERTIME_FACTOR, calY, calM).first() as any
-
-        const projRaw = projHrsRow?.proj_raw || 0
-        const projEff = projHrsRow?.proj_eff || 0
-        const compEff = compHrsRow?.comp_eff || 0
-        if (projRaw <= 0 || compEff <= 0) continue
-
-        const cph = mlcRow.total_labor_cost / compEff
-        const mc  = Math.round(projEff * cph)
-        rtLaborCost += mc; rtHours += projRaw; rtCphSum += cph; rtMonths++
-      }
-
-      if (rtLaborCost > 0) {
-        laborCost = rtLaborCost; laborHours = rtHours
-        laborPerHour = rtMonths > 0 ? rtCphSum / rtMonths : 0
-        laborMonthsCount = rtMonths; laborSource = 'realtime'
-      }
-    }
+    laborPerHour = crsCphCount > 0 ? crsCphSum / crsCphCount : 0
+    laborSource = laborCost > 0
+      ? (crsHasSynced && crsHasRealtime ? 'mixed' : crsHasSynced ? 'project_labor_costs' : 'realtime')
+      : 'none'
 
     // ── Validate labor cost cap ─────────────────────────────────────
     const validation_warnings: string[] = []
@@ -2394,7 +2371,7 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
           label: revenue > 0 ? 'Doanh thu đã thanh toán' : (pendingRevenue > 0 ? 'Chờ thanh toán' : 'Chưa khai báo doanh thu') },
         costs: {
           labor: { value: laborCost, label: 'Chi phí lương', source: laborSource,
-            synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (đã đồng bộ)' : 'Tính real-time từ timesheet',
+            synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (đã đồng bộ)' : laborSource === 'mixed' ? 'Hybrid: đồng bộ + real-time' : 'Tính real-time từ timesheet',
             details: { total_hours: laborHours, cost_per_hour: Math.round(laborPerHour),
               months_count: laborMonthsCount,
               formula: laborHours > 0
@@ -2408,7 +2385,7 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
       },
       cost_breakdown: costBreakdown,
       data_sync: {
-        labor_synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (project_labor_costs)' : 'Real-time calculation',
+        labor_synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (project_labor_costs)' : laborSource === 'mixed' ? 'Hybrid (đồng bộ + real-time)' : 'Real-time calculation',
         last_updated: new Date().toISOString()
       },
       validation: { warnings: validation_warnings, has_warnings: validation_warnings.length > 0,
@@ -4453,89 +4430,79 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
     ).bind(projectId).all()
     const totalOtherCost = (otherCosts.results as any[]).reduce((s, c) => s + (c as any).total, 0)
 
-    // --- Labor cost: aggregate from project_labor_costs for the period ---
+    // --- Labor cost: tính HYBRID từng tháng ---
+    // Mỗi tháng trong NTC: ưu tiên project_labor_costs (đã sync),
+    // nếu chưa sync thì tính real-time từ monthly_labor_costs + timesheets.
+    // Cộng dồn tất cả tháng → tổng chính xác dù chỉ sync 1 phần.
     let laborCost = 0; let laborHours = 0; let laborPerHour = 0; let laborSource = 'none'
     let laborMonthsCount = 0
+    let hasSynced = false; let hasRealtime = false
 
-    // Build labor WHERE using calendar year/month mapping
-    let laborWhere = `WHERE project_id = ?`
-    const laborParams: any[] = [projectId]
-    if (finMonthList !== null && finMonthList.length > 0) {
-      const calConds = finMonthList.map(lm => {
-        const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
-        return `(year = ${calYear} AND month = ${calMonth})`
-      })
-      laborWhere += ` AND (${calConds.join(' OR ')})`
-    } else {
-      // Toàn NTC: bao gồm cả 2 năm lịch nếu NTC bắc qua 2 năm
-      const fyEnd1Year = fySettings.start_month === 1 ? yInt : yInt + 1
-      if (fySettings.start_month === 1) {
-        laborWhere += ` AND year = ?`
-        laborParams.push(yInt)
-      } else {
-        laborWhere += ` AND ((year = ? AND month >= ?) OR (year = ? AND month < ?))`
-        laborParams.push(yInt, fySettings.start_month, fyEnd1Year, fySettings.start_month)
+    // Xác định danh sách tháng NTC cần tính
+    const monthsToCalcFin: number[] = finMonthList ?? (() => {
+      const sm = fySettings.start_month
+      return Array.from({ length: 12 }, (_, i) => ((sm - 1 + i) % 12) + 1)
+    })()
+
+    let totalCphSum = 0; let totalCphCount = 0
+
+    for (const lm of monthsToCalcFin) {
+      const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
+      const calY = String(calYear)
+      const calM = String(calMonth).padStart(2, '0')
+
+      // 1. Thử lấy từ project_labor_costs (đã sync)
+      const cachedRow = await db.prepare(
+        `SELECT total_labor_cost, total_hours, cost_per_hour
+         FROM project_labor_costs WHERE project_id = ? AND month = ? AND year = ?`
+      ).bind(projectId, calMonth, calYear).first() as any
+
+      if (cachedRow?.total_labor_cost) {
+        laborCost += cachedRow.total_labor_cost
+        laborHours += cachedRow.total_hours || 0
+        totalCphSum += cachedRow.cost_per_hour || 0
+        totalCphCount++
+        laborMonthsCount++
+        hasSynced = true
+        continue
       }
+
+      // 2. Fallback real-time từ monthly_labor_costs + timesheets
+      const mlcRow = await db.prepare(
+        `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
+      ).bind(calMonth, calYear).first() as any
+      if (!mlcRow?.total_labor_cost) continue
+
+      const projHrsRow = await db.prepare(`
+        SELECT SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
+               SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
+        FROM timesheets
+        WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+      `).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
+
+      const compHrsRow = await db.prepare(`
+        SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
+        FROM timesheets
+        WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
+      `).bind(OVERTIME_FACTOR, calY, calM).first() as any
+
+      const projRaw = projHrsRow?.proj_raw || 0
+      const projEff = projHrsRow?.proj_eff || 0
+      const compEff = compHrsRow?.comp_eff || 0
+      if (projRaw <= 0 || compEff <= 0) continue
+
+      const cph = mlcRow.total_labor_cost / compEff
+      const mc  = Math.round(projEff * cph)
+      laborCost += mc; laborHours += projRaw
+      totalCphSum += cph; totalCphCount++
+      laborMonthsCount++
+      hasRealtime = true
     }
 
-    const laborRow = await db.prepare(
-      `SELECT SUM(total_labor_cost) as lc, SUM(total_hours) as hrs, AVG(cost_per_hour) as cph,
-              COUNT(DISTINCT month) as m_cnt
-       FROM project_labor_costs ${laborWhere}`
-    ).bind(...laborParams).first() as any
-
-    if (laborRow?.lc) {
-      laborCost = laborRow.lc; laborHours = laborRow.hrs || 0; laborPerHour = laborRow.cph || 0
-      laborMonthsCount = laborRow.m_cnt || 0
-      laborSource = 'project_labor_costs'
-    } else {
-      // Fallback: real-time — tính từng tháng vì có thể bắc qua 2 năm lịch
-      const monthsToCalc = finMonthList ?? (() => {
-        const sm = fySettings.start_month
-        return Array.from({ length: 12 }, (_, i) => ((sm - 1 + i) % 12) + 1)
-      })()
-
-      let rtTotal = 0; let rtHours = 0; let rtCphSum = 0; let rtMonths = 0
-
-      for (const lm of monthsToCalc) {
-        const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
-        const calY = String(calYear)
-        const calM = String(calMonth).padStart(2, '0')
-
-        const mlcRow = await db.prepare(
-          `SELECT total_labor_cost FROM monthly_labor_costs WHERE month = ? AND year = ?`
-        ).bind(calMonth, calYear).first() as any
-        if (!mlcRow?.total_labor_cost) continue
-
-        const projHrsRow = await db.prepare(`
-          SELECT SUM(regular_hours + IFNULL(overtime_hours,0))     as proj_raw,
-                 SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as proj_eff
-          FROM timesheets
-          WHERE project_id = ? AND strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
-        `).bind(OVERTIME_FACTOR, projectId, calY, calM).first() as any
-
-        const compHrsRow = await db.prepare(`
-          SELECT SUM(regular_hours + IFNULL(overtime_hours,0) * ?) as comp_eff
-          FROM timesheets
-          WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
-        `).bind(OVERTIME_FACTOR, calY, calM).first() as any
-
-        const projRaw = projHrsRow?.proj_raw || 0
-        const projEff = projHrsRow?.proj_eff || 0
-        const compEff = compHrsRow?.comp_eff || 0
-        if (projRaw <= 0 || compEff <= 0) continue
-
-        const cph = mlcRow.total_labor_cost / compEff
-        const mc  = Math.round(projEff * cph)
-        rtTotal += mc; rtHours += projRaw; rtCphSum += cph; rtMonths++
-      }
-
-      if (rtTotal > 0) {
-        laborCost = rtTotal; laborHours = rtHours
-        laborPerHour = rtMonths > 0 ? rtCphSum / rtMonths : 0
-        laborMonthsCount = rtMonths; laborSource = 'realtime'
-      }
-    }
+    laborPerHour = totalCphCount > 0 ? totalCphSum / totalCphCount : 0
+    laborSource = laborCost > 0
+      ? (hasSynced && hasRealtime ? 'mixed' : hasSynced ? 'project_labor_costs' : 'realtime')
+      : 'none'
 
     // Validate labor cost
     if (contractValue > 0 && laborCost > contractValue) {
