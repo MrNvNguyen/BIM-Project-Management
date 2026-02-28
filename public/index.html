@@ -155,12 +155,12 @@
     <form id="loginForm" class="space-y-5">
       <div>
         <label class="label">Tên đăng nhập</label>
-        <input type="text" id="loginUsername" class="input-field" placeholder="Nhập tên đăng nhập" value="admin">
+        <input type="text" id="loginUsername" class="input-field" placeholder="Nhập tên đăng nhập">
       </div>
       <div>
         <label class="label">Mật khẩu</label>
         <div class="relative">
-          <input type="password" id="loginPassword" class="input-field pr-10" placeholder="Nhập mật khẩu" value="Admin@123">
+          <input type="password" id="loginPassword" class="input-field pr-10" placeholder="Nhập mật khẩu">
           <button type="button" onclick="togglePassword()" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
             <i class="fas fa-eye" id="eyeIcon"></i>
           </button>
@@ -171,11 +171,15 @@
       </button>
     </form>
     <div class="mt-6 p-4 bg-gray-50 rounded-lg text-sm text-gray-600">
-      <p class="font-semibold mb-1">Tài khoản demo:</p>
-      <p>• <strong>admin</strong> / Admin@123 (System Admin)</p>
-      <p>• <strong>pham.thi.d</strong> / Pass@123 (Project Admin)</p>
-      <p>• <strong>le.van.c</strong> / Pass@123 (Project Leader)</p>
-      <p>• <strong>nguyen.van.a</strong> / Pass@123 (Member)</p>
+      <p class="font-semibold mb-2 text-gray-700"><i class="fas fa-headset mr-1 text-green-600"></i>Liên hệ hỗ trợ</p>
+      <p class="flex items-center gap-2 mb-1">
+        <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-500 text-white text-xs font-bold flex-shrink-0">Z</span>
+        <a href="https://zalo.me/0912813789" target="_blank" class="text-blue-600 hover:underline font-medium">Zalo: 0912813789</a>
+      </p>
+      <p class="flex items-center gap-2">
+        <i class="fas fa-globe text-green-600 w-5 text-center"></i>
+        <a href="https://onecadvn.com/" target="_blank" class="text-green-600 hover:underline font-medium">onecadvn.com</a>
+      </p>
     </div>
   </div>
 </div>
