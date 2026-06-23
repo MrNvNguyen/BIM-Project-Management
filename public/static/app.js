@@ -21844,9 +21844,10 @@ async function submitWeeklyReport(e, planId, projectId) {
 // MULTI-TASK MODAL
 // ══════════════════════════════════════════════════
 
-let _mtRows = []   // [{_id, title, discipline, filename, assignee, priority, dueDate, estHours, notes}]
+let _mtRows = []   // [{_id, title, discipline, filename, assigneeId, priority, dueDate, estHours, notes}]
 let _mtRowIdSeq = 0
-let _mtModelItems = []  // [{value, label}] — model list của project đang chọn
+let _mtModelItems = []   // [{value, label}] — model list của project đang chọn
+let _mtMemberItems = []  // [{value, label}] — member list của project đang chọn
 
 async function _mtLoadModels(projectId) {
   if (!projectId) { _mtModelItems = []; return }
@@ -21885,12 +21886,36 @@ function _mtRefreshAllFilenameComboboxes() {
   _mtRows.forEach(r => _mtInitFilenameCombobox(r._id, r.filename))
 }
 
+// Khởi tạo combobox phụ trách của 1 dòng
+function _mtInitAssigneeCombobox(rid, selectedValue) {
+  const cbId = `mtAs_${rid}`
+  const container = document.getElementById(cbId)
+  if (!container) return
+  if (_cbState[cbId]) delete _cbState[cbId]
+  const items = [{ value: '', label: '-- Không chọn --' }, ..._mtMemberItems]
+  createCombobox(cbId, {
+    placeholder: _mtMemberItems.length ? '-- Phụ trách --' : '-- (chọn dự án) --',
+    items,
+    value: selectedValue || '',
+    fullWidth: true,
+    teleport: true,
+    dropdownMaxHeight: '200px',
+    onchange: (val) => { _mtUpdateRow(rid, 'assigneeId', val || '') }
+  })
+}
+
+// Cập nhật toàn bộ assignee combobox sau khi đổi dự án
+function _mtRefreshAllAssigneeComboboxes() {
+  _mtRows.forEach(r => _mtInitAssigneeCombobox(r._id, r.assigneeId))
+}
+
 async function openMultiTaskModal() {
   closeModal('taskModal')
   if (!allProjects.length) { allProjects = await api('/projects'); refreshProjectRoleCache() }
   if (!allUsers.length) allUsers = await api('/users')
 
-  _mtModelItems = []  // reset model list
+  _mtModelItems  = []  // reset
+  _mtMemberItems = []  // reset
 
   // Init project combobox
   const projItems = allProjects.map(p => ({ value: String(p.id), label: `${p.code} - ${p.name}` }))
@@ -21901,54 +21926,82 @@ async function openMultiTaskModal() {
     fullWidth: true,
     onchange: async (val) => {
       $('mtProject').value = val || ''
-      // Reset category
+      // Reset category combobox
       if (_cbState['mtCategoryCombobox']) delete _cbState['mtCategoryCombobox']
       createCombobox('mtCategoryCombobox', { placeholder: '-- Chọn hạng mục --', items: [], fullWidth: true,
         onchange: v => { $('mtCategory').value = v || '' }})
       if (val) {
-        // Load category, members, models song song
-        const [cats, members] = await Promise.all([
-          api(`/projects/${val}/categories`).catch(() => []),
-          api(`/projects/${val}/members`).catch(() => [])
+        // Load project detail (có members), categories, models song song
+        const [proj, cats] = await Promise.all([
+          api(`/projects/${val}`).catch(() => null),
+          api(`/projects/${val}/categories`).catch(() => [])
         ])
+        // Update category
         const catItems = (cats || []).map(c => ({ value: String(c.id), label: c.name }))
         if (_cbState['mtCategoryCombobox']) delete _cbState['mtCategoryCombobox']
         createCombobox('mtCategoryCombobox', { placeholder: '-- Chọn hạng mục --', items: catItems, fullWidth: true,
           onchange: v => { $('mtCategory').value = v || '' }})
-        // Update assignee select
+        // Lấy danh sách thành viên từ project detail (giống task modal đơn)
+        const memberIds = new Set()
+        const memberList = []
+        if (proj?.members?.length) {
+          for (const m of proj.members) {
+            if (m.is_active === 0) continue
+            if (!memberIds.has(m.user_id)) {
+              memberIds.add(m.user_id)
+              memberList.push({ value: String(m.user_id), label: m.full_name })
+            }
+          }
+        }
+        // Thêm admin/leader dự án nếu chưa có
+        for (const uid of [proj?.admin_id, proj?.leader_id]) {
+          if (uid && !memberIds.has(uid)) {
+            const u = (allUsers || []).find(u => u.id === uid)
+            if (u && u.is_active !== 0) {
+              memberIds.add(uid)
+              memberList.push({ value: String(uid), label: u.full_name })
+            }
+          }
+        }
+        _mtMemberItems = memberList
+        // Cập nhật select "Phụ trách mặc định"
         const sel = $('mtAssignee')
         sel.innerHTML = '<option value="">-- Không chọn --</option>' +
-          (members || []).map(m => `<option value="${m.user_id}">${m.full_name}</option>`).join('')
-        // Load models → refresh filename comboboxes
+          _mtMemberItems.map(m => `<option value="${m.value}">${m.label}</option>`).join('')
+        // Load models
         await _mtLoadModels(parseInt(val))
+        // Refresh cả filename và assignee combobox trên bảng
         _mtRefreshAllFilenameComboboxes()
-        // re-render summary (assignee dropdowns)
+        _mtRefreshAllAssigneeComboboxes()
+        // Re-render để cập nhật summary
         _mtRenderTable()
       } else {
-        _mtModelItems = []
+        _mtModelItems  = []
+        _mtMemberItems = []
+        const sel = $('mtAssignee')
+        sel.innerHTML = '<option value="">-- Không chọn --</option>'
         _mtRefreshAllFilenameComboboxes()
+        _mtRefreshAllAssigneeComboboxes()
         _mtRenderTable()
       }
     }
   })
 
-  // Init category combobox
+  // Init category combobox (empty until project selected)
   if (_cbState['mtCategoryCombobox']) delete _cbState['mtCategoryCombobox']
   createCombobox('mtCategoryCombobox', { placeholder: '-- Chọn hạng mục --', items: [], fullWidth: true,
     onchange: v => { $('mtCategory').value = v || '' }})
 
-  // Fill assignee default
-  $('mtAssignee').innerHTML = '<option value="">-- Không chọn --</option>' +
-    (allUsers || []).filter(u => u.is_active !== 0).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+  // Phụ trách mặc định: reset về trống (chờ chọn dự án)
+  $('mtAssignee').innerHTML = '<option value="">-- Không chọn --</option>'
 
   // Set today as start date
   $('mtStartDate').value = today()
   $('mtDueDate').value = ''
 
-  // Reset rows
+  // Reset rows + render
   _mtRows = []
   _mtRowIdSeq = 0
-  // Add 3 empty rows by default
   for (let i = 0; i < 3; i++) _mtAddRowData()
   _mtRenderTable()
 
@@ -21981,28 +22034,9 @@ function mtRemoveRow(id) {
   _mtRenderTable()
 }
 
-function _mtGetUsersForSelect() {
-  const projectId = $('mtProject').value
-  const memberSel = $('mtAssignee')
-  // Get all options from mtAssignee (already filtered by project)
-  const opts = Array.from(memberSel.options).map(o => ({ value: o.value, label: o.text }))
-  return opts
-}
-
-function _mtDisciplineOptions() {
-  return (allDisciplines || []).map(d =>
-    `<option value="${d.code}">${d.code} - ${d.name}</option>`
-  ).join('')
-}
-
 function _mtPriorityOptions(selected = '') {
   return [['','(mặc định)'],['low','Thấp'],['medium','Trung bình'],['high','Cao'],['urgent','Khẩn cấp']]
     .map(([v,l]) => `<option value="${v}" ${selected===v?'selected':''}>${l}</option>`).join('')
-}
-
-function _mtAssigneeOptions(selected = '') {
-  const opts = _mtGetUsersForSelect()
-  return opts.map(o => `<option value="${o.value}" ${selected===o.value&&o.value?'selected':''}>${o.label}</option>`).join('')
 }
 
 function _mtRenderTable() {
@@ -22027,11 +22061,8 @@ function _mtRenderTable() {
       <td class="px-1 py-1" style="min-width:150px">
         <div id="mtFn_${r._id}" style="width:100%"></div>
       </td>
-      <td class="px-1 py-1">
-        <select onchange="_mtUpdateRow(${r._id},'assigneeId',this.value)"
-          class="w-full border border-gray-200 rounded px-1 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white">
-          ${_mtAssigneeOptions(String(r.assigneeId||''))}
-        </select>
+      <td class="px-1 py-1" style="min-width:140px">
+        <div id="mtAs_${r._id}" style="width:100%"></div>
       </td>
       <td class="px-1 py-1">
         <select onchange="_mtUpdateRow(${r._id},'priority',this.value)"
@@ -22061,8 +22092,11 @@ function _mtRenderTable() {
       </td>
     </tr>
   `).join('') || `<tr><td colspan="10" class="text-center text-gray-400 text-sm py-6">Chưa có task nào. Nhấn "+ Thêm dòng" để bắt đầu.</td></tr>`
-  // Init filename comboboxes for each row (after innerHTML is set)
-  _mtRows.forEach(r => _mtInitFilenameCombobox(r._id, r.filename))
+  // Init comboboxes cho từng dòng sau khi set innerHTML
+  _mtRows.forEach(r => {
+    _mtInitFilenameCombobox(r._id, r.filename)
+    _mtInitAssigneeCombobox(r._id, r.assigneeId)
+  })
   // Summary
   const filled = _mtRows.filter(r => r.title.trim()).length
   $('mtSummary').innerHTML = filled > 0
@@ -22113,8 +22147,10 @@ async function submitMultiTask() {
     priority:        r.priority || sharedPriority,
     status:          'todo',
     task_type:       sharedTaskType,
-    model_filename:  r.filename || null,
-    assigned_to:     r.assigneeId ? parseInt(r.assigneeId) : (sharedAssignee ? parseInt(sharedAssignee) : null),
+    model_filename:  r.filename || (_cbGetValue('mtFn_' + r._id)) || null,
+    assigned_to:     (r.assigneeId && r.assigneeId !== '')
+                       ? parseInt(r.assigneeId)
+                       : (sharedAssignee ? parseInt(sharedAssignee) : null),
     start_date:      sharedStartDate,
     due_date:        r.dueDate || sharedDueDate,
     estimated_hours: parseFloat(r.estHours) || 0,
