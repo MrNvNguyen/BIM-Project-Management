@@ -21844,13 +21844,53 @@ async function submitWeeklyReport(e, planId, projectId) {
 // MULTI-TASK MODAL
 // ══════════════════════════════════════════════════
 
-let _mtRows = []   // [{id, title, discipline, filename, assignee, priority, dueDate, estHours, notes}]
+let _mtRows = []   // [{_id, title, discipline, filename, assignee, priority, dueDate, estHours, notes}]
 let _mtRowIdSeq = 0
+let _mtModelItems = []  // [{value, label}] — model list của project đang chọn
+
+async function _mtLoadModels(projectId) {
+  if (!projectId) { _mtModelItems = []; return }
+  if (!_taskFilenameCache[projectId]) {
+    try {
+      const models = await api(`/projects/${projectId}/models`)
+      _taskFilenameCache[projectId] = models.map(m => ({ value: m.name, label: m.name }))
+    } catch(_) { _taskFilenameCache[projectId] = [] }
+  }
+  _mtModelItems = _taskFilenameCache[projectId] || []
+}
+
+// Khởi tạo (hoặc cập nhật) combobox filename của 1 dòng
+function _mtInitFilenameCombobox(rid, selectedValue) {
+  const cbId = `mtFn_${rid}`
+  const container = document.getElementById(cbId)
+  if (!container) return
+  if (_cbState[cbId]) delete _cbState[cbId]
+  // Nếu value đang có mà không trong list → thêm vào để label hiện đúng
+  const items = (selectedValue && !_mtModelItems.find(i => i.value === selectedValue))
+    ? [{ value: selectedValue, label: selectedValue }, ..._mtModelItems]
+    : _mtModelItems
+  createCombobox(cbId, {
+    placeholder: _mtModelItems.length ? '-- Chọn model --' : '-- (chọn dự án trước) --',
+    items,
+    value: selectedValue || '',
+    fullWidth: true,
+    teleport: true,
+    dropdownMaxHeight: '200px',
+    onchange: (val) => { _mtUpdateRow(rid, 'filename', val || '') }
+  })
+}
+
+// Cập nhật toàn bộ filename combobox sau khi đổi dự án
+function _mtRefreshAllFilenameComboboxes() {
+  _mtRows.forEach(r => _mtInitFilenameCombobox(r._id, r.filename))
+}
 
 async function openMultiTaskModal() {
   closeModal('taskModal')
   if (!allProjects.length) { allProjects = await api('/projects'); refreshProjectRoleCache() }
   if (!allUsers.length) allUsers = await api('/users')
+
+  _mtModelItems = []  // reset model list
 
   // Init project combobox
   const projItems = allProjects.map(p => ({ value: String(p.id), label: `${p.code} - ${p.name}` }))
@@ -21866,17 +21906,27 @@ async function openMultiTaskModal() {
       createCombobox('mtCategoryCombobox', { placeholder: '-- Chọn hạng mục --', items: [], fullWidth: true,
         onchange: v => { $('mtCategory').value = v || '' }})
       if (val) {
-        const cats = await api(`/projects/${val}/categories`).catch(() => [])
+        // Load category, members, models song song
+        const [cats, members] = await Promise.all([
+          api(`/projects/${val}/categories`).catch(() => []),
+          api(`/projects/${val}/members`).catch(() => [])
+        ])
         const catItems = (cats || []).map(c => ({ value: String(c.id), label: c.name }))
         if (_cbState['mtCategoryCombobox']) delete _cbState['mtCategoryCombobox']
         createCombobox('mtCategoryCombobox', { placeholder: '-- Chọn hạng mục --', items: catItems, fullWidth: true,
           onchange: v => { $('mtCategory').value = v || '' }})
         // Update assignee select
-        const members = await api(`/projects/${val}/members`).catch(() => [])
         const sel = $('mtAssignee')
         sel.innerHTML = '<option value="">-- Không chọn --</option>' +
           (members || []).map(m => `<option value="${m.user_id}">${m.full_name}</option>`).join('')
-        // update table rows selects
+        // Load models → refresh filename comboboxes
+        await _mtLoadModels(parseInt(val))
+        _mtRefreshAllFilenameComboboxes()
+        // re-render summary (assignee dropdowns)
+        _mtRenderTable()
+      } else {
+        _mtModelItems = []
+        _mtRefreshAllFilenameComboboxes()
         _mtRenderTable()
       }
     }
@@ -21923,6 +21973,7 @@ function _mtAddRowData(data = {}) {
 function mtAddRow(data = {}) {
   _mtAddRowData(data)
   _mtRenderTable()
+  // filename combobox for new row is init'd inside _mtRenderTable → _mtInitFilenameCombobox
 }
 
 function mtRemoveRow(id) {
@@ -21973,10 +22024,8 @@ function _mtRenderTable() {
           ${(allDisciplines||[]).map(d => `<option value="${d.code}" ${r.discipline===d.code?'selected':''}>${d.code}</option>`).join('')}
         </select>
       </td>
-      <td class="px-1 py-1">
-        <input type="text" placeholder="vd: A001.rvt" value="${escHtml(r.filename)}"
-          oninput="_mtUpdateRow(${r._id},'filename',this.value)"
-          class="w-full border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-400">
+      <td class="px-1 py-1" style="min-width:150px">
+        <div id="mtFn_${r._id}" style="width:100%"></div>
       </td>
       <td class="px-1 py-1">
         <select onchange="_mtUpdateRow(${r._id},'assigneeId',this.value)"
@@ -22012,6 +22061,8 @@ function _mtRenderTable() {
       </td>
     </tr>
   `).join('') || `<tr><td colspan="10" class="text-center text-gray-400 text-sm py-6">Chưa có task nào. Nhấn "+ Thêm dòng" để bắt đầu.</td></tr>`
+  // Init filename comboboxes for each row (after innerHTML is set)
+  _mtRows.forEach(r => _mtInitFilenameCombobox(r._id, r.filename))
   // Summary
   const filled = _mtRows.filter(r => r.title.trim()).length
   $('mtSummary').innerHTML = filled > 0
