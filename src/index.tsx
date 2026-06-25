@@ -14975,12 +14975,37 @@ app.post('/api/projects/:id/checklist/submissions', authMiddleware, async (c) =>
     const catResult = await db.prepare(`SELECT id, code, name FROM categories WHERE project_id = ? ORDER BY created_at ASC`).bind(projectId).all()
     const categories = catResult.results as any[]
 
-    // Lấy doc_name patterns từ template — chỉ lấy rows KHÔNG có item_code (là pattern thực sự)
-    // Loại bỏ duplicate doc_name trong cùng 1 discipline
+    // Disciplines dùng item_code cố định từ template (không nhân bản theo categories)
+    // HTKT: mỗi row có item_code riêng (CL/CT/CD...) là 1 hệ thống hạ tầng, không phải block grouping
+    const FIXED_ITEM_CODE_DISCIPLINES = ['HTKT']
+
+    const discFilter = disciplines && disciplines.length > 0
+      ? `AND discipline IN (${disciplines.map(() => '?').join(',')})` : ''
+    const discParams = disciplines && disciplines.length > 0 ? [...disciplines] : []
+
+    // === Phần 1: HTKT và các discipline có item_code cố định → lấy trực tiếp từ template ===
+    const fixedDiscs = disciplines
+      ? disciplines.filter((d: string) => FIXED_ITEM_CODE_DISCIPLINES.includes(d))
+      : FIXED_ITEM_CODE_DISCIPLINES
+
+    let fixedDocTypes: any[] = []
+    if (fixedDiscs.length > 0) {
+      const fixedResult = await db.prepare(`
+        SELECT id, discipline, item_code, item_name, doc_name, sort_order
+        FROM checklist_doc_types
+        WHERE stage = ? AND is_active = 1
+          AND discipline IN (${fixedDiscs.map(() => '?').join(',')})
+        ORDER BY discipline, sort_order
+      `).bind(stage, ...fixedDiscs).all()
+      fixedDocTypes = fixedResult.results as any[]
+    }
+
+    // === Phần 2: Các disciplines khác → lấy patterns (item_code IS NULL) rồi nhân bản theo categories ===
     let dtQuery = `SELECT id, discipline, doc_name, sort_order
       FROM checklist_doc_types
-      WHERE stage = ? AND is_active = 1 AND item_code IS NULL`
-    const dtParams: any[] = [stage]
+      WHERE stage = ? AND is_active = 1 AND item_code IS NULL
+        AND discipline NOT IN (${FIXED_ITEM_CODE_DISCIPLINES.map(() => '?').join(',')})`
+    const dtParams: any[] = [stage, ...FIXED_ITEM_CODE_DISCIPLINES]
     if (disciplines && disciplines.length > 0) {
       dtQuery += ` AND discipline IN (${disciplines.map(() => '?').join(',')})`
       dtParams.push(...disciplines)
@@ -15000,11 +15025,22 @@ app.post('/api/projects/:id/checklist/submissions', authMiddleware, async (c) =>
       }
     }
 
-    // Sinh items: với mỗi (discipline, category) → nhân bản tất cả doc_name patterns của discipline đó
-    // Thứ tự: discipline → category → doc_name
-    const disciplinesInTemplate = [...new Set(docPatterns.map((d: any) => d.discipline))]
+    // Sinh items
+    const insertRows: { docTypeId: number; discipline: string; itemCode: string | null; itemName: string | null; docName: string }[] = []
 
-    const insertRows: { docTypeId: number; discipline: string; itemCode: string; itemName: string; docName: string }[] = []
+    // Phần 1: HTKT — dùng item_code/doc_name trực tiếp từ template (item_code = mã hệ thống, doc_name = tên)
+    for (const dt of fixedDocTypes) {
+      insertRows.push({
+        docTypeId: dt.id,
+        discipline: dt.discipline,
+        itemCode: dt.item_code || null,
+        itemName: dt.item_name || null,
+        docName: dt.doc_name,
+      })
+    }
+
+    // Phần 2: disciplines còn lại → discipline × category × doc_pattern
+    const disciplinesInTemplate = [...new Set(docPatterns.map((d: any) => d.discipline))]
     for (const disc of disciplinesInTemplate) {
       const patterns = docPatterns.filter((d: any) => d.discipline === disc)
       const catsForDisc = categories.length > 0 ? categories : [{ code: null, name: null }]
