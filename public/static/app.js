@@ -22701,7 +22701,7 @@ function _hstkRenderSubmissionCards() {
 // ── Modal tạo đợt HS mới ───────────────────────────────────────────
 function openHstkCreateModal(projectId) {
   // Lấy bộ môn unique từ project categories + hardcode defaults
-  const disciplines_tkcs = ['HTKT','KIẾN TRÚC','KẾT CẤU','CƠ ĐIỆN','PCCC','HVAC','ĐIỆN NẶNG','ĐIỆN NHẸ','CẤP THOÁT NƯỚC']
+  const disciplines_tkcs = ['HTKT','KIẾN TRÚC','KẾT CẤU','PCCC','HVAC','ĐIỆN NẶNG','ĐIỆN NHẸ','CẤP THOÁT NƯỚC']
   const disciplines_bvtc = [...disciplines_tkcs, 'CẢNH QUAN','NỘI THẤT']
 
   const today_val = today()
@@ -22771,7 +22771,7 @@ function openHstkCreateModal(projectId) {
 
 function _hstkOnStageChange() {
   const stage = $('hc_stage')?.value
-  const disciplines_tkcs = ['HTKT','KIẾN TRÚC','KẾT CẤU','CƠ ĐIỆN','PCCC','HVAC','ĐIỆN NẶNG','ĐIỆN NHẸ','CẤP THOÁT NƯỚC']
+  const disciplines_tkcs = ['HTKT','KIẾN TRÚC','KẾT CẤU','PCCC','HVAC','ĐIỆN NẶNG','ĐIỆN NHẸ','CẤP THOÁT NƯỚC']
   const disciplines_bvtc = [...disciplines_tkcs, 'CẢNH QUAN','NỘI THẤT']
   const list = stage === 'BVTC' ? disciplines_bvtc : disciplines_tkcs
   const container = $('hc_disciplines')
@@ -22961,17 +22961,18 @@ function _hstkBuildTable(byDisc, disciplines) {
       : rows
     if (!filtered.length) return
 
-    // Group by item_code
+    // Group by item_code, preserve insertion order (DB order = category creation order)
     const byCode = {}
+    const codeOrder = []
     filtered.forEach(it => {
       const key = it.item_code || '__none__'
-      if (!byCode[key]) byCode[key] = []
+      if (!byCode[key]) { byCode[key] = []; codeOrder.push(key) }
       byCode[key].push(it)
     })
 
     let firstRowInDisc = true
     let discRowCount = filtered.length
-    Object.keys(byCode).forEach(code => {
+    codeOrder.forEach(code => {
       const codeRows = byCode[code]
       let firstInCode = true
       codeRows.forEach((it, ci) => {
@@ -22998,8 +22999,11 @@ function _hstkBuildTable(byDisc, disciplines) {
 
         // Hạng mục (rowspan for first in code group)
         if (firstInCode) {
+          const codeLabel = code !== '__none__'
+            ? `<span class="font-mono text-blue-600 font-bold">${code}</span>${codeRows[0].item_name ? `<br><span class="text-gray-600 font-normal text-xs">${codeRows[0].item_name}</span>` : ''}`
+            : '<span class="text-gray-300">—</span>'
           html += `<td class="py-1.5 px-3 border border-gray-200 text-gray-600 align-middle font-medium"
-                      rowspan="${codeRows.length}">${code !== '__none__' ? `<span class="font-mono text-blue-600">${code}</span>` : '<span class="text-gray-300">—</span>'}</td>`
+                      rowspan="${codeRows.length}">${codeLabel}</td>`
           firstInCode = false
         }
 

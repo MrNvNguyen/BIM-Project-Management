@@ -14953,7 +14953,7 @@ app.get('/api/projects/:id/checklist/submissions', authMiddleware, async (c) => 
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
-// POST /api/projects/:id/checklist/submissions  — Tạo lần nộp mới, tự động tạo items từ template
+// POST /api/projects/:id/checklist/submissions  — Tạo lần nộp mới, tự động tạo items từ template × categories dự án
 app.post('/api/projects/:id/checklist/submissions', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
@@ -14971,31 +14971,69 @@ app.post('/api/projects/:id/checklist/submissions', authMiddleware, async (c) =>
 
     const submissionId = sr.meta.last_row_id as number
 
-    // Lấy template doc types cho giai đoạn này (có thể filter theo disciplines nếu có)
-    let dtQuery = `SELECT * FROM checklist_doc_types WHERE stage = ? AND is_active = 1`
+    // Lấy danh sách hạng mục thực tế của dự án
+    const catResult = await db.prepare(`SELECT id, code, name FROM categories WHERE project_id = ? ORDER BY created_at ASC`).bind(projectId).all()
+    const categories = catResult.results as any[]
+
+    // Lấy doc_name patterns từ template — chỉ lấy rows KHÔNG có item_code (là pattern thực sự)
+    // Loại bỏ duplicate doc_name trong cùng 1 discipline
+    let dtQuery = `SELECT id, discipline, doc_name, sort_order
+      FROM checklist_doc_types
+      WHERE stage = ? AND is_active = 1 AND item_code IS NULL`
     const dtParams: any[] = [stage]
     if (disciplines && disciplines.length > 0) {
       dtQuery += ` AND discipline IN (${disciplines.map(() => '?').join(',')})`
       dtParams.push(...disciplines)
     }
-    dtQuery += ` ORDER BY sort_order`
+    dtQuery += ` ORDER BY discipline, sort_order`
     const dtResult = await db.prepare(dtQuery).bind(...dtParams).all()
-    const docTypes = dtResult.results as any[]
+    const allDocTypes = dtResult.results as any[]
 
-    // Batch insert items
-    if (docTypes.length > 0) {
-      const stmts = docTypes.map((dt: any) =>
+    // De-duplicate: mỗi (discipline, doc_name) chỉ lấy 1 lần (template cũ có 2 blocks A1/A2 giống nhau)
+    const seen = new Set<string>()
+    const docPatterns: any[] = []
+    for (const dt of allDocTypes) {
+      const key = `${dt.discipline}|||${dt.doc_name}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        docPatterns.push(dt)
+      }
+    }
+
+    // Sinh items: với mỗi (discipline, category) → nhân bản tất cả doc_name patterns của discipline đó
+    // Thứ tự: discipline → category → doc_name
+    const disciplinesInTemplate = [...new Set(docPatterns.map((d: any) => d.discipline))]
+
+    const insertRows: { docTypeId: number; discipline: string; itemCode: string; itemName: string; docName: string }[] = []
+    for (const disc of disciplinesInTemplate) {
+      const patterns = docPatterns.filter((d: any) => d.discipline === disc)
+      const catsForDisc = categories.length > 0 ? categories : [{ code: null, name: null }]
+      for (const cat of catsForDisc) {
+        for (const pat of patterns) {
+          insertRows.push({
+            docTypeId: pat.id,
+            discipline: disc,
+            itemCode: cat.code || null,
+            itemName: cat.name || null,
+            docName: pat.doc_name,
+          })
+        }
+      }
+    }
+
+    // Batch insert
+    if (insertRows.length > 0) {
+      const stmts = insertRows.map(row =>
         db.prepare(`INSERT INTO checklist_submission_items (submission_id, doc_type_id, discipline, item_code, item_name, doc_name, has_doc)
                     VALUES (?, ?, ?, ?, ?, ?, 0)`)
-          .bind(submissionId, dt.id, dt.discipline, dt.item_code || null, dt.item_name || null, dt.doc_name)
+          .bind(submissionId, row.docTypeId, row.discipline, row.itemCode, row.itemName, row.docName)
       )
-      // D1 batch
       for (let i = 0; i < stmts.length; i += 50) {
         await db.batch(stmts.slice(i, i + 50))
       }
     }
 
-    return c.json({ success: true, id: submissionId, items_created: docTypes.length }, 201)
+    return c.json({ success: true, id: submissionId, items_created: insertRows.length }, 201)
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
