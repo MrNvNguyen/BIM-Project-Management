@@ -22849,13 +22849,16 @@ function _hstkRenderDetail(container, sub) {
   const stageBg = sub.stage === 'TKCS' ? '#2563eb' : sub.stage === 'BVTC' ? '#7c3aed' : '#374151'
 
   container.innerHTML = `
-    <!-- Back button -->
+    <!-- Back button + Export -->
     <div class="flex items-center gap-3 mb-4">
       <button onclick="_hstkBackToList()" class="text-gray-400 hover:text-gray-600 flex items-center gap-1 text-sm">
         <i class="fas fa-arrow-left"></i><span>Danh sách</span>
       </button>
       <span class="text-gray-300">/</span>
       <span class="text-sm font-semibold text-gray-700">${sub.stage} ${sub.version || 'V1'}</span>
+      <button onclick="exportHstkExcel(${sub.id})" class="ml-auto flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-green-500 text-green-600 hover:bg-green-50 transition-colors font-medium">
+        <i class="fas fa-file-excel"></i>Xuất Excel
+      </button>
     </div>
 
     <!-- Summary header -->
@@ -23171,6 +23174,211 @@ async function confirmDeleteHstk(submissionId) {
     const container = $(`hstkContainer_${_hstkProjectId}`)
     if (container) _hstkRenderMain(container, _hstkProjectId)
   } catch (e) { toast('Lỗi: ' + e.message, 'error') }
+}
+
+// ── Export HSTK to Excel ──────────────────────────────────────────────
+function exportHstkExcel(submissionId) {
+  // Dùng XLSXStyle (xlsx-js-style) để hỗ trợ cell styling
+  const XS = window.XLSXStyle || window.XLSX
+  if (!XS) { toast('Thư viện Excel chưa tải xong, thử lại sau', 'warning'); return }
+  const sub = _hstkCurrentSub
+  if (!sub || sub.id !== submissionId) { toast('Không tìm thấy dữ liệu checklist', 'error'); return }
+
+  const items = sub.items || []
+  if (!items.length) { toast('Không có dữ liệu để xuất', 'warning'); return }
+
+  // ── Helpers ──
+  const cell = (v, s) => ({ v, t: typeof v === 'number' ? 'n' : 's', s })
+  const BORDER = { top:{style:'thin',color:{rgb:'D1D5DB'}}, bottom:{style:'thin',color:{rgb:'D1D5DB'}},
+                   left:{style:'thin',color:{rgb:'D1D5DB'}}, right:{style:'thin',color:{rgb:'D1D5DB'}} }
+  const BORDER_DARK = { top:{style:'medium',color:{rgb:'374151'}}, bottom:{style:'medium',color:{rgb:'374151'}},
+                        left:{style:'medium',color:{rgb:'374151'}}, right:{style:'medium',color:{rgb:'374151'}} }
+
+  const DISC_COLORS = {
+    'KIẾN TRÚC':'DBEAFE','KẾT CẤU':'EDE9FE','HTKT':'DCFCE7',
+    'PCCC':'FEE2E2','HVAC':'CFFAFE','ĐIỆN NẶNG':'FEF9C3',
+    'ĐIỆN NHẸ':'FFF7ED','CẤP THOÁT NƯỚC':'E0F2FE',
+    'CẢNH QUAN':'F0FDF4','NỘI THẤT':'FDF4FF'
+  }
+  const DISC_ORDER = ['HTKT','KIẾN TRÚC','KẾT CẤU','PCCC','HVAC','ĐIỆN NẶNG','ĐIỆN NHẸ','CẤP THOÁT NƯỚC','CẢNH QUAN','NỘI THẤT']
+
+  const wb = XS.utils.book_new()
+
+  // ══ SHEET 1: Thông tin chung + tổng quan ══════════════════════════════
+  const sTitle  = { font:{bold:true,sz:14,color:{rgb:'111827'}}, alignment:{horizontal:'center',vertical:'center'} }
+  const sLabel  = { font:{bold:true,sz:10,color:{rgb:'374151'}}, fill:{fgColor:{rgb:'F3F4F6'}}, border:BORDER }
+  const sValue  = { font:{sz:10,color:{rgb:'111827'}}, border:BORDER }
+  const sSub    = { font:{bold:true,sz:11,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'1D4ED8'}},
+                    alignment:{horizontal:'center',vertical:'center'} }
+  const sThead  = { font:{bold:true,sz:9,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'374151'}},
+                    alignment:{horizontal:'center',vertical:'center'}, border:BORDER_DARK }
+  const sTot    = { font:{bold:true,sz:10,color:{rgb:'111827'}}, fill:{fgColor:{rgb:'FEF9C3'}}, border:BORDER }
+
+  // Lấy tên dự án
+  const projectName = (typeof _currentProject !== 'undefined' && _currentProject?.name) ||
+    document.querySelector('[data-project-name]')?.textContent?.trim() || 'Dự án'
+
+  const infoRows = []
+  // Row 0: title (merge A1:F1)
+  infoRows.push([cell('BIÊN BẢN KIỂM TRA HỒ SƠ THIẾT KẾ', sTitle),'','','','',''])
+  infoRows.push(['','','','','',''])
+  // Metadata
+  const meta = [
+    ['Dự án:', projectName],
+    ['Giai đoạn:', sub.stage === 'TKCS' ? 'TKCS — Thiết kế cơ sở' : 'BVTC — Bản vẽ thi công'],
+    ['Phiên bản:', sub.version || 'V1'],
+    ['Người gửi (TVTK):', sub.sender || '—'],
+    ['Người nhận:', sub.receiver || '—'],
+    ['Ngày nhận:', sub.received_date ? sub.received_date.slice(0,10) : '—'],
+    ['Hạn phản hồi:', sub.feedback_date ? sub.feedback_date.slice(0,10) : '—'],
+    ['Ghi chú:', sub.notes || ''],
+  ]
+  meta.forEach(([lbl, val]) => {
+    infoRows.push([cell(lbl, sLabel), cell(val, sValue),'','','',''])
+  })
+  infoRows.push(['','','','','',''])
+  infoRows.push([cell('TỔNG QUAN TIẾN ĐỘ THEO BỘ MÔN', sSub),'','','','',''])
+
+  // Stats
+  const byDiscStat = {}
+  items.forEach(it => {
+    if (!byDiscStat[it.discipline]) byDiscStat[it.discipline] = {total:0,done:0,na:0}
+    byDiscStat[it.discipline].total++
+    if (it.has_doc===1) byDiscStat[it.discipline].done++
+    if (it.has_doc===2) byDiscStat[it.discipline].na++
+  })
+  infoRows.push(['Bộ môn','Tổng HS','Đã có','N/A','Chưa có','Tiến độ (%)'].map(h => cell(h, sThead)))
+  let gT=0,gD=0,gN=0
+  const disciplinesInStat = [...new Set(items.map(i=>i.discipline))]
+    .sort((a,b)=>{const ia=DISC_ORDER.indexOf(a),ib=DISC_ORDER.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib)})
+  disciplinesInStat.forEach(disc => {
+    const s = byDiscStat[disc]
+    const applicable = s.total - s.na
+    const pct = applicable > 0 ? Math.round(s.done/applicable*100) : 0
+    const bg = DISC_COLORS[disc] || 'FFFFFF'
+    const sDisc = { font:{sz:10,color:{rgb:'111827'}}, fill:{fgColor:{rgb:bg}}, border:BORDER, alignment:{horizontal:'left'} }
+    const sNum  = { font:{sz:10}, fill:{fgColor:{rgb:'FFFFFF'}}, border:BORDER, alignment:{horizontal:'center'} }
+    const sPct  = { font:{bold:true,sz:10,color:{rgb: pct>=100?'059669':pct>=60?'2563EB':'EA580C'}},
+                    fill:{fgColor:{rgb:'FFFFFF'}}, border:BORDER, alignment:{horizontal:'center'} }
+    infoRows.push([cell(disc,sDisc), cell(s.total,sNum), cell(s.done,sNum), cell(s.na,sNum),
+                   cell(s.total-s.done-s.na,sNum), cell(pct+'%',sPct)])
+    gT+=s.total; gD+=s.done; gN+=s.na
+  })
+  const gApp=gT-gN, gPct=gApp>0?Math.round(gD/gApp*100):0
+  infoRows.push([cell('TỔNG CỘNG',sTot), cell(gT,sTot), cell(gD,sTot), cell(gN,sTot),
+                 cell(gT-gD-gN,sTot), cell(gPct+'%',sTot)])
+
+  const wsInfo = XS.utils.aoa_to_sheet(infoRows)
+  wsInfo['!cols'] = [{wch:22},{wch:38},{wch:10},{wch:10},{wch:12},{wch:14}]
+  wsInfo['!rows'] = [{hpt:30}] // title row height
+  wsInfo['!merges'] = [
+    {s:{r:0,c:0},e:{r:0,c:5}},       // Title
+    {s:{r:infoRows.length-disciplinesInStat.length-3,c:0},
+     e:{r:infoRows.length-disciplinesInStat.length-3,c:5}},  // Subtitle TỔNG QUAN
+  ]
+  // Merge metadata value cells
+  for (let i=2; i<2+meta.length; i++) {
+    wsInfo['!merges'].push({s:{r:i,c:1},e:{r:i,c:5}})
+  }
+  XS.utils.book_append_sheet(wb, wsInfo, 'Thông tin')
+
+  // ══ SHEET 2: Checklist chi tiết ══════════════════════════════════════
+  const sHead = { font:{bold:true,sz:10,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'1F2937'}},
+                  alignment:{horizontal:'center',vertical:'center',wrapText:true}, border:BORDER_DARK }
+  const sDiscCell = (bg) => ({
+    font:{bold:true,sz:10,color:{rgb:'1E3A5F'}},
+    fill:{fgColor:{rgb:bg}},
+    alignment:{horizontal:'center',vertical:'center',wrapText:true},
+    border:BORDER
+  })
+  const sCodeCell = (bg) => ({
+    font:{bold:true,sz:9,color:{rgb:'1D4ED8'}},
+    fill:{fgColor:{rgb:bg}},
+    alignment:{horizontal:'center',vertical:'center'},
+    border:BORDER
+  })
+  const sNameCell = (bg) => ({
+    font:{sz:9,color:{rgb:'374151'}},
+    fill:{fgColor:{rgb:bg}},
+    alignment:{horizontal:'left',vertical:'center',wrapText:true},
+    border:BORDER
+  })
+  const sDocCell = { font:{sz:9,color:{rgb:'111827'}}, fill:{fgColor:{rgb:'FFFFFF'}},
+                     alignment:{horizontal:'left',vertical:'center',wrapText:true}, border:BORDER }
+  const sStatusDone = { font:{bold:true,sz:9,color:{rgb:'065F46'}}, fill:{fgColor:{rgb:'D1FAE5'}},
+                        alignment:{horizontal:'center',vertical:'center'}, border:BORDER }
+  const sStatusNA   = { font:{sz:9,color:{rgb:'6B7280'}}, fill:{fgColor:{rgb:'F3F4F6'}},
+                        alignment:{horizontal:'center',vertical:'center'}, border:BORDER }
+  const sStatusNone = { font:{sz:9,color:{rgb:'B45309'}}, fill:{fgColor:{rgb:'FFF7ED'}},
+                        alignment:{horizontal:'center',vertical:'center'}, border:BORDER }
+  const sFileCell   = { font:{sz:9,color:{rgb:'374151'}}, fill:{fgColor:{rgb:'FAFAFA'}},
+                        alignment:{horizontal:'left',vertical:'center'}, border:BORDER }
+  const sNoteCell   = { font:{sz:9,color:{rgb:'6B7280'}}, fill:{fgColor:{rgb:'FAFAFA'}},
+                        alignment:{horizontal:'left',vertical:'center',wrapText:true}, border:BORDER }
+  const sSttCell    = { font:{sz:9,color:{rgb:'9CA3AF'}}, fill:{fgColor:{rgb:'FFFFFF'}},
+                        alignment:{horizontal:'center',vertical:'center'}, border:BORDER }
+
+  const headers = ['#','Bộ môn','Hạng mục (Mã)','Hạng mục (Tên)','Loại Hồ Sơ','Trạng thái','Số BV / File','Ghi chú']
+  const detailRows = [headers.map(h => cell(h, sHead))]
+  const merges = []
+  let rowNum = 1, stt = 0
+
+  const disciplines = [...new Set(items.map(i=>i.discipline))]
+    .sort((a,b)=>{const ia=DISC_ORDER.indexOf(a),ib=DISC_ORDER.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib)})
+
+  disciplines.forEach(disc => {
+    const bg = DISC_COLORS[disc] || 'F9FAFB'
+    const discItems = items.filter(it=>it.discipline===disc)
+    const byCode={}, codeOrder=[]
+    discItems.forEach(it=>{
+      const key=it.item_code||'__none__'
+      if(!byCode[key]){byCode[key]=[];codeOrder.push(key)}
+      byCode[key].push(it)
+    })
+    const discStart = rowNum
+
+    codeOrder.forEach(code => {
+      const codeRows = byCode[code]
+      const codeStart = rowNum
+      codeRows.forEach(it => {
+        stt++
+        const statusLabel = it.has_doc===1?'Đã có':it.has_doc===2?'N/A':'Chưa có'
+        const sStatus = it.has_doc===1?sStatusDone:it.has_doc===2?sStatusNA:sStatusNone
+        detailRows.push([
+          cell(stt, sSttCell),
+          cell(disc, sDiscCell(bg)),
+          cell(it.item_code||'', sCodeCell(bg)),
+          cell(it.item_name||'', sNameCell(bg)),
+          cell(it.doc_name, sDocCell),
+          cell(statusLabel, sStatus),
+          cell(it.file_ref||'', sFileCell),
+          cell(it.notes||'', sNoteCell),
+        ])
+        rowNum++
+      })
+      if (codeRows.length > 1) {
+        merges.push({s:{r:codeStart,c:2},e:{r:rowNum-1,c:2}})
+        merges.push({s:{r:codeStart,c:3},e:{r:rowNum-1,c:3}})
+      }
+    })
+    if (discItems.length > 1) {
+      merges.push({s:{r:discStart,c:1},e:{r:discStart+discItems.length-1,c:1}})
+    }
+  })
+
+  const wsDetail = XS.utils.aoa_to_sheet(detailRows)
+  wsDetail['!cols'] = [{wch:5},{wch:14},{wch:12},{wch:22},{wch:46},{wch:11},{wch:20},{wch:24}]
+  wsDetail['!merges'] = merges
+  wsDetail['!freeze'] = {xSplit:0, ySplit:1}  // freeze header row
+  XS.utils.book_append_sheet(wb, wsDetail, 'Checklist chi tiết')
+
+  // ── Xuất file ──
+  const stageName = sub.stage || 'HSTK'
+  const ver = sub.version || 'V1'
+  const dateStr = new Date().toISOString().slice(0,10)
+  const fileName = `Checklist_HSTK_${stageName}_${ver}_${dateStr}.xlsx`
+  XS.writeFile(wb, fileName)
+  toast(`✅ Đã xuất: ${fileName}`)
 }
 
 // ═══ END CHECKLIST HSTK MODULE ═══════════════════════════════════════
