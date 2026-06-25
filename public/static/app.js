@@ -9202,8 +9202,9 @@ function renderAssetsTable(assets) {
 
   // Render 1 hàng tài sản (dùng chung cho cha và con)
   function renderRow(a, isChild = false) {
-    const assignedUser = a.assigned_to ? (allUsers.find(u => u.id === a.assigned_to) || null) : null
-    const assignedName = assignedUser ? assignedUser.full_name : null
+    // Ưu tiên dùng assigned_to_name từ API (JOIN sẵn), fallback sang allUsers
+    const assignedName = a.assigned_to_name ||
+      (a.assigned_to ? (allUsers.find(u => u.id == a.assigned_to)?.full_name || null) : null)
     const deprSt = a.depreciation_status || 'none'
     const netVal = a.net_book_value || a.current_value || 0
     const pctDepr = a.purchase_price > 0 ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100)) : 0

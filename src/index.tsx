@@ -6732,6 +6732,20 @@ app.put('/api/assets/:id', authMiddleware, adminOnly, async (c) => {
       'purchase_date', 'purchase_price', 'current_value', 'warranty_expiry',
       'status', 'location', 'department', 'assigned_to', 'notes',
       'depreciation_years', 'depreciation_start_date', 'depreciation_status', 'parent_asset_id']
+
+    // Nếu người dùng set assigned_to nhưng KHÔNG thay đổi status → tự động đổi status sang 'active'
+    // Nếu xóa người dùng (assigned_to = null) và không set status → tự động đổi về 'unused'
+    if (data.assigned_to !== undefined && data.status === undefined) {
+      const currentAsset = await db.prepare(`SELECT status FROM assets WHERE id = ?`).bind(id).first() as any
+      if (data.assigned_to) {
+        // Có người dùng mới → active (chỉ khi đang unused)
+        if (currentAsset?.status === 'unused') data.status = 'active'
+      } else {
+        // Xóa người dùng → unused (chỉ khi đang active)
+        if (currentAsset?.status === 'active') data.status = 'unused'
+      }
+    }
+
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
     updates.push('updated_at = CURRENT_TIMESTAMP')
