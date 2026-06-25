@@ -22901,27 +22901,25 @@ function _hstkRenderDetail(container, sub) {
     </div>
 
     <!-- Filter + Save button -->
-    <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
-      <div class="flex items-center gap-2 flex-wrap">
-        <label class="text-xs text-gray-500 font-medium">Bộ môn:</label>
-        <select id="hstkFilterDisc" onchange="_hstkOnDiscFilterChange()" class="select-field text-xs py-1 h-8" style="min-width:140px">
-          <option value="">Tất cả</option>
-          ${disciplines.map(d=>`<option value="${d}">${d}</option>`).join('')}
-        </select>
-        <label class="text-xs text-gray-500 font-medium ml-2">Hạng mục:</label>
-        <select id="hstkFilterItem" onchange="_hstkApplyFilter()" class="select-field text-xs py-1 h-8" style="min-width:160px">
-          <option value="">Tất cả</option>
-          ${_hstkBuildItemOptions(items, '')}
-        </select>
-        <label class="text-xs text-gray-500 font-medium ml-2">Trạng thái:</label>
-        <select id="hstkFilterStatus" onchange="_hstkApplyFilter()" class="select-field text-xs py-1 h-8" style="min-width:130px">
-          <option value="">Tất cả</option>
-          <option value="0">Chưa có</option>
-          <option value="1">Đã có</option>
-          <option value="2">N/A</option>
-        </select>
-      </div>
-      <button id="hstkSaveBtn" onclick="_hstkSavePending()" class="btn-primary text-xs px-3 py-1.5 hidden">
+    <div class="flex items-center gap-2 mb-3 flex-wrap">
+      <span class="text-xs text-gray-500 font-medium whitespace-nowrap">Bộ môn:</span>
+      <select id="hstkFilterDisc" onchange="_hstkOnDiscFilterChange()" class="select-field text-xs py-1 h-8 flex-1" style="min-width:120px;max-width:180px">
+        <option value="">Tất cả</option>
+        ${disciplines.map(d=>`<option value="${d}">${d}</option>`).join('')}
+      </select>
+      <span class="text-xs text-gray-500 font-medium whitespace-nowrap">Hạng mục:</span>
+      <select id="hstkFilterItem" onchange="_hstkApplyFilter()" class="select-field text-xs py-1 h-8 flex-1" style="min-width:160px;max-width:260px">
+        <option value="">Tất cả</option>
+        ${_hstkBuildItemOptions(items, '')}
+      </select>
+      <span class="text-xs text-gray-500 font-medium whitespace-nowrap">Trạng thái:</span>
+      <select id="hstkFilterStatus" onchange="_hstkApplyFilter()" class="select-field text-xs py-1 h-8" style="min-width:110px;max-width:140px">
+        <option value="">Tất cả</option>
+        <option value="0">Chưa có</option>
+        <option value="1">Đã có</option>
+        <option value="2">N/A</option>
+      </select>
+      <button id="hstkSaveBtn" onclick="_hstkSavePending()" class="btn-primary text-xs px-3 py-1.5 hidden ml-auto whitespace-nowrap">
         <i class="fas fa-save mr-1"></i>Lưu thay đổi (<span id="hstkPendingCount">0</span>)
       </button>
     </div>
