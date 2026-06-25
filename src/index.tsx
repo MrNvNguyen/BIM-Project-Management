@@ -14976,8 +14976,10 @@ app.post('/api/projects/:id/checklist/submissions', authMiddleware, async (c) =>
     const categories = catResult.results as any[]
 
     // Disciplines dùng item_code cố định từ template (không nhân bản theo categories)
-    // HTKT: mỗi row có item_code riêng (CL/CT/CD...) là 1 hệ thống hạ tầng, không phải block grouping
-    const FIXED_ITEM_CODE_DISCIPLINES = ['HTKT']
+    // HTKT: 8 hệ thống hạ tầng (CL/CT/CD...) — mỗi row là 1 item độc lập
+    // CẢNH QUAN: 1 hạng mục cố định 'LA-Cảnh quan' với 11 loại hồ sơ
+    // NỘI THẤT: 1 hạng mục cố định 'ID-Nội thất' với 8 loại hồ sơ
+    const FIXED_ITEM_CODE_DISCIPLINES = ['HTKT', 'CẢNH QUAN', 'NỘI THẤT']
 
     const discFilter = disciplines && disciplines.length > 0
       ? `AND discipline IN (${disciplines.map(() => '?').join(',')})` : ''
