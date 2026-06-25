@@ -14916,4 +14916,191 @@ app.post('/api/projects/:projectId/weekly-plans/:planId/report', authMiddleware,
 // END WEEKLY PLANS & REPORTS API
 // ===================================================
 
+// ===================================================
+// CHECKLIST HỒ SƠ THIẾT KẾ (HSTK) API
+// ===================================================
+
+// GET /api/checklist/doc-types?stage=TKCS  — Lấy danh mục loại HS theo giai đoạn
+app.get('/api/checklist/doc-types', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const { stage } = c.req.query()
+    let query = `SELECT * FROM checklist_doc_types WHERE is_active = 1`
+    const params: any[] = []
+    if (stage) { query += ` AND stage = ?`; params.push(stage) }
+    query += ` ORDER BY stage, sort_order`
+    const result = await db.prepare(query).bind(...params).all()
+    return c.json(result.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/projects/:id/checklist/submissions  — Danh sách lần nộp HS của dự án
+app.get('/api/projects/:id/checklist/submissions', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const result = await db.prepare(`
+      SELECT s.*, u.full_name as created_by_name,
+        (SELECT COUNT(*) FROM checklist_submission_items WHERE submission_id = s.id) as total_items,
+        (SELECT COUNT(*) FROM checklist_submission_items WHERE submission_id = s.id AND has_doc = 1) as done_items,
+        (SELECT COUNT(*) FROM checklist_submission_items WHERE submission_id = s.id AND has_doc = 2) as na_items
+      FROM checklist_submissions s
+      LEFT JOIN users u ON s.created_by = u.id
+      WHERE s.project_id = ?
+      ORDER BY s.created_at DESC
+    `).bind(projectId).all()
+    return c.json(result.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/projects/:id/checklist/submissions  — Tạo lần nộp mới, tự động tạo items từ template
+app.post('/api/projects/:id/checklist/submissions', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const projectId = parseInt(c.req.param('id'))
+    const { stage, version, sender, receiver, received_date, feedback_date, status, notes, disciplines } = await c.req.json()
+    if (!stage) return c.json({ error: 'stage is required' }, 400)
+
+    // Tạo submission
+    const sr = await db.prepare(`
+      INSERT INTO checklist_submissions (project_id, stage, version, sender, receiver, received_date, feedback_date, status, notes, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(projectId, stage, version || 'V1', sender || null, receiver || null,
+      received_date || null, feedback_date || null, status || 'pending', notes || null, user.id).run()
+
+    const submissionId = sr.meta.last_row_id as number
+
+    // Lấy template doc types cho giai đoạn này (có thể filter theo disciplines nếu có)
+    let dtQuery = `SELECT * FROM checklist_doc_types WHERE stage = ? AND is_active = 1`
+    const dtParams: any[] = [stage]
+    if (disciplines && disciplines.length > 0) {
+      dtQuery += ` AND discipline IN (${disciplines.map(() => '?').join(',')})`
+      dtParams.push(...disciplines)
+    }
+    dtQuery += ` ORDER BY sort_order`
+    const dtResult = await db.prepare(dtQuery).bind(...dtParams).all()
+    const docTypes = dtResult.results as any[]
+
+    // Batch insert items
+    if (docTypes.length > 0) {
+      const stmts = docTypes.map((dt: any) =>
+        db.prepare(`INSERT INTO checklist_submission_items (submission_id, doc_type_id, discipline, item_code, item_name, doc_name, has_doc)
+                    VALUES (?, ?, ?, ?, ?, ?, 0)`)
+          .bind(submissionId, dt.id, dt.discipline, dt.item_code || null, dt.item_name || null, dt.doc_name)
+      )
+      // D1 batch
+      for (let i = 0; i < stmts.length; i += 50) {
+        await db.batch(stmts.slice(i, i + 50))
+      }
+    }
+
+    return c.json({ success: true, id: submissionId, items_created: docTypes.length }, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/checklist/submissions/:id  — Chi tiết 1 lần nộp + toàn bộ items
+app.get('/api/checklist/submissions/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const sub = await db.prepare(`
+      SELECT s.*, u.full_name as created_by_name
+      FROM checklist_submissions s LEFT JOIN users u ON s.created_by = u.id
+      WHERE s.id = ?
+    `).bind(id).first() as any
+    if (!sub) return c.json({ error: 'Not found' }, 404)
+
+    const items = await db.prepare(`
+      SELECT * FROM checklist_submission_items WHERE submission_id = ? ORDER BY discipline, rowid
+    `).bind(id).all()
+
+    return c.json({ ...sub, items: items.results })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PUT /api/checklist/submissions/:id  — Cập nhật thông tin lần nộp (metadata)
+app.put('/api/checklist/submissions/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const data = await c.req.json()
+    const fields = ['stage', 'version', 'sender', 'receiver', 'received_date', 'feedback_date', 'status', 'notes']
+    const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
+    const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
+    if (updates.length === 0) return c.json({ error: 'No fields to update' }, 400)
+    updates.push('updated_at = CURRENT_TIMESTAMP')
+    values.push(id)
+    await db.prepare(`UPDATE checklist_submissions SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE /api/checklist/submissions/:id
+app.delete('/api/checklist/submissions/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    await db.prepare(`DELETE FROM checklist_submission_items WHERE submission_id = ?`).bind(id).run()
+    await db.prepare(`DELETE FROM checklist_submissions WHERE id = ?`).bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PATCH /api/checklist/items/:id  — Cập nhật trạng thái 1 item (has_doc, file_ref, notes)
+app.patch('/api/checklist/items/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const id = parseInt(c.req.param('id'))
+    const { has_doc, file_ref, notes } = await c.req.json()
+    await db.prepare(`
+      UPDATE checklist_submission_items
+      SET has_doc = ?, file_ref = ?, notes = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(has_doc ?? 0, file_ref ?? null, notes ?? null, user.id, id).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/checklist/items/batch  — Cập nhật nhiều items cùng lúc
+app.post('/api/checklist/items/batch', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { items } = await c.req.json()
+    if (!Array.isArray(items) || items.length === 0) return c.json({ error: 'items array required' }, 400)
+    const stmts = items.map((it: any) =>
+      db.prepare(`UPDATE checklist_submission_items SET has_doc = ?, file_ref = ?, notes = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .bind(it.has_doc ?? 0, it.file_ref ?? null, it.notes ?? null, user.id, it.id)
+    )
+    for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50))
+    return c.json({ success: true, updated: items.length })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/projects/:id/checklist/summary  — Tổng hợp % hoàn thành theo giai đoạn + bộ môn
+app.get('/api/projects/:id/checklist/summary', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const projectId = parseInt(c.req.param('id'))
+    const result = await db.prepare(`
+      SELECT s.stage, s.version, i.discipline,
+        COUNT(*) as total,
+        SUM(CASE WHEN i.has_doc = 1 THEN 1 ELSE 0 END) as done,
+        SUM(CASE WHEN i.has_doc = 2 THEN 1 ELSE 0 END) as na
+      FROM checklist_submissions s
+      JOIN checklist_submission_items i ON i.submission_id = s.id
+      WHERE s.project_id = ?
+      GROUP BY s.id, s.stage, s.version, i.discipline
+      ORDER BY s.created_at DESC, i.discipline
+    `).bind(projectId).all()
+    return c.json(result.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// END CHECKLIST HSTK API
+// ===================================================
+
 export default app
