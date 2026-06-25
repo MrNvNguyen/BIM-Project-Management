@@ -22904,9 +22904,14 @@ function _hstkRenderDetail(container, sub) {
     <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
       <div class="flex items-center gap-2 flex-wrap">
         <label class="text-xs text-gray-500 font-medium">Bộ môn:</label>
-        <select id="hstkFilterDisc" onchange="_hstkApplyFilter()" class="select-field text-xs py-1 h-8" style="min-width:140px">
+        <select id="hstkFilterDisc" onchange="_hstkOnDiscFilterChange()" class="select-field text-xs py-1 h-8" style="min-width:140px">
           <option value="">Tất cả</option>
           ${disciplines.map(d=>`<option value="${d}">${d}</option>`).join('')}
+        </select>
+        <label class="text-xs text-gray-500 font-medium ml-2">Hạng mục:</label>
+        <select id="hstkFilterItem" onchange="_hstkApplyFilter()" class="select-field text-xs py-1 h-8" style="min-width:160px">
+          <option value="">Tất cả</option>
+          ${_hstkBuildItemOptions(items, '')}
         </select>
         <label class="text-xs text-gray-500 font-medium ml-2">Trạng thái:</label>
         <select id="hstkFilterStatus" onchange="_hstkApplyFilter()" class="select-field text-xs py-1 h-8" style="min-width:130px">
@@ -22928,8 +22933,38 @@ function _hstkRenderDetail(container, sub) {
   `
 }
 
+// Build <option> list for hạng mục filter, scoped to a discipline if given
+function _hstkBuildItemOptions(items, discFilter) {
+  const seen = new Set()
+  const opts = []
+  items.forEach(it => {
+    if (discFilter && it.discipline !== discFilter) return
+    if (!it.item_code) return
+    const key = it.item_code
+    if (!seen.has(key)) {
+      seen.add(key)
+      const label = it.item_name ? `${it.item_code} – ${it.item_name}` : it.item_code
+      opts.push(`<option value="${it.item_code}">${label}</option>`)
+    }
+  })
+  return opts.join('')
+}
+
+// Khi đổi Bộ môn → rebuild danh sách Hạng mục tương ứng rồi apply filter
+function _hstkOnDiscFilterChange() {
+  if (!_hstkCurrentSub) return
+  const disc = $('hstkFilterDisc')?.value || ''
+  const itemSel = $('hstkFilterItem')
+  if (itemSel) {
+    itemSel.innerHTML = '<option value="">Tất cả</option>' +
+      _hstkBuildItemOptions(_hstkCurrentSub.items || [], disc)
+  }
+  _hstkApplyFilter()
+}
+
 function _hstkBuildTable(byDisc, disciplines) {
   const filterDisc   = $('hstkFilterDisc')?.value   || ''
+  const filterItem   = $('hstkFilterItem')?.value   || ''
   const filterStatus = $('hstkFilterStatus')?.value
   const filteredDiscs = filterDisc ? [filterDisc] : disciplines
 
@@ -22956,9 +22991,9 @@ function _hstkBuildTable(byDisc, disciplines) {
   let rowIdx = 0
   filteredDiscs.forEach(disc => {
     const rows = byDisc[disc] || []
-    const filtered = filterStatus !== '' && filterStatus !== undefined
-      ? rows.filter(it => String(it.has_doc) === String(filterStatus))
-      : rows
+    let filtered = rows
+    if (filterItem) filtered = filtered.filter(it => it.item_code === filterItem)
+    if (filterStatus !== '' && filterStatus !== undefined) filtered = filtered.filter(it => String(it.has_doc) === String(filterStatus))
     if (!filtered.length) return
 
     // Group by item_code, preserve insertion order (DB order = category creation order)
@@ -23070,6 +23105,7 @@ function _hstkApplyFilter() {
   const disciplines = Object.keys(byDisc).sort()
   const wrap = $('hstkTableWrap')
   if (wrap) wrap.innerHTML = _hstkBuildTable(byDisc, disciplines)
+  // rowspan recalc is done inside _hstkBuildTable with filtered counts — no extra action needed
 }
 
 function _hstkChange(itemId, field, value) {
