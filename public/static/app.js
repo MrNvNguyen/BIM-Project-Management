@@ -23193,7 +23193,7 @@ async function _hstkConfirmAddItem(submissionId, disc, itemCode, itemName) {
   if (modal) modal.remove()
 
   try {
-    const token = localStorage.getItem('auth_token')
+    const token = localStorage.getItem('bim_token')
     const res = await fetch('/api/checklist/items', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -23213,7 +23213,7 @@ async function _hstkConfirmAddItem(submissionId, disc, itemCode, itemName) {
 async function _hstkDeleteCustomItem(itemId) {
   if (!confirm('Xoá hồ sơ bổ sung này?')) return
   try {
-    const token = localStorage.getItem('auth_token')
+    const token = localStorage.getItem('bim_token')
     const res = await fetch(`/api/checklist/items/${itemId}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${token}` }
@@ -23234,7 +23234,7 @@ async function _hstkDeleteCustomItem(itemId) {
 
 async function _hstkReloadSubmission(submissionId) {
   try {
-    const token = localStorage.getItem('auth_token')
+    const token = localStorage.getItem('bim_token')
     const res = await fetch(`/api/checklist/submissions/${submissionId}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
@@ -23256,7 +23256,7 @@ async function _hstkDeleteItemGroup(submissionId, disc, itemCode) {
   if (!confirm(`Xoá toàn bộ ${label} (${count} loại hồ sơ) trong bộ môn ${disc}?\n\nHành động này không thể hoàn tác.`)) return
 
   try {
-    const token = localStorage.getItem('auth_token')
+    const token = localStorage.getItem('bim_token')
     const res = await fetch(`/api/checklist/submissions/${submissionId}/items/group`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
