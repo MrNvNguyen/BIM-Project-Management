@@ -15208,14 +15208,13 @@ app.post('/api/checklist/items', authMiddleware, async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
-// DELETE /api/checklist/items/:id  — Xoá item tuỳ chỉnh (chỉ xoá được is_custom = 1)
+// DELETE /api/checklist/items/:id  — Xoá 1 dòng hồ sơ bất kỳ (cả template lẫn custom)
 app.delete('/api/checklist/items/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const id = parseInt(c.req.param('id'))
-    const item = await db.prepare(`SELECT id, is_custom FROM checklist_submission_items WHERE id = ?`).bind(id).first() as any
+    const item = await db.prepare(`SELECT id FROM checklist_submission_items WHERE id = ?`).bind(id).first()
     if (!item) return c.json({ error: 'Item not found' }, 404)
-    if (!item.is_custom) return c.json({ error: 'Chỉ có thể xoá hồ sơ bổ sung (is_custom = 1)' }, 403)
     await db.prepare(`DELETE FROM checklist_submission_items WHERE id = ?`).bind(id).run()
     return c.json({ success: true })
   } catch (e: any) { return c.json({ error: e.message }, 500) }

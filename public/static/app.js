@@ -23088,17 +23088,13 @@ function _hstkBuildTable(byDisc, disciplines) {
                  value="${curNotes}" oninput="_hstkChange(${it.id},'notes',this.value)">
         </td>`
 
-        // Xoá (chỉ hiện với custom item)
-        if (it.is_custom) {
-          html += `<td class="py-1 px-2 border border-gray-100 text-center">
-            <button onclick="_hstkDeleteCustomItem(${it.id})" title="Xoá hồ sơ bổ sung"
-              class="text-red-400 hover:text-red-600 transition-colors">
-              <i class="fas fa-times-circle"></i>
-            </button>
-          </td>`
-        } else {
-          html += `<td class="border border-gray-100"></td>`
-        }
+        // Nút xoá — hiện cho tất cả dòng, mờ khi hover mới nổi lên
+        html += `<td class="py-1 px-2 border border-gray-100 text-center">
+          <button onclick="_hstkDeleteCustomItem(${it.id})" title="Xoá dòng hồ sơ này"
+            class="text-red-300 hover:text-red-500 transition-colors opacity-40 hover:opacity-100">
+            <i class="fas fa-times"></i>
+          </button>
+        </td>`
 
         html += `</tr>`
       })
@@ -23211,7 +23207,10 @@ async function _hstkConfirmAddItem(submissionId, disc, itemCode, itemName) {
 }
 
 async function _hstkDeleteCustomItem(itemId) {
-  if (!confirm('Xoá hồ sơ bổ sung này?')) return
+  // Tìm tên hồ sơ để hiện trong confirm
+  const it = (_hstkCurrentSub?.items || []).find(i => i.id === itemId)
+  const docName = it?.doc_name || 'hồ sơ này'
+  if (!confirm(`Xoá dòng hồ sơ:\n"${docName}"?\n\nHành động này không thể hoàn tác.`)) return
   try {
     const token = localStorage.getItem('bim_token')
     const res = await fetch(`/api/checklist/items/${itemId}`, {
@@ -23226,7 +23225,7 @@ async function _hstkDeleteCustomItem(itemId) {
       _hstkCurrentSub.items = (_hstkCurrentSub.items || []).filter(i => i.id !== itemId)
       _hstkApplyFilter()
     }
-    toast('🗑️ Đã xoá hồ sơ bổ sung')
+    toast(`🗑️ Đã xoá: ${docName}`)
   } catch (e) {
     toast('❌ Lỗi kết nối', 'error')
   }
