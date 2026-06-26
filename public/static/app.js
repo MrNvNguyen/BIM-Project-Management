@@ -23041,11 +23041,24 @@ function _hstkBuildTable(byDisc, disciplines) {
 
         // Hạng mục (rowspan = số item trong nhóm + 1 dòng "Bổ sung hồ sơ")
         if (firstInCode) {
+          const subId = _hstkCurrentSub?.id
+          const codeEsc = code !== '__none__' ? code.replace(/'/g,"&apos;") : ''
+          const discEsc = disc.replace(/'/g,"&apos;")
           const codeLabel = code !== '__none__'
             ? `<span class="font-mono text-blue-600 font-bold">${code}</span>${codeRows[0].item_name ? `<br><span class="text-gray-600 font-normal text-xs">${codeRows[0].item_name}</span>` : ''}`
-            : '<span class="text-gray-300">—</span>'
-          html += `<td class="py-1.5 px-3 border border-gray-200 text-gray-600 align-middle font-medium"
-                      rowspan="${codeRowspan}">${codeLabel}</td>`
+            : '<span class="text-gray-300 text-xs italic">Không có</span>'
+          html += `<td class="py-1.5 px-2 border border-gray-200 text-gray-600 align-middle font-medium"
+                      rowspan="${codeRowspan}">
+            <div class="flex flex-col items-center gap-1.5">
+              <div class="text-center">${codeLabel}</div>
+              <button onclick="_hstkDeleteItemGroup(${subId},'${discEsc}','${codeEsc}')"
+                title="Xoá toàn bộ hạng mục này"
+                class="text-red-300 hover:text-red-500 transition-colors leading-none mt-0.5"
+                style="font-size:13px">
+                <i class="fas fa-trash-alt"></i>
+              </button>
+            </div>
+          </td>`
           firstInCode = false
         }
 
@@ -23232,6 +23245,44 @@ async function _hstkReloadSubmission(submissionId) {
       _hstkRenderDetail(data)
     }
   } catch (e) { console.error('Reload error', e) }
+}
+
+// Xoá toàn bộ nhóm hạng mục (disc + item_code)
+async function _hstkDeleteItemGroup(submissionId, disc, itemCode) {
+  const label = itemCode ? `hạng mục "${itemCode}"` : 'nhóm không có hạng mục'
+  const count = (_hstkCurrentSub?.items || []).filter(i =>
+    i.discipline === disc && (itemCode ? i.item_code === itemCode : !i.item_code)
+  ).length
+  if (!confirm(`Xoá toàn bộ ${label} (${count} loại hồ sơ) trong bộ môn ${disc}?\n\nHành động này không thể hoàn tác.`)) return
+
+  try {
+    const token = localStorage.getItem('auth_token')
+    const res = await fetch(`/api/checklist/submissions/${submissionId}/items/group`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ discipline: disc, item_code: itemCode || null })
+    })
+    const data = await res.json()
+    if (!res.ok) { toast(`❌ ${data.error || 'Lỗi xoá hạng mục'}`, 'error'); return }
+
+    // Cập nhật local state & re-render (không cần reload từ server)
+    if (_hstkCurrentSub) {
+      _hstkCurrentSub.items = (_hstkCurrentSub.items || []).filter(i => {
+        if (i.discipline !== disc) return true
+        if (itemCode) return i.item_code !== itemCode
+        return !!(i.item_code)
+      })
+      // Xoá pending changes của các items đã bị xoá
+      Object.keys(_hstkPendingChanges).forEach(id => {
+        const it = (_hstkCurrentSub.items || []).find(i => i.id === parseInt(id))
+        if (!it) delete _hstkPendingChanges[id]
+      })
+      _hstkRenderDetail(_hstkCurrentSub)
+    }
+    toast(`🗑️ Đã xoá ${data.deleted} hồ sơ của ${label}`)
+  } catch (e) {
+    toast('❌ Lỗi kết nối', 'error')
+  }
 }
 
 function _hstkDiscColor(disc) {
