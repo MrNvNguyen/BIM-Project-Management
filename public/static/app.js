@@ -23241,7 +23241,9 @@ async function _hstkReloadSubmission(submissionId) {
     if (res.ok) {
       _hstkCurrentSub = data
       _hstkPendingChanges = {}
-      _hstkRenderDetail(data)
+      // Lấy đúng container DOM — _hstkRenderDetail nhận (container, sub)
+      const container = $(`hstkContainer_${_hstkProjectId}`)
+      if (container) _hstkRenderDetail(container, data)
     }
   } catch (e) { console.error('Reload error', e) }
 }
