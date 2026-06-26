@@ -15112,6 +15112,35 @@ app.put('/api/checklist/submissions/:id', authMiddleware, async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
+// DELETE /api/checklist/submissions/:subId/items/group
+// Xoá toàn bộ items trong một nhóm hạng mục (discipline + item_code)
+// PHẢI đăng ký TRƯỚC route DELETE /submissions/:id để tránh Hono match sai
+app.delete('/api/checklist/submissions/:subId/items/group', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const subId = parseInt(c.req.param('subId'))
+    const { discipline, item_code } = await c.req.json()
+    if (!discipline) return c.json({ error: 'discipline is required' }, 400)
+
+    const sub = await db.prepare(`SELECT id FROM checklist_submissions WHERE id = ?`).bind(subId).first()
+    if (!sub) return c.json({ error: 'Submission not found' }, 404)
+
+    let result
+    if (item_code) {
+      result = await db.prepare(`
+        DELETE FROM checklist_submission_items
+        WHERE submission_id = ? AND discipline = ? AND item_code = ?
+      `).bind(subId, discipline, item_code).run()
+    } else {
+      result = await db.prepare(`
+        DELETE FROM checklist_submission_items
+        WHERE submission_id = ? AND discipline = ? AND (item_code IS NULL OR item_code = '')
+      `).bind(subId, discipline).run()
+    }
+    return c.json({ success: true, deleted: result.meta.changes })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 // DELETE /api/checklist/submissions/:id
 app.delete('/api/checklist/submissions/:id', authMiddleware, async (c) => {
   try {
@@ -15189,36 +15218,6 @@ app.delete('/api/checklist/items/:id', authMiddleware, async (c) => {
     if (!item.is_custom) return c.json({ error: 'Chỉ có thể xoá hồ sơ bổ sung (is_custom = 1)' }, 403)
     await db.prepare(`DELETE FROM checklist_submission_items WHERE id = ?`).bind(id).run()
     return c.json({ success: true })
-  } catch (e: any) { return c.json({ error: e.message }, 500) }
-})
-
-// DELETE /api/checklist/submissions/:subId/items/group
-// Xoá toàn bộ items trong một nhóm hạng mục (discipline + item_code)
-// Body: { discipline, item_code }  — item_code có thể null (nhóm không có hạng mục)
-app.delete('/api/checklist/submissions/:subId/items/group', authMiddleware, async (c) => {
-  try {
-    const db = c.env.DB
-    const subId = parseInt(c.req.param('subId'))
-    const { discipline, item_code } = await c.req.json()
-    if (!discipline) return c.json({ error: 'discipline is required' }, 400)
-
-    // Verify submission exists
-    const sub = await db.prepare(`SELECT id FROM checklist_submissions WHERE id = ?`).bind(subId).first()
-    if (!sub) return c.json({ error: 'Submission not found' }, 404)
-
-    let result
-    if (item_code) {
-      result = await db.prepare(`
-        DELETE FROM checklist_submission_items
-        WHERE submission_id = ? AND discipline = ? AND item_code = ?
-      `).bind(subId, discipline, item_code).run()
-    } else {
-      result = await db.prepare(`
-        DELETE FROM checklist_submission_items
-        WHERE submission_id = ? AND discipline = ? AND (item_code IS NULL OR item_code = '')
-      `).bind(subId, discipline).run()
-    }
-    return c.json({ success: true, deleted: result.meta.changes })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
