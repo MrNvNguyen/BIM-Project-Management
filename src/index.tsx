@@ -15155,6 +15155,43 @@ app.post('/api/checklist/items/batch', authMiddleware, async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
+// POST /api/checklist/items  — Thêm 1 item tuỳ chỉnh vào submission (hồ sơ bổ sung)
+app.post('/api/checklist/items', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { submission_id, discipline, item_code, item_name, doc_name } = await c.req.json()
+    if (!submission_id || !discipline || !doc_name) {
+      return c.json({ error: 'submission_id, discipline, doc_name are required' }, 400)
+    }
+    // Verify submission belongs to a project the user can access
+    const sub = await db.prepare(`SELECT id FROM checklist_submissions WHERE id = ?`).bind(submission_id).first()
+    if (!sub) return c.json({ error: 'Submission not found' }, 404)
+
+    const result = await db.prepare(`
+      INSERT INTO checklist_submission_items
+        (submission_id, doc_type_id, discipline, item_code, item_name, doc_name, has_doc, is_custom, created_by)
+      VALUES (?, NULL, ?, ?, ?, ?, 0, 1, ?)
+    `).bind(submission_id, discipline, item_code || null, item_name || null, doc_name, user.id).run()
+
+    const newItem = await db.prepare(`SELECT * FROM checklist_submission_items WHERE id = ?`).bind(result.meta.last_row_id).first()
+    return c.json(newItem, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE /api/checklist/items/:id  — Xoá item tuỳ chỉnh (chỉ xoá được is_custom = 1)
+app.delete('/api/checklist/items/:id', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const item = await db.prepare(`SELECT id, is_custom FROM checklist_submission_items WHERE id = ?`).bind(id).first() as any
+    if (!item) return c.json({ error: 'Item not found' }, 404)
+    if (!item.is_custom) return c.json({ error: 'Chỉ có thể xoá hồ sơ bổ sung (is_custom = 1)' }, 403)
+    await db.prepare(`DELETE FROM checklist_submission_items WHERE id = ?`).bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 // GET /api/projects/:id/checklist/summary  — Tổng hợp % hoàn thành theo giai đoạn + bộ môn
 app.get('/api/projects/:id/checklist/summary', authMiddleware, async (c) => {
   try {
