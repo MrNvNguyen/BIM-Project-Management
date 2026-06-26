@@ -23008,9 +23008,14 @@ function _hstkBuildTable(byDisc, disciplines) {
     })
 
     let firstRowInDisc = true
-    let discRowCount = filtered.length
+    // discRowCount phải tính cả dòng "Bổ sung hồ sơ" (1 dòng / nhóm item_code)
+    // để rowspan của cột "Bộ môn" bao phủ đúng số dòng thực tế trong bảng
+    const addBtnRows = (!filterItem && !filterStatus) ? codeOrder.length : 0
+    let discRowCount = filtered.length + addBtnRows
     codeOrder.forEach(code => {
       const codeRows = byCode[code]
+      // codeRowspan = số item trong nhóm + 1 dòng "Bổ sung hồ sơ" (nếu hiện)
+      const codeRowspan = codeRows.length + ((!filterItem && !filterStatus) ? 1 : 0)
       let firstInCode = true
       codeRows.forEach((it, ci) => {
         rowIdx++
@@ -23034,13 +23039,13 @@ function _hstkBuildTable(byDisc, disciplines) {
           firstRowInDisc = false
         }
 
-        // Hạng mục (rowspan for first in code group)
+        // Hạng mục (rowspan = số item trong nhóm + 1 dòng "Bổ sung hồ sơ")
         if (firstInCode) {
           const codeLabel = code !== '__none__'
             ? `<span class="font-mono text-blue-600 font-bold">${code}</span>${codeRows[0].item_name ? `<br><span class="text-gray-600 font-normal text-xs">${codeRows[0].item_name}</span>` : ''}`
             : '<span class="text-gray-300">—</span>'
           html += `<td class="py-1.5 px-3 border border-gray-200 text-gray-600 align-middle font-medium"
-                      rowspan="${codeRows.length}">${codeLabel}</td>`
+                      rowspan="${codeRowspan}">${codeLabel}</td>`
           firstInCode = false
         }
 
@@ -23085,18 +23090,19 @@ function _hstkBuildTable(byDisc, disciplines) {
         html += `</tr>`
       })
 
-      // Nút "+ Bổ sung hồ sơ" cuối mỗi nhóm hạng mục (chỉ hiện khi không filter)
-      // QUAN TRỌNG: dùng colspan="8" toàn bộ — KHÔNG dùng td riêng cho cột Bộ môn/Hạng mục
-      // vì các cột đó đã bị rowspan của dòng dữ liệu chiếm, thêm td sẽ làm lệch cột
+      // Nút "+ Bổ sung hồ sơ" cuối mỗi nhóm hạng mục
+      // Dòng này nằm trong vùng rowspan của "Bộ môn" (discRowCount đã tính) và "Hạng mục" (codeRowspan đã tính)
+      // → chỉ cần render 6 cột còn lại (#, doc_name, status, file_ref, notes, action)
       if (!filterItem && !filterStatus) {
         const subId = _hstkCurrentSub?.id
         const discVal = disc
         const codeVal = code !== '__none__' ? code : ''
         const nameVal = code !== '__none__' ? (codeRows[0]?.item_name || '') : ''
         html += `<tr class="bg-blue-50/40 border-b border-blue-100">
-          <td colspan="8" class="py-1 px-3 border border-blue-100/50">
+          <td class="border border-gray-100 text-gray-300 text-center text-xs py-1">+</td>
+          <td colspan="6" class="py-1 px-3 border border-blue-100/50">
             <button onclick="_hstkShowAddItemModal(${subId},'${discVal.replace(/'/g,"&apos;")}','${codeVal.replace(/'/g,"&apos;")}','${nameVal.replace(/'/g,"&apos;")}')"
-              class="flex items-center gap-1 text-blue-500 hover:text-blue-700 text-xs font-medium transition-colors ml-2">
+              class="flex items-center gap-1 text-blue-500 hover:text-blue-700 text-xs font-medium transition-colors">
               <i class="fas fa-plus-circle text-blue-400"></i> Bổ sung hồ sơ
             </button>
           </td>
