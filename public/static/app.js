@@ -23086,19 +23086,18 @@ function _hstkBuildTable(byDisc, disciplines) {
       })
 
       // Nút "+ Bổ sung hồ sơ" cuối mỗi nhóm hạng mục (chỉ hiện khi không filter)
+      // QUAN TRỌNG: dùng colspan="8" toàn bộ — KHÔNG dùng td riêng cho cột Bộ môn/Hạng mục
+      // vì các cột đó đã bị rowspan của dòng dữ liệu chiếm, thêm td sẽ làm lệch cột
       if (!filterItem && !filterStatus) {
         const subId = _hstkCurrentSub?.id
         const discVal = disc
         const codeVal = code !== '__none__' ? code : ''
         const nameVal = code !== '__none__' ? (codeRows[0]?.item_name || '') : ''
-        html += `<tr class="bg-blue-50/30">
-          <td class="border border-gray-100"></td>
-          <td class="border border-gray-100"></td>
-          <td class="border border-gray-100"></td>
-          <td colspan="5" class="py-1 px-3 border border-gray-100">
+        html += `<tr class="bg-blue-50/40 border-b border-blue-100">
+          <td colspan="8" class="py-1 px-3 border border-blue-100/50">
             <button onclick="_hstkShowAddItemModal(${subId},'${discVal.replace(/'/g,"&apos;")}','${codeVal.replace(/'/g,"&apos;")}','${nameVal.replace(/'/g,"&apos;")}')"
-              class="flex items-center gap-1 text-blue-500 hover:text-blue-700 text-xs font-medium transition-colors">
-              <i class="fas fa-plus-circle"></i> Bổ sung hồ sơ
+              class="flex items-center gap-1 text-blue-500 hover:text-blue-700 text-xs font-medium transition-colors ml-2">
+              <i class="fas fa-plus-circle text-blue-400"></i> Bổ sung hồ sơ
             </button>
           </td>
         </tr>`
