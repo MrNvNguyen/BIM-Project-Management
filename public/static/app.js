@@ -3851,6 +3851,9 @@ async function openTaskModal(taskId = null, projectId = null) {
   $('taskModalTitle').textContent = taskId ? 'Chỉnh sửa Task' : 'Tạo Task mới'
   $('taskId').value = taskId || ''
 
+  // Đảm bảo role cache đã được cập nhật (quan trọng với QLDA/Leader)
+  refreshProjectRoleCache()
+
   const effRoleForModal = projectId
     ? getEffectiveRoleForProject(projectId)
     : (taskId ? getEffectiveRoleForProject(null) : getEffectiveGlobalRole())
@@ -4048,6 +4051,34 @@ function _initTaskProjectCombobox(items, locked) {
         await _loadAndInitTaskCategoryCombobox(parseInt(val), null, locked)
         await updateTaskAssigneeByProject(parseInt(val))
         await _loadAndInitTaskFilenameCombobox(parseInt(val), '')
+
+        // Re-evaluate role sau khi chọn project — quan trọng với QLDA/Leader
+        const newRole = getEffectiveRoleForProject(parseInt(val))
+        const isNowMember = !['system_admin','project_admin','project_leader'].includes(newRole)
+
+        const adminSection = $('taskAdminSection')
+        const memberBanner = $('taskMemberBanner')
+        const allEditableFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours','taskWorkNotes','taskCdeReport','taskHstkDate','taskType','taskFilename']
+
+        if (!isNowMember) {
+          // QLDA / Leader / Admin → unlock tất cả fields
+          if (adminSection) { adminSection.style.opacity = ''; adminSection.style.pointerEvents = ''; adminSection.style.filter = '' }
+          allEditableFields.forEach(fid => { const el = $(fid); if (el) { el.disabled = false; el.style.opacity = ''; el.style.pointerEvents = '' } })
+          ;['taskProjectComboboxModal','taskDisciplineCombobox','taskFilenameCombobox'].forEach(cbId => {
+            const el = document.getElementById(cbId); if (!el) return
+            const trigger = el.querySelector('[data-cb-trigger]') || el.firstElementChild
+            if (trigger) { trigger.style.pointerEvents = ''; trigger.style.opacity = ''; trigger.style.background = ''; trigger.style.cursor = '' }
+          })
+          if (memberBanner) memberBanner.style.display = 'none'
+          window._taskFilenameNeedsLock = false
+          // Cho phép chọn bất kỳ người phụ trách nào
+          $('taskAssignee').innerHTML = '<option value="">-- Chọn người phụ trách --</option>' +
+            (allUsers || []).filter(u => u.is_active !== 0).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+        } else {
+          // Member thông thường → chỉ chọn chính mình
+          const me = currentUser
+          $('taskAssignee').innerHTML = `<option value="${me.id}" selected>${me.full_name}</option>`
+        }
       } else {
         _initTaskCategoryCombobox([], locked, null)
         _initTaskFilenameCombobox([], '')
