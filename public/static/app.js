@@ -4060,6 +4060,18 @@ function _initTaskProjectCombobox(items, locked) {
         const memberBanner = $('taskMemberBanner')
         const allEditableFields = ['taskTitle','taskDesc','taskDiscipline','taskPhase','taskPriority','taskAssignee','taskStartDate','taskDueDate','taskEstHours','taskWorkNotes','taskCdeReport','taskHstkDate','taskType','taskFilename']
 
+        // Cập nhật taskAdminActions (nút "Tạo nhiều task" + "Import Excel")
+        // Chỉ hiện khi đang ở chế độ tạo mới (taskId rỗng) và là QLDA/Leader của project
+        const adminActions = $('taskAdminActions')
+        const currentTaskId = $('taskId')?.value
+        if (adminActions) {
+          if (!isNowMember && !currentTaskId) {
+            adminActions.style.setProperty('display', 'flex', 'important')
+          } else {
+            adminActions.style.setProperty('display', 'none', 'important')
+          }
+        }
+
         if (!isNowMember) {
           // QLDA / Leader / Admin → unlock tất cả fields
           if (adminSection) { adminSection.style.opacity = ''; adminSection.style.pointerEvents = ''; adminSection.style.filter = '' }
@@ -21889,14 +21901,24 @@ async function submitWeeklyReport(e, planId, projectId) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Hiển thị nút admin trong taskModal khi tạo mới ──────────────────────────
+// Helper: kiểm tra xem user có phải admin/leader cho 1 project không (dùng effective role)
+function _isAdminOrLeaderForProject(projectId) {
+  if (!projectId) {
+    // Không có project cụ thể → dùng global role
+    return ['system_admin','project_admin','project_leader'].includes(currentUser?.role)
+  }
+  const effRole = getEffectiveRoleForProject(parseInt(projectId))
+  return ['system_admin','project_admin','project_leader'].includes(effRole)
+}
+
 ;(function patchTaskModalForAdmin() {
   const origOpen = window.openTaskModal
   window.openTaskModal = async function(taskId = null, projectId = null) {
     await origOpen(taskId, projectId)
     const adminActions = $('taskAdminActions')
     if (!adminActions) return
-    const role = currentUser?.role
-    const isAdminOrLeader = ['system_admin','project_admin','project_leader'].includes(role)
+    // Kiểm tra: global role HOẶC project-specific role (quan trọng với QLDA được bổ nhiệm)
+    const isAdminOrLeader = _isAdminOrLeaderForProject(projectId)
     // Chỉ hiện khi tạo mới (không phải edit) và là admin/leader
     if (!taskId && isAdminOrLeader) {
       adminActions.style.setProperty('display', 'flex', 'important')
