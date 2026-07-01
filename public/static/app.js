@@ -921,6 +921,14 @@ function renderBirthdayWidget(birthdays) {
     subtitleEl.textContent = `${monthName} — ${birthdays.length} người${todayBirths.length > 0 ? ` · 🎉 ${todayBirths.length} người sinh nhật hôm nay!` : ''}`
   }
 
+  // Hiện/ẩn nút "Gửi lời chúc" dựa trên role — chỉ admin mới có quyền gọi API
+  const sendBtn = $('btnSendBirthdayEmails')
+  if (sendBtn) {
+    const role = currentUser?.role
+    const canSend = ['system_admin', 'project_admin'].includes(role)
+    sendBtn.style.display = canSend ? '' : 'none'
+  }
+
   listEl.innerHTML = birthdays.map(u => {
     if (!u.birthday) return ''
     const mm = u.birthday.substring(5, 7)
@@ -973,8 +981,13 @@ async function sendBirthdayEmailsToday() {
   btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Đang gửi...'
   try {
     const res = await api('/dashboard/send-birthday-emails', { method: 'POST' })
-    if (res.total === 0) {
+    if (res.error) {
+      // Backend trả lỗi (vd: chưa có RESEND API Key)
+      showToast(res.error, 'error')
+    } else if (res.total === 0) {
       showToast('Không có nhân sự nào có sinh nhật hôm nay', 'info')
+    } else if (res.sent === 0) {
+      showToast(`⚠️ Không gửi được email nào (${res.total} người) — kiểm tra RESEND API Key trong Admin → Cài đặt Email`, 'warning')
     } else {
       showToast(`✅ Đã gửi email chúc mừng cho ${res.sent}/${res.total} nhân sự!`, 'success')
     }
@@ -983,7 +996,14 @@ async function sendBirthdayEmailsToday() {
       console.table(res.results)
     }
   } catch (e) {
-    showToast('Lỗi khi gửi email: ' + (e.message || e), 'error')
+    const msg = e.message || String(e)
+    if (msg.includes('403') || msg.toLowerCase().includes('access denied') || msg.toLowerCase().includes('admin')) {
+      showToast('Chỉ Admin mới có thể gửi email chúc sinh nhật', 'warning')
+    } else if (msg.toLowerCase().includes('resend') || msg.toLowerCase().includes('api key') || msg.toLowerCase().includes('email')) {
+      showToast('Lỗi cấu hình email — vào Admin → Cài đặt Email để kiểm tra RESEND API Key', 'error')
+    } else {
+      showToast('Lỗi khi gửi email: ' + msg, 'error')
+    }
   } finally {
     btn.disabled = false
     btn.innerHTML = '<i class="fas fa-envelope-open-text mr-1"></i> Gửi lời chúc hôm nay'

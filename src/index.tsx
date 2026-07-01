@@ -7812,7 +7812,12 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
 })
 
 // POST /api/dashboard/send-birthday-emails — Gửi email chúc mừng sinh nhật hôm nay
-app.post('/api/dashboard/send-birthday-emails', authMiddleware, adminOnly, async (c) => {
+// Cho phép: system_admin, project_admin (không cần system_admin mới dùng được)
+app.post('/api/dashboard/send-birthday-emails', authMiddleware, async (c) => {
+  const caller = c.get('user') as any
+  if (!['system_admin', 'project_admin'].includes(caller?.role)) {
+    return c.json({ error: 'Chỉ Admin mới có thể gửi email chúc sinh nhật.' }, 403)
+  }
   try {
     const db = c.env.DB
     const today = new Date()
