@@ -13961,7 +13961,8 @@ function renderSharedCostTable() {
   const globalOffset = start
 
   const basisLabel = { contract_value: '% GTHĐ', equal: 'Chia đều', manual: 'Thủ công' }
-  const costTypeLabel = {
+  // Fallback labels cho các loại built-in (dùng khi allCostTypes chưa load)
+  const costTypeLabelFallback = {
     office: 'Chi phí văn phòng', equipment: 'Chi phí thiết bị', material: 'Chi phí vật liệu',
     travel: 'Chi phí đi lại', transport: 'Chi phí vận chuyển', salary: 'Chi phí lương',
     depreciation: 'Chi phí khấu hao', other: 'Chi phí khác', manmonth: 'Chi phí tháng',
@@ -13980,12 +13981,20 @@ function renderSharedCostTable() {
     other:        'background:#f3f4f6;color:#374151',
   }
 
-  // Helper lấy màu từ allCostTypes (DB) cho loại tuỳ chỉnh
+  // Helper lấy màu từ allCostTypes (DB) cho loại tuỳ chỉnh — DB name/color có ưu tiên cao nhất
   const _getSharedTypeStyle = (code) => {
-    if (costTypeStyle[code]) return costTypeStyle[code]
+    // 1. Ưu tiên: màu từ DB (allCostTypes)
     const ct = allCostTypes.find(c => c.code === code)
     if (ct && ct.color) return `background:${ct.color}22;color:${ct.color}`
+    // 2. Fallback: hardcoded style
+    if (costTypeStyle[code]) return costTypeStyle[code]
     return 'background:#fef3c7;color:#92400e'
+  }
+  // Helper lấy tên loại chi phí — ưu tiên DB name
+  const _getSharedTypeLabel = (code) => {
+    const ct = allCostTypes.find(c => c.code === code)
+    if (ct && ct.name) return ct.name
+    return costTypeLabelFallback[code] || code
   }
 
   tbody.innerHTML = pageData.map((sc, idx) => {
@@ -13994,7 +14003,7 @@ function renderSharedCostTable() {
     ).join('')
     const period    = sc.month ? `T${sc.month}/${sc.year}` : (sc.year ? `NTC${sc.year}` : '-')
     const typeStyle = _getSharedTypeStyle(sc.cost_type)
-    const typeLabel = costTypeLabel[sc.cost_type] || getCostTypeNameDynamic(sc.cost_type)
+    const typeLabel = _getSharedTypeLabel(sc.cost_type)
     const isDepr    = sc.cost_type === 'depreciation'
     const rowNum    = globalOffset + idx + 1
     return `<tr class="hover:bg-gray-50${isDepr ? ' bg-purple-50' : ''}">
