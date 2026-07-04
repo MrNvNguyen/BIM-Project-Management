@@ -982,16 +982,24 @@ async function sendBirthdayEmailsToday() {
   try {
     const res = await api('/dashboard/send-birthday-emails', { method: 'POST' })
     if (res.error) {
-      // Backend trả lỗi (vd: chưa có RESEND API Key)
       showToast(res.error, 'error')
     } else if (res.total === 0) {
       showToast('Không có nhân sự nào có sinh nhật hôm nay', 'info')
-    } else if (res.sent === 0) {
-      showToast(`⚠️ Không gửi được email nào (${res.total} người) — kiểm tra RESEND API Key trong Admin → Cài đặt Email`, 'warning')
+    } else if (res.sent > 0) {
+      const extra = res.failed > 0 ? ` (${res.failed} lỗi)` : ''
+      const noMail = res.no_email > 0 ? `, ${res.no_email} người chưa có email` : ''
+      showToast(`✅ Đã gửi email chúc mừng cho ${res.sent}/${res.total} nhân sự${extra}${noMail}!`, 'success')
+    } else if (res.skipped > 0 && res.sent === 0) {
+      // Gửi bị skip — thường do chưa cấu hình RESEND API Key
+      showToast(`⚠️ Email chưa được gửi — vào Admin → Cài đặt Email để cấu hình RESEND API Key`, 'warning')
+    } else if (res.failed > 0) {
+      showToast(`❌ Gửi thất bại cho ${res.failed}/${res.total} nhân sự — kiểm tra log hoặc RESEND API Key`, 'error')
+    } else if (res.no_email > 0 && res.sent === 0) {
+      showToast(`${res.no_email} nhân sự có sinh nhật hôm nay nhưng chưa có địa chỉ email trong hồ sơ`, 'warning')
     } else {
-      showToast(`✅ Đã gửi email chúc mừng cho ${res.sent}/${res.total} nhân sự!`, 'success')
+      showToast(`⚠️ Không gửi được email nào (${res.total} người) — kiểm tra RESEND API Key`, 'warning')
     }
-    // Log detail
+    // Log detail ra console
     if (res.results && res.results.length > 0) {
       console.table(res.results)
     }
