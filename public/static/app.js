@@ -19986,30 +19986,36 @@ async function _initLeaveEmployeeFilter() {
     try { allUsers = await api('/users') } catch(e) {}
   }
   const activeUsers = (allUsers || []).filter(u => u.is_active !== 0)
-  const items = [
-    { value: '', label: '👥 Tất cả nhân sự' },
-    ...activeUsers.map(u => ({ value: String(u.id), label: u.full_name }))
-  ]
+  // Không thêm placeholder vào items — _cbRenderOptions tự prepend placeholder từ options.placeholder
+  const items = activeUsers.map(u => ({ value: String(u.id), label: u.full_name }))
+
   if (_cbState['leaveEmployeeCombobox']) delete _cbState['leaveEmployeeCombobox']
   createCombobox('leaveEmployeeCombobox', {
     placeholder: '👥 Tất cả nhân sự',
     items,
     fullWidth: true,
+    teleport: true,          // teleport panel ra body để thoát overflow:hidden của header card
+    panelMaxWidth: '280px',
+    dropdownMaxHeight: '260px',
     onchange: async (val) => {
       _leaveFilterUserId = val ? parseInt(val) : null
       await loadLeaveRequests()
     }
   })
-  // Style combobox cho header (nền trong suốt, chữ trắng)
-  const trigger = document.querySelector('#leaveEmployeeCombobox [data-cb-trigger]')
-    || document.querySelector('#leaveEmployeeCombobox > div')
-  if (trigger) {
-    trigger.style.background  = 'rgba(255,255,255,0.15)'
-    trigger.style.backdropFilter = 'blur(4px)'
-    trigger.style.border      = '1px solid rgba(255,255,255,0.25)'
-    trigger.style.color       = '#fff'
-    trigger.style.borderRadius = '0.75rem'
-    trigger.style.minWidth    = '200px'
+  // Style trigger button cho header (nền trong suốt, chữ trắng)
+  const triggerBtn = document.querySelector('#leaveEmployeeCombobox_wrap > div')
+  if (triggerBtn) {
+    triggerBtn.style.background     = 'rgba(255,255,255,0.15)'
+    triggerBtn.style.backdropFilter = 'blur(4px)'
+    triggerBtn.style.border         = '1px solid rgba(255,255,255,0.25)'
+    triggerBtn.style.color          = '#fff'
+    triggerBtn.style.borderRadius   = '0.75rem'
+    triggerBtn.style.minWidth       = '200px'
+    // Chỉnh màu label và arrow về trắng
+    const lbl = $('leaveEmployeeCombobox_label')
+    if (lbl) lbl.style.color = 'rgba(255,255,255,0.9)'
+    const arrow = $('leaveEmployeeCombobox_arrow')
+    if (arrow) arrow.style.color = 'rgba(255,255,255,0.7)'
   }
 }
 
