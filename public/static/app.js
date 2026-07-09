@@ -16957,7 +16957,8 @@ function renderPackageStageCard(stage, pkgColor) {
           <tr style="background:${sc.bg}">
             <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:70px">STT</th>
             <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:100px">Hạn</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Ngày HT thực tế</th>
             <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
             <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:160px">Ghi chú</th>
             <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:160px">Thao tác</th>
@@ -17226,9 +17227,10 @@ function renderLegalStages(stages) {
             <tr style="background:${sc.bg}">
               <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:70px">STT</th>
               <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:100px">Hạn</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Ngày HT thực tế</th>
               <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
-              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:180px">Ghi chú</th>
+              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:160px">Ghi chú</th>
               <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:160px">Thao tác</th>
             </tr>
           </thead>
@@ -17379,6 +17381,10 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
     ? `<span class="text-xs ${new Date(item.due_date) < new Date() && item.status !== 'completed' ? 'text-red-500 font-medium' : 'text-gray-500'}">${fmtDate(item.due_date)}</span>`
     : `<span class="text-gray-300 text-xs">—</span>`
 
+  const actualDateCell = item.actual_completion_date
+    ? `<span class="text-xs text-green-600 font-medium"><i class="fas fa-calendar-check mr-1"></i>${fmtDate(item.actual_completion_date)}</span>`
+    : `<span class="text-gray-300 text-xs">—</span>`
+
   return `
   <tr style="background:${item.status==='completed'?'#f0fdf4':isChild?'#fafafa':'#fff'};border-bottom:1px solid #f3f4f6" class="table-row">
     <td class="py-2 px-3 text-xs" style="${sttCellStyle}">
@@ -17397,6 +17403,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
       </div>
     </td>
     <td class="py-2 px-3 text-center">${dueDateCell}</td>
+    <td class="py-2 px-3 text-center">${actualDateCell}</td>
     <td class="py-2 px-3 text-center">${statusBadge}</td>
     <td class="py-2 px-3 text-xs text-gray-500">${item.notes ? `<span title="${item.notes}">${item.notes.length > 40 ? item.notes.substring(0,40)+'…' : item.notes}</span>` : '<span class="text-gray-300">—</span>'}</td>
     <td class="py-2 px-3 text-center">
@@ -17415,7 +17422,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
     </td>
   </tr>
   <tr id="legalTaskPanelRow_${item.id}" style="display:table-row">
-    <td colspan="6" style="padding:0;border-bottom:1px solid #eef0f3">
+    <td colspan="7" style="padding:0;border-bottom:1px solid #eef0f3">
       <div id="legalTaskPanel_${item.id}" style="display:none" data-is-child="${isChild?1:0}"></div>
     </td>
   </tr>`
@@ -17568,6 +17575,7 @@ function openAddLegalItem(stageId, parentId, projectId) {
   $('legalItemTitle').value = ''
   $('legalItemType').value = 'task'
   $('legalItemDueDate').value = ''
+  $('legalItemActualDate').value = ''
   $('legalItemStatus').value = 'pending'
   $('legalItemNotes').value = ''
   $('legalItemModalTitle').innerHTML = parentId
@@ -17611,6 +17619,7 @@ function openEditLegalItem(item) {
   $('legalItemTitle').value = item.title
   $('legalItemType').value = item.item_type || 'task'
   $('legalItemDueDate').value = item.due_date || ''
+  $('legalItemActualDate').value = item.actual_completion_date || ''
   $('legalItemStatus').value = item.status || 'pending'
   $('legalItemNotes').value = item.notes || ''
   $('legalItemModalTitle').innerHTML = '<i class="fas fa-edit text-primary mr-2"></i>Chỉnh sửa hạng mục'
@@ -17629,6 +17638,7 @@ async function saveLegalItem(e) {
     title: $('legalItemTitle').value.trim(),
     item_type: $('legalItemType').value,
     due_date: $('legalItemDueDate').value || null,
+    actual_completion_date: $('legalItemActualDate').value || null,
     status: $('legalItemStatus').value,
     notes: $('legalItemNotes').value.trim() || null
   }
@@ -18998,35 +19008,36 @@ function downloadExcelTemplate() {
 
   // Template data
   const templateData = [
-    ['STT', 'Hạng mục công việc', 'Thời gian', 'Trạng thái', 'Ghi chú'],
-    ['A', 'GIAI ĐOẠN CHUẨN BỊ GÓI THẦU', null, null, null],
-    [1, 'Yêu cầu lập đề cương dự toán', '2025-03-01', null, null],
-    ['=A3+0.1', 'Dự toán chi phí', null, null, null],
-    ['=A4+0.1', 'Đề cương nhiệm vụ', null, null, null],
-    [2, 'Trình thẩm tra đề cương dự toán', '2025-04-02', null, null],
-    ['=A6+0.1', 'In đề cương dự toán', null, null, null],
-    ['=A7+0.1', 'Trình TVTK ký', null, null, null],
-    [3, 'Quyết định phê duyệt đề cương dự toán', '2025-04-04', null, null],
-    ['B', 'GIAI ĐOẠN THAM GIA GÓI THẦU', null, null, null],
-    [1, 'Yêu cầu chuẩn bị hồ sơ năng lực nhà thầu', '2025-03-01', null, null],
-    ['=A11+0.1', 'Xin tên gói thầu, các thông tin liên quan nếu có', null, null, null],
-    ['=A12+0.1', 'Thư ngỏ', '2024-03-24', null, null],
-    ['=A13+0.1', 'Thư cam kết thực hiện', '2024-03-24', null, null],
-    [2, 'Trình phiếu đánh giá năng lực nhà thầu', '2025-04-14', null, null],
-    [3, 'Nhận hồ sơ yêu cầu', '2025-04-15', null, null],
-    ['=A16+0.1', 'Văn bản giới thiệu nhân sự đến nhận HSYC', '2025-04-15', null, null],
-    [4, 'Nộp hồ sơ đề xuất', '2025-04-21', null, 'In đóng cuốn 1 bộ gốc và photo thành 3 bộ'],
-    ['C', 'GIAI ĐOẠN KÝ HỢP ĐỒNG VÀ THỰC HIỆN GÓI THẦU', null, null, null],
-    [1, 'Thư mời thương thảo hợp đồng', '2025-04-21', null, null],
-    ['=A20+0.1', 'Công văn tham gia thương thảo hợp đồng', '2025-04-21', null, null],
-    ['=A21+0.1', 'Thương thảo hợp đồng', '2025-04-21', null, null],
-    [2, 'Ký hợp đồng', '2025-04-23', null, null],
-    ['=A23+0.1', 'Bảo lãnh tạm ứng (Nếu có)', null, null, null],
-    ['=A24+0.1', 'Đơn đề nghị tạm ứng', null, null, null],
-    ['D', 'GIAI ĐOẠN NGHIỆM THU', null, null, null],
-    [1, 'Biên bản nghiệm thu hoàn thành sản phẩm tư vấn', null, null, null],
-    [2, 'Mẫu số 3A - Xác định khối lượng công việc hoàn thành', null, null, null],
-    [3, 'Giấy đề nghị thanh toán', null, null, null],
+    ['STT', 'Hạng mục công việc', 'Hạn thực hiện', 'Ngày hoàn thành thực tế', 'Trạng thái', 'Ghi chú'],
+    [null, null, '(dd/mm/yyyy)', '(ngày ký HĐ, ngày nghiệm thu...)', '(x = hoàn thành)', null],
+    ['A', 'GIAI ĐOẠN CHUẨN BỊ GÓI THẦU', null, null, null, null],
+    [1, 'Yêu cầu lập đề cương dự toán', '2025-03-01', null, null, null],
+    ['=A4+0.1', 'Dự toán chi phí', null, null, null, null],
+    ['=A5+0.1', 'Đề cương nhiệm vụ', null, null, null, null],
+    [2, 'Trình thẩm tra đề cương dự toán', '2025-04-02', null, null, null],
+    ['=A7+0.1', 'In đề cương dự toán', null, null, null, null],
+    ['=A8+0.1', 'Trình TVTK ký', null, null, null, null],
+    [3, 'Quyết định phê duyệt đề cương dự toán', '2025-04-04', '2025-04-05', 'x', null],
+    ['B', 'GIAI ĐOẠN THAM GIA GÓI THẦU', null, null, null, null],
+    [1, 'Yêu cầu chuẩn bị hồ sơ năng lực nhà thầu', '2025-03-01', null, null, null],
+    ['=A12+0.1', 'Xin tên gói thầu, các thông tin liên quan nếu có', null, null, null, null],
+    ['=A13+0.1', 'Thư ngỏ', '2024-03-24', null, null, null],
+    ['=A14+0.1', 'Thư cam kết thực hiện', '2024-03-24', null, null, null],
+    [2, 'Trình phiếu đánh giá năng lực nhà thầu', '2025-04-14', null, null, null],
+    [3, 'Nhận hồ sơ yêu cầu', '2025-04-15', null, null, null],
+    ['=A17+0.1', 'Văn bản giới thiệu nhân sự đến nhận HSYC', '2025-04-15', null, null, null],
+    [4, 'Nộp hồ sơ đề xuất', '2025-04-21', null, null, 'In đóng cuốn 1 bộ gốc và photo thành 3 bộ'],
+    ['C', 'GIAI ĐOẠN KÝ HỢP ĐỒNG VÀ THỰC HIỆN GÓI THẦU', null, null, null, null],
+    [1, 'Thư mời thương thảo hợp đồng', '2025-04-21', null, null, null],
+    ['=A21+0.1', 'Công văn tham gia thương thảo hợp đồng', '2025-04-21', null, null, null],
+    ['=A22+0.1', 'Thương thảo hợp đồng', '2025-04-21', null, null, null],
+    [2, 'Ký hợp đồng', '2025-04-23', '2025-04-25', 'x', null],
+    ['=A24+0.1', 'Bảo lãnh tạm ứng (Nếu có)', null, null, null, null],
+    ['=A25+0.1', 'Đơn đề nghị tạm ứng', null, null, null, null],
+    ['D', 'GIAI ĐOẠN NGHIỆM THU', null, null, null, null],
+    [1, 'Biên bản nghiệm thu hoàn thành sản phẩm tư vấn', null, null, null, null],
+    [2, 'Mẫu số 3A - Xác định khối lượng công việc hoàn thành', null, null, null, null],
+    [3, 'Giấy đề nghị thanh toán', null, null, null, null],
   ]
 
   const ws = XLSX.utils.aoa_to_sheet(templateData)
@@ -19035,9 +19046,10 @@ function downloadExcelTemplate() {
   ws['!cols'] = [
     { wch: 12 },  // STT
     { wch: 55 },  // Hạng mục
-    { wch: 18 },  // Thời gian
-    { wch: 14 },  // Trạng thái
-    { wch: 30 },  // Ghi chú
+    { wch: 18 },  // Hạn thực hiện
+    { wch: 22 },  // Ngày hoàn thành thực tế
+    { wch: 16 },  // Trạng thái
+    { wch: 35 },  // Ghi chú
   ]
 
   XLSX.utils.book_append_sheet(wb, ws, 'TimeLine')

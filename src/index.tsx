@@ -12371,12 +12371,13 @@ app.post('/api/legal/:projectId/items', authMiddleware, async (c) => {
     }
 
     const result = await c.env.DB.prepare(
-      `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(
       projectId, stageId, parentId,
       autoStt, body.title, body.item_type || 'task',
-      body.due_date || null, body.status || 'pending',
+      body.due_date || null, body.actual_completion_date || null,
+      body.status || 'pending',
       body.notes || null, sortOrder, user.id
     ).run()
     return c.json({ id: result.meta.last_row_id, stt: autoStt, success: true })
@@ -12391,8 +12392,8 @@ app.put('/api/legal/items/:id', authMiddleware, async (c) => {
   try {
     // stt do hệ thống quản lý tự động, chỉ cập nhật các field nội dung
     await c.env.DB.prepare(
-      `UPDATE legal_items SET title=?, item_type=?, due_date=?, status=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
-    ).bind(body.title, body.item_type, body.due_date || null, body.status, body.notes || null, id).run()
+      `UPDATE legal_items SET title=?, item_type=?, due_date=?, actual_completion_date=?, status=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
+    ).bind(body.title, body.item_type, body.due_date || null, body.actual_completion_date || null, body.status, body.notes || null, id).run()
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -13221,12 +13222,13 @@ app.post('/api/legal/import-excel/:projectId', authMiddleware, async (c) => {
     const stats = { stages: 0, parents: 0, children: 0, skipped: 0 }
 
     for (const row of rows) {
-      // row: [stt, title, due_date, status_raw, notes]
+      // row: [stt, title, due_date, actual_completion_date, status_raw, notes]
       const sttRaw = row[0]
       const title = (row[1] || '').toString().trim()
       const dueDateRaw = row[2]
-      const statusRaw = (row[3] || '').toString().trim().toLowerCase()
-      const notes = (row[4] || '').toString().trim()
+      const actualCompletionRaw = row[3]
+      const statusRaw = (row[4] || '').toString().trim().toLowerCase()
+      const notes = (row[5] || '').toString().trim()
 
       if (!title) { stats.skipped++; continue }
 
@@ -13258,6 +13260,23 @@ app.post('/api/legal/import-excel/:projectId', authMiddleware, async (c) => {
         } else if (d.match(/^[A-Za-z]/)) {
           // Text date like "Trước 21/04/2025" → notes
           if (!notes && d) { /* keep as note */ }
+        }
+      }
+
+      // Parse actual_completion_date
+      let actualCompletionDate: string | null = null
+      if (actualCompletionRaw) {
+        const ac = actualCompletionRaw.toString().trim()
+        if (ac.match(/^\d{4}-\d{2}-\d{2}/)) {
+          actualCompletionDate = ac.substring(0, 10)
+        } else if (ac.match(/^\d+\/\d+\/\d{4}/)) {
+          const parts = ac.split('/')
+          if (parts.length === 3) {
+            actualCompletionDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`
+          }
+        } else if (ac.match(/^\d+\/\d+\/\d{2}$/)) {
+          const parts = ac.split('/')
+          actualCompletionDate = `20${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`
         }
       }
 
@@ -13340,9 +13359,9 @@ app.post('/api/legal/import-excel/:projectId', authMiddleware, async (c) => {
       if (isParent) {
         const res = await db.prepare(
           `INSERT INTO legal_items 
-           (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
-           VALUES (?, ?, NULL, ?, ?, 'group', ?, ?, ?, ?, ?)`
-        ).bind(projectId, currentStageId, sttStr, title, dueDate, status, notesFinal || null, itemOrder, user.id).run()
+           (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, NULL, ?, ?, 'group', ?, ?, ?, ?, ?, ?)`
+        ).bind(projectId, currentStageId, sttStr, title, dueDate, actualCompletionDate, status, notesFinal || null, itemOrder, user.id).run()
         currentParentId = res.meta.last_row_id as number
         currentParentStt = sttStr   // lưu STT parent để tính sub-item
         childCount = 0              // reset đếm sub-item
@@ -13364,18 +13383,18 @@ app.post('/api/legal/import-excel/:projectId', authMiddleware, async (c) => {
 
         await db.prepare(
           `INSERT INTO legal_items 
-           (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
-           VALUES (?, ?, ?, ?, ?, 'document', ?, ?, ?, ?, ?)`
-        ).bind(projectId, currentStageId, currentParentId, itemStt, title, dueDate, status, notesFinal || null, itemOrder, user.id).run()
+           (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, ?, ?, ?, 'document', ?, ?, ?, ?, ?, ?)`
+        ).bind(projectId, currentStageId, currentParentId, itemStt, title, dueDate, actualCompletionDate, status, notesFinal || null, itemOrder, user.id).run()
         itemOrder++
         stats.children++
       } else {
         // Row không rõ loại → treat as parent
         const res = await db.prepare(
           `INSERT INTO legal_items 
-           (project_id, stage_id, parent_id, stt, title, item_type, due_date, status, notes, sort_order, created_by)
-           VALUES (?, ?, NULL, ?, ?, 'task', ?, ?, ?, ?, ?)`
-        ).bind(projectId, currentStageId, sttStr || itemOrder.toString(), title, dueDate, status, notesFinal || null, itemOrder, user.id).run()
+           (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, NULL, ?, ?, 'task', ?, ?, ?, ?, ?, ?)`
+        ).bind(projectId, currentStageId, sttStr || itemOrder.toString(), title, dueDate, actualCompletionDate, status, notesFinal || null, itemOrder, user.id).run()
         currentParentId = res.meta.last_row_id as number
         currentParentStt = sttStr || itemOrder.toString()
         childCount = 0
