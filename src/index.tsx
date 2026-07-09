@@ -4252,7 +4252,8 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         'revenue'        AS source,
         -- Lấy paid_amount gốc từ payment_requests nếu có liên kết
         COALESCE(pq.paid_amount, pr.amount) AS paid_amount_original,
-        p.management_fee_pct       AS fee_pct
+        p.management_fee_pct       AS fee_pct,
+        COALESCE(pq.vat_pct, 0)    AS vat_pct
       FROM project_revenues pr
       JOIN projects p ON p.id = pr.project_id
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
@@ -4279,7 +4280,8 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         pq.notes,
         'payment_request' AS source,
         pq.amount        AS paid_amount_original,
-        p.management_fee_pct AS fee_pct
+        p.management_fee_pct AS fee_pct,
+        COALESCE(pq.vat_pct, 0) AS vat_pct
       FROM payment_requests pq
       JOIN projects p ON p.id = pq.project_id
       WHERE pq.status = 'pending'

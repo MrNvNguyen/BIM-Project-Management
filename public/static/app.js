@@ -8930,7 +8930,7 @@ function renderCostTable() {
         <span title="Số tiền theo Hợp Đồng — số tiền gốc khách hàng thanh toán, chưa trừ phí quản lý">Theo HĐ <i class="fas fa-info-circle text-gray-300 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-right">
-        <span title="Số tiền theo Ngân Sách — doanh thu thực ghi nhận sau khi trừ % phí quản lý. Công thức: Theo HĐ × (1 − % phí QL)">Theo NS <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
+        <span title="Số tiền theo Ngân Sách — doanh thu thực ghi nhận: đã loại VAT và trừ % phí quản lý (giá trị trước thuế)">Theo NS <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-center">Nguồn</th>
     </tr>`
@@ -8960,15 +8960,43 @@ function renderCostTable() {
         dateCell = fmtDate(r.revenue_date)
       }
 
-      // Tính cột "Theo HĐ" và "Theo NS"
-      const origAmount = r.paid_amount_original || r.amount || 0
-      const netAmount  = r.amount || 0
-      const feePct     = r.fee_pct || 0
-      // Chỉ hiện cột phí khi có fee > 0 và 2 số khác nhau
-      const hasFee     = feePct > 0 && origAmount !== netAmount
-      const feeTooltip = hasFee
-        ? `title="Phí QL ${feePct}%: ${fmt(origAmount)} × ${100 - feePct}% = ${fmt(netAmount)}"`
-        : ''
+      // ── Tính cột "Theo HĐ" và "Theo NS" ──────────────────────────────────────
+      const origAmount = r.paid_amount_original || r.amount || 0   // Tiền KH trả (có VAT)
+      const netAmount  = r.amount || 0                             // Doanh thu đã ghi nhận vào DB
+      const feePct     = r.fee_pct  || 0
+      const vatPct     = r.vat_pct  || 0
+
+      // ── Tính lại để hiển thị từng bước ────────────────────────────────────────
+      // Bước 1: Trước VAT = origAmount / (1 + vat%)
+      const beforeVat  = vatPct > 0 ? Math.round(origAmount / (1 + vatPct / 100)) : origAmount
+      // Bước 2: Trước phí QL = beforeVat × (1 − fee%)
+      const beforeFee  = feePct > 0 ? Math.round(beforeVat * (1 - feePct / 100)) : beforeVat
+      // netAmount là giá trị thực ghi nhận (đã = beforeFee)
+
+      const hasVat     = vatPct  > 0
+      const hasFee     = feePct  > 0
+      const hasAdjust  = hasVat  || hasFee
+
+      // ── Xây tooltip chi tiết ──────────────────────────────────────────────────
+      let tooltipParts = []
+      if (hasVat && hasFee) {
+        tooltipParts.push(`Theo HĐ: ${fmt(origAmount)}`)
+        tooltipParts.push(`−VAT ${vatPct}%:  ${fmt(origAmount)} ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(beforeVat)} (trước thuế)`)
+        tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(beforeVat)} × ${(100-feePct)}% = ${fmt(netAmount)} (doanh thu NS)`)
+      } else if (hasVat) {
+        tooltipParts.push(`Theo HĐ: ${fmt(origAmount)}`)
+        tooltipParts.push(`−VAT ${vatPct}%: ${fmt(origAmount)} ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(netAmount)} (trước thuế)`)
+      } else if (hasFee) {
+        tooltipParts.push(`Theo HĐ: ${fmt(origAmount)}`)
+        tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(origAmount)} × ${(100-feePct)}% = ${fmt(netAmount)}`)
+      }
+      const tooltip = tooltipParts.length ? `title="${tooltipParts.join(' | ')}"` : ''
+
+      // ── Badge ghi chú nhỏ hiển thị dưới số ───────────────────────────────────
+      let badges = []
+      if (hasVat)  badges.push(`<div class="text-xs font-normal text-amber-500 mt-0.5">−VAT ${vatPct}%</div>`)
+      if (hasFee)  badges.push(`<div class="text-xs font-normal text-orange-500 mt-0.5">−${feePct}% phí QL</div>`)
+      if (hasAdjust) badges.push(`<div class="text-xs font-medium text-blue-500 mt-0.5">Giá trị trước thuế</div>`)
 
       return `
       <tr class="table-row ${r.payment_status === 'pending' ? 'bg-amber-50/40' : ''}">
@@ -8977,12 +9005,12 @@ function renderCostTable() {
         <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${dateCell}</td>
         <td class="py-2 pr-3"><span class="badge ${payColors[r.payment_status] || 'badge-todo'}">${payLabels[r.payment_status] || r.payment_status}</span></td>
-        <td class="py-2 pr-3 text-sm text-right ${hasFee ? 'text-gray-500' : (r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600')} ${hasFee ? '' : 'font-bold'}">
+        <td class="py-2 pr-3 text-sm text-right ${hasAdjust ? 'text-gray-500' : (r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600')} ${hasAdjust ? '' : 'font-bold'}">
           ${fmt(origAmount)}
         </td>
-        <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'} cursor-help" ${feeTooltip}>
+        <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'} cursor-help" ${tooltip}>
           ${fmt(netAmount)}
-          ${hasFee ? `<div class="text-xs font-normal text-orange-500 mt-0.5">−${feePct}% phí QL</div>` : ''}
+          ${badges.join('')}
         </td>
         <td class="py-2 pr-3 text-center">
           <span class="text-xs ${r.source === 'payment_request' ? 'text-amber-600 bg-amber-50' : 'text-blue-500 bg-blue-50'} rounded px-2 py-0.5 whitespace-nowrap">
