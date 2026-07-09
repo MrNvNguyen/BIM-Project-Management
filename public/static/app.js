@@ -2,6 +2,10 @@
 // OneCad BIM Management System - Frontend Application
 // ================================================================
 
+// Helper: dùng XLSXStyle (có cell styling) cho writeFile, dùng XLSX core cho read/parse
+function getXLSXForWrite() { return window.XLSXStyle || window.XLSX }
+function getXLSXCore()     { return window._XLSXCore   || window.XLSX }
+
 const API_BASE = ''
 let currentUser = null
 let authToken = null
@@ -2678,9 +2682,10 @@ function catHandleFile(file) {
   const reader = new FileReader()
   reader.onload = (ev) => {
     try {
-      const wb = XLSX.read(ev.target.result, { type: 'array' })
+      const XLSXLib = getXLSXCore()
+      const wb = XLSXLib.read(ev.target.result, { type: 'array' })
       const ws = wb.Sheets[wb.SheetNames[0]]
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+      const rows = XLSXLib.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
       // Tự động detect header row
       let dataStart = 0
@@ -5688,13 +5693,14 @@ function handleSubtaskFileSelect(input) {
 }
 
 function parseSubtaskExcel(file) {
-  if (!window.XLSX) { toast('Thư viện đọc Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return }
+  const XLSXLib = getXLSXCore()
+  if (!XLSXLib) { toast('Thư viện đọc Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return }
   const reader = new FileReader()
   reader.onload = e => {
     try {
-      const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true })
+      const wb = XLSXLib.read(e.target.result, { type: 'array', cellDates: true })
       const ws = wb.Sheets[wb.SheetNames[0]]
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+      const rows = XLSXLib.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
       // Dòng 0 = header (bỏ qua), từ dòng 1 trở đi là data
       const data = rows.slice(1).map(r => ({
@@ -23008,19 +23014,26 @@ async function openImportTaskModal() {
 }
 
 function downloadTaskTemplate() {
+  const XS = getXLSXForWrite()
+  if (!XS) { toast('Thư viện XLSX chưa tải', 'error'); return }
   const headers = ['ten_cong_viec','mo_ta','bo_mon','filename_model','phu_trach','uu_tien','ngay_bat_dau','ngay_het_han','gio_du_kien','ghi_chu','theo_hstk']
   const examples = [
     ['Vẽ mô hình tầng 1','Hoàn thiện model kiến trúc tầng 1','AA','A001_T01.rvt','nguyen.van.a','medium','2026-07-01','2026-07-15','8','Theo bản vẽ đã duyệt','HSTK ngày 01/01/2025'],
     ['Kiểm tra kết cấu cột','Kiểm tra toàn bộ cột tầng 1-3','ES','S001_COT.rvt','le.van.c','high','2026-07-05','2026-07-20','12','',''],
-    ['','','','','','','','','','','']
   ]
-  const csvContent = [headers, ...examples].map(row => row.map(v => `"${v}"`).join(',')).join('\n')
-  const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = 'task_import_template.csv'; a.click()
-  URL.revokeObjectURL(url)
-  toast('Đã tải file mẫu', 'success')
+  const wb = XS.utils.book_new()
+  const ws = XS.utils.aoa_to_sheet([headers, ...examples])
+  ws['!cols'] = [
+    {wch:30},{wch:40},{wch:10},{wch:20},{wch:20},{wch:10},{wch:14},{wch:14},{wch:12},{wch:30},{wch:25}
+  ]
+  // Style header row
+  headers.forEach((_, i) => {
+    const cell = XS.utils.encode_cell({ r: 0, c: i })
+    if (ws[cell]) ws[cell].s = { font: { bold: true }, fill: { fgColor: { rgb: '00A651' } }, alignment: { horizontal: 'center' } }
+  })
+  XS.utils.book_append_sheet(wb, ws, 'Tasks')
+  XS.writeFile(wb, 'task_import_template.xlsx')
+  toast('Đã tải file mẫu task_import_template.xlsx', 'success')
 }
 
 function handleImpFileDrop(e) {
@@ -23086,60 +23099,39 @@ function _csvParseLine(line) {
 }
 
 function _parseXLSX(buffer) {
-  // Simple XLSX parser: extract shared strings + first sheet
   try {
-    const uint8 = new Uint8Array(buffer)
-    const zip = _unzipXLSX(uint8)
-    if (!zip) { toast('Không đọc được file XLSX', 'error'); return }
-    // Parse shared strings
-    const ssXml = zip['xl/sharedStrings.xml'] || ''
-    const sharedStrings = []
-    const siRe = /<si>([\s\S]*?)<\/si>/g
-    let m
-    while ((m = siRe.exec(ssXml)) !== null) {
-      const text = (m[1].match(/<t[^>]*>([\s\S]*?)<\/t>/g) || [])
-        .map(t => t.replace(/<[^>]+>/g,''))
-        .join('')
-      sharedStrings.push(text)
-    }
-    // Parse first sheet
-    const sheetXml = zip['xl/worksheets/sheet1.xml'] || ''
-    const rowRe = /<row[^>]*>([\s\S]*?)<\/row>/g
-    const rows2d = []
-    while ((m = rowRe.exec(sheetXml)) !== null) {
-      const cellRe = /<c r="([A-Z]+\d+)"([^>]*)>([\s\S]*?)<\/c>/g
-      let cm; const rowCells = {}
-      while ((cm = cellRe.exec(m[1])) !== null) {
-        const col = cm[1].replace(/\d/g,'')
-        const t = cm[2].includes('t="s"') ? 'shared' : cm[2].includes('t="str"') ? 'str' : 'val'
-        const vMatch = cm[3].match(/<v>([\s\S]*?)<\/v>/)
-        let val = vMatch ? vMatch[1] : ''
-        if (t === 'shared') val = sharedStrings[parseInt(val)] || ''
-        rowCells[col] = val
-      }
-      // Convert to array
-      const maxCol = Object.keys(rowCells).reduce((acc, k) => {
-        const n = k.charCodeAt(0) - 64; return n > acc ? n : acc
-      }, 0)
-      const arr = []
-      for (let i = 1; i <= maxCol; i++) arr.push(rowCells[String.fromCharCode(64 + i)] || '')
-      rows2d.push(arr)
-    }
+    const XLSXLib = getXLSXCore()
+    if (typeof XLSXLib === 'undefined') { toast('Thư viện XLSX chưa tải, vui lòng thử lại', 'error'); return }
+    const wb = XLSXLib.read(new Uint8Array(buffer), { type: 'array', cellDates: true })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+    if (!ws) { toast('File XLSX không có sheet dữ liệu', 'warning'); return }
+    // Convert to array-of-arrays, then array-of-objects
+    const rows2d = XLSXLib.utils.sheet_to_json(ws, { header: 1, defval: '' })
     if (rows2d.length < 2) { toast('File XLSX không có dữ liệu', 'warning'); return }
     const headers = rows2d[0].map(h => String(h).trim().toLowerCase())
-    const dataRows = rows2d.slice(1)
-    const objRows = dataRows.map(arr => {
+    const dataRows = rows2d.slice(1).map(arr => {
       const row = {}
-      headers.forEach((h, j) => row[h] = (arr[j] || '').toString().trim())
+      headers.forEach((h, j) => {
+        let val = arr[j]
+        // Handle Date objects from cellDates:true
+        if (val instanceof Date) {
+          const y = val.getFullYear()
+          const mo = String(val.getMonth()+1).padStart(2,'0')
+          const d = String(val.getDate()).padStart(2,'0')
+          val = `${y}-${mo}-${d}`
+        }
+        row[h] = val !== undefined && val !== null ? String(val).trim() : ''
+      })
       return row
     }).filter(r => Object.values(r).some(v => v))
-    _impRows = objRows.map(r => _mapImpRow(r)).filter(r => r.title)
-    _showImpPreview(headers, objRows)
+    if (dataRows.length === 0) { toast('File XLSX không có dữ liệu hợp lệ', 'warning'); return }
+    _impRows = dataRows.map(r => _mapImpRow(r)).filter(r => r.title)
+    _showImpPreview(headers, dataRows)
   } catch(ex) { toast('Lỗi parse XLSX: ' + ex.message, 'error') }
 }
 
 function _unzipXLSX(data) {
-  // Minimal ZIP reader
+  // Minimal ZIP reader (kept for backward compat, no longer used by _parseXLSX)
   try {
     const files = {}
     let i = 0
@@ -23158,11 +23150,7 @@ function _unzipXLSX(data) {
       if (comp === 0) {
         files[fn] = new TextDecoder().decode(compData)
       } else if (comp === 8) {
-        try {
-          const ds = new DecompressionStream('deflate-raw')
-          // async but we'll handle via sync fallback
-          files[fn] = _inflateSync(compData, uSize)
-        } catch { files[fn] = '' }
+        files[fn] = ''
       }
       i = dataStart + cSize
     }
@@ -23171,17 +23159,7 @@ function _unzipXLSX(data) {
 }
 
 function _inflateSync(data, uSize) {
-  // Use DecompressionStream via ReadableStream sync wrapper
-  try {
-    let result = ''
-    const blob = new Blob([data])
-    const ds = new DecompressionStream('deflate-raw')
-    const reader = blob.stream().pipeThrough(ds).getReader()
-    const chunks = []
-    // We can't do sync, so we store as pending — the calling code must handle async
-    // For simplicity: return empty and rely on async path
-    return ''
-  } catch { return '' }
+  return ''
 }
 
 // Column name mapping (flexible)
