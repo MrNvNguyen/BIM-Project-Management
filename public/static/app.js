@@ -16655,7 +16655,7 @@ async function loadLegalProject(projectId) {
     if (!isSystemAdmin) {
       // Member / Project Leader / Project Admin: chỉ hiện Văn bản gửi đi, Biên bản họp, Tài liệu đính kèm
       $('legalTabs').style.display = ''
-      ;['stages', 'payments'].forEach(t => {
+      ;['stages', 'payments', 'completed'].forEach(t => {
         const btn = $('ltab-' + t)
         if (btn) btn.style.display = 'none'
       })
@@ -16730,7 +16730,7 @@ function switchLegalTab(tab) {
   // Nếu gọi từ onclick của người dùng → đánh dấu
   _legalCurrentTab = tab
   _legalTabSetByUser = true
-  ;['stages','letters','minutes','docs','payments'].forEach(t => {
+  ;['stages','letters','minutes','docs','payments','completed'].forEach(t => {
     const btn = $('ltab-' + t)
     const panel = $('legalTab' + t.charAt(0).toUpperCase() + t.slice(1))
     if (btn) btn.classList.toggle('active', t === tab)
@@ -16746,10 +16746,270 @@ function renderLegalTab(tab) {
   else if (tab === 'minutes') renderMeetingMinutes(_legalOverviewData.minutes || [])
   else if (tab === 'docs') renderLegalDocs(_legalOverviewData.documents || [])
   else if (tab === 'payments') renderPaymentStatus(_legalOverviewData.payments || [])
+  else if (tab === 'completed') renderCompletedItemsTab()
 }
 
-// ── Package collapse state ────────────────────────────────────────────────────
-const _pkgCollapseState = {}
+
+// ── Render "Theo dõi hoàn thành" Tab ─────────────────────────────────────────
+function renderCompletedItemsTab() {
+  const container = $('legalCompletedContainer')
+  if (!container) return
+  if (!_legalOverviewData) {
+    container.innerHTML = '<div class="text-center py-10 text-gray-400">Chưa có dữ liệu</div>'
+    return
+  }
+
+  // Collect all items with actual_completion_date from packages → stages → items (+ children)
+  const packages = _legalOverviewData.packages || []
+  const flatStages = _legalOverviewData.stages || []
+
+  // Build unified list: { item, stageName, stageCode, pkgName, pkgColor }
+  const allCompleted = []
+
+  const PKG_COLORS = [
+    { bg:'#eff6ff', border:'#3b82f6', text:'#1d4ed8', badgeBg:'#dbeafe' },
+    { bg:'#fdf4ff', border:'#a855f7', text:'#7e22ce', badgeBg:'#f3e8ff' },
+    { bg:'#fff7ed', border:'#f97316', text:'#c2410c', badgeBg:'#ffedd5' },
+    { bg:'#f0fdf4', border:'#22c55e', text:'#15803d', badgeBg:'#dcfce7' },
+    { bg:'#fefce8', border:'#eab308', text:'#a16207', badgeBg:'#fef9c3' },
+  ]
+  const STAGE_COLORS = {
+    A:{ bg:'#eff6ff', border:'#3b82f6', text:'#1e40af' },
+    B:{ bg:'#fdf4ff', border:'#a855f7', text:'#6b21a8' },
+    C:{ bg:'#fff7ed', border:'#f97316', text:'#9a3412' },
+    D:{ bg:'#f0fdf4', border:'#22c55e', text:'#166534' },
+    E:{ bg:'#fefce8', border:'#eab308', text:'#854d0e' },
+  }
+
+  function collectFromStage(stage, pkgName, pkgColor) {
+    ;(stage.items || []).forEach(item => {
+      if (item.actual_completion_date) {
+        allCompleted.push({ item, stageName: stage.name || stage.code, stageCode: stage.code, pkgName, pkgColor })
+      }
+      ;(item.children || []).forEach(child => {
+        if (child.actual_completion_date) {
+          allCompleted.push({ item: child, stageName: stage.name || stage.code, stageCode: stage.code, pkgName, pkgColor })
+        }
+      })
+    })
+  }
+
+  if (packages.length > 0) {
+    packages.forEach((pkg, pi) => {
+      const pc = PKG_COLORS[pi % PKG_COLORS.length]
+      ;(pkg.stages || []).forEach(stage => collectFromStage(stage, pkg.name, pc))
+    })
+  } else {
+    flatStages.forEach(stage => collectFromStage(stage, null, PKG_COLORS[0]))
+  }
+
+  if (allCompleted.length === 0) {
+    container.innerHTML = `
+      <div class="card text-center py-12 text-gray-400">
+        <i class="fas fa-calendar-check text-5xl mb-4 block" style="color:#d1fae5"></i>
+        <div class="font-semibold text-gray-500 mb-1">Chưa có hạng mục nào ghi nhận ngày hoàn thành</div>
+        <div class="text-sm">Hãy điền "Ngày hoàn thành thực tế" vào các hạng mục đã thực hiện xong</div>
+      </div>`
+    return
+  }
+
+  // Sort by actual_completion_date ascending
+  allCompleted.sort((a, b) => {
+    const da = a.item.actual_completion_date || ''
+    const db = b.item.actual_completion_date || ''
+    return da < db ? -1 : da > db ? 1 : 0
+  })
+
+  // Group by stage (stageCode + pkgName combo for display)
+  // Key = pkgName + ':' + stageCode
+  const stageGroups = {}
+  allCompleted.forEach(entry => {
+    const key = (entry.pkgName || '') + '__' + (entry.stageCode || '')
+    if (!stageGroups[key]) stageGroups[key] = { stageName: entry.stageName, stageCode: entry.stageCode, pkgName: entry.pkgName, pkgColor: entry.pkgColor, items: [] }
+    stageGroups[key].items.push(entry.item)
+  })
+
+  // Stats
+  const totalCompleted = allCompleted.length
+  const thisMonth = new Date(); const ym = `${thisMonth.getFullYear()}-${String(thisMonth.getMonth()+1).padStart(2,'0')}`
+  const thisMonthCount = allCompleted.filter(e => (e.item.actual_completion_date||'').startsWith(ym)).length
+  const lastDate = allCompleted[allCompleted.length-1]?.item.actual_completion_date
+
+  let html = `
+  <div class="card" style="margin-bottom:16px;padding:16px 20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+      <div>
+        <h3 style="font-size:15px;font-weight:700;color:#065f46;margin:0 0 4px"><i class="fas fa-calendar-check mr-2 text-green-500"></i>Theo dõi hoàn thành thực tế</h3>
+        <p style="font-size:12px;color:#64748b;margin:0">Tổng hợp hạng mục đã hoàn thành, phân theo giai đoạn · đồng bộ từ tab Theo dõi hồ sơ</p>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div style="background:#f0fdf4;border:1.5px solid #6ee7b7;border-radius:10px;padding:8px 16px;text-align:center;min-width:90px">
+          <div style="font-size:22px;font-weight:800;color:#059669;line-height:1">${totalCompleted}</div>
+          <div style="font-size:11px;color:#6b7280;font-weight:500">Tổng hoàn thành</div>
+        </div>
+        <div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:8px 16px;text-align:center;min-width:90px">
+          <div style="font-size:22px;font-weight:800;color:#2563eb;line-height:1">${thisMonthCount}</div>
+          <div style="font-size:11px;color:#6b7280;font-weight:500">Tháng này</div>
+        </div>
+        <div style="background:#fefce8;border:1.5px solid #fcd34d;border-radius:10px;padding:8px 16px;text-align:center;min-width:120px">
+          <div style="font-size:13px;font-weight:700;color:#d97706;line-height:1.3">${lastDate ? fmtDate(lastDate) : '—'}</div>
+          <div style="font-size:11px;color:#6b7280;font-weight:500">Mới nhất</div>
+        </div>
+      </div>
+    </div>
+  </div>`
+
+  // Render by stage groups
+  Object.values(stageGroups).forEach(group => {
+    const sc = STAGE_COLORS[group.stageCode] || STAGE_COLORS['A']
+    const stageLabel = group.pkgName
+      ? `<span style="font-size:11px;background:${group.pkgColor.badgeBg};color:${group.pkgColor.text};border-radius:5px;padding:2px 8px;margin-right:6px;font-weight:600">${group.pkgName}</span>`
+      : ''
+
+    html += `
+    <div class="card" style="margin-bottom:14px;padding:0;overflow:hidden;border:1.5px solid ${sc.border}">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:${sc.bg};border-bottom:1px solid ${sc.border}">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="background:${sc.border};color:#fff;font-weight:700;font-size:13px;border-radius:6px;padding:3px 10px">${group.stageCode || '?'}</span>
+          ${stageLabel}
+          <span style="font-size:14px;font-weight:600;color:${sc.text}">${group.stageName}</span>
+        </div>
+        <span style="font-size:12px;font-weight:600;color:${sc.text};background:#fff;border:1px solid ${sc.border};border-radius:12px;padding:2px 10px">
+          <i class="fas fa-check-circle mr-1"></i>${group.items.length} hạng mục
+        </span>
+      </div>
+      <table class="w-full" style="font-size:13px">
+        <thead>
+          <tr style="background:${sc.bg}">
+            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:60px">STT</th>
+            <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn thực hiện</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:130px;color:#065f46"><i class="fas fa-calendar-check mr-1"></i>Ngày HT thực tế</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
+            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:160px">Ghi chú</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:60px">Sửa</th>
+          </tr>
+        </thead>
+        <tbody>`
+
+    group.items.forEach((item, idx) => {
+      const isOverdue = item.due_date && item.actual_completion_date && item.actual_completion_date > item.due_date
+      const isOnTime = item.due_date && item.actual_completion_date && item.actual_completion_date <= item.due_date
+      const timingBadge = isOverdue
+        ? `<span style="font-size:10px;background:#fef2f2;color:#dc2626;border:1px solid #fca5a5;border-radius:5px;padding:1px 6px;margin-left:4px">Trễ hạn</span>`
+        : isOnTime
+          ? `<span style="font-size:10px;background:#f0fdf4;color:#16a34a;border:1px solid #86efac;border-radius:5px;padding:1px 6px;margin-left:4px">Đúng hạn</span>`
+          : ''
+      const isChild = item.parent_id != null
+      const rowBg = idx % 2 === 0 ? '#fff' : '#f9fafb'
+      const dueDateStr = item.due_date
+        ? `<span class="text-xs ${isOverdue ? 'text-red-500' : 'text-gray-500'}">${fmtDate(item.due_date)}</span>`
+        : `<span class="text-gray-300 text-xs">—</span>`
+      const checkIcon = item.item_type === 'document'
+        ? `<i class="fas fa-file-alt text-blue-400 mr-1 text-xs"></i>`
+        : `<i class="fas fa-tasks text-gray-400 mr-1 text-xs"></i>`
+
+      html += `
+        <tr style="background:${rowBg};border-bottom:1px solid #f3f4f6">
+          <td class="py-2 px-3 text-xs" style="${isChild ? 'color:#9ca3af;padding-left:24px' : 'font-weight:700;color:#374151'}">${item.stt || ''}</td>
+          <td class="py-2 px-3" style="${isChild ? 'padding-left:28px' : 'font-weight:600'}">
+            <div class="flex items-center gap-1">
+              <i class="fas fa-check-circle text-green-500 text-xs"></i>
+              ${checkIcon}
+              <span class="${isChild ? 'text-sm text-gray-700' : 'text-gray-800'}">${item.title}</span>
+            </div>
+          </td>
+          <td class="py-2 px-3 text-center">${dueDateStr}</td>
+          <td class="py-2 px-3 text-center">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <span style="font-size:12px;font-weight:600;color:#059669;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:6px;padding:2px 8px">
+                <i class="fas fa-calendar-check mr-1" style="font-size:10px"></i>${fmtDate(item.actual_completion_date)}
+              </span>
+              ${timingBadge}
+            </div>
+          </td>
+          <td class="py-2 px-3 text-center">
+            <span class="badge ${LEGAL_STATUS_COLORS[item.status]||'badge-todo'}">${LEGAL_STATUS_LABELS[item.status]||item.status}</span>
+          </td>
+          <td class="py-2 px-3 text-xs text-gray-500">
+            ${item.notes ? `<span title="${item.notes}">${item.notes.length > 40 ? item.notes.substring(0,40)+'…' : item.notes}</span>` : '<span class="text-gray-300">—</span>'}
+          </td>
+          <td class="py-2 px-3 text-center">
+            <button onclick="openEditLegalItem(${JSON.stringify(item).replace(/"/g,'&quot;')})" class="text-primary hover:text-green-700 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>
+          </td>
+        </tr>`
+    })
+
+    html += `</tbody></table></div>`
+  })
+
+  // Timeline view - group by month
+  html += `
+  <div class="card" style="margin-top:8px;padding:16px 20px">
+    <h4 style="font-size:13px;font-weight:700;color:#374151;margin:0 0 12px"><i class="fas fa-stream mr-2 text-indigo-500"></i>Timeline theo tháng hoàn thành</h4>
+    <div style="position:relative;padding-left:20px">`
+
+  // Group by YYYY-MM
+  const byMonth = {}
+  allCompleted.forEach(entry => {
+    const d = entry.item.actual_completion_date || ''
+    const m = d.substring(0, 7)  // YYYY-MM
+    if (m) {
+      if (!byMonth[m]) byMonth[m] = []
+      byMonth[m].push(entry)
+    }
+  })
+
+  const sortedMonths = Object.keys(byMonth).sort()
+  sortedMonths.forEach((month, mi) => {
+    const entries = byMonth[month]
+    const [yr, mo] = month.split('-')
+    const monthName = new Date(parseInt(yr), parseInt(mo)-1, 1).toLocaleDateString('vi-VN', { month: 'long', year: 'numeric' })
+    const isLast = mi === sortedMonths.length - 1
+
+    html += `
+      <div style="display:flex;gap:14px;margin-bottom:${isLast?'0':'20px'}">
+        <div style="display:flex;flex-direction:column;align-items:center;min-width:12px">
+          <div style="width:12px;height:12px;border-radius:50%;background:#10b981;border:2.5px solid #fff;box-shadow:0 0 0 2px #10b981;margin-top:3px;flex-shrink:0"></div>
+          ${!isLast ? `<div style="width:2px;flex:1;background:linear-gradient(to bottom,#10b981,#d1d5db);margin-top:4px;min-height:20px"></div>` : ''}
+        </div>
+        <div style="flex:1">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="font-size:13px;font-weight:700;color:#065f46">${monthName}</span>
+            <span style="font-size:11px;background:#d1fae5;color:#065f46;border-radius:10px;padding:1px 8px;font-weight:600">${entries.length} hạng mục</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">`
+
+    entries.forEach(entry => {
+      const sc = STAGE_COLORS[entry.stageCode] || STAGE_COLORS['A']
+      const isOverdue = entry.item.due_date && entry.item.actual_completion_date > entry.item.due_date
+      html += `
+        <div style="background:#fff;border:1.5px solid #e5e7eb;border-left:3.5px solid ${sc.border};border-radius:8px;padding:6px 12px;max-width:300px;cursor:pointer"
+             onclick="openEditLegalItem(${JSON.stringify(entry.item).replace(/"/g,'&quot;')})"
+             title="Click để chỉnh sửa">
+          <div style="font-size:11px;color:${sc.text};font-weight:600;margin-bottom:2px">
+            [${entry.stageCode}] ${entry.pkgName ? entry.pkgName + ' · ' : ''}${entry.stageName}
+          </div>
+          <div style="font-size:12px;color:#374151;font-weight:500;display:flex;align-items:center;gap:4px">
+            <i class="fas fa-check-circle text-green-500" style="font-size:10px"></i>
+            ${entry.item.title.length > 45 ? entry.item.title.substring(0,45)+'…' : entry.item.title}
+            ${isOverdue ? `<span style="font-size:9px;background:#fef2f2;color:#dc2626;border-radius:3px;padding:0 4px">Trễ</span>` : ''}
+          </div>
+          <div style="font-size:11px;color:#059669;margin-top:3px">
+            <i class="fas fa-calendar-check mr-1" style="font-size:9px"></i>${fmtDate(entry.item.actual_completion_date)}
+          </div>
+        </div>`
+    })
+
+    html += `</div></div></div>`
+  })
+
+  html += `</div></div>`
+
+  container.innerHTML = html
+}
+
+
 
 // ── Render Packages (3-level: Package → Stage A-D → Items) ───────────────────
 function renderLegalPackages(packages, flatStages) {

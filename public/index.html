@@ -3893,6 +3893,7 @@
           <button class="tab-btn" id="ltab-minutes" onclick="switchLegalTab('minutes')"><i class="fas fa-clipboard-list mr-1"></i>Biên bản họp</button>
           <button class="tab-btn" id="ltab-docs" onclick="switchLegalTab('docs')"><i class="fas fa-paperclip mr-1"></i>Tài liệu đính kèm</button>
           <button class="tab-btn" id="ltab-payments" onclick="switchLegalTab('payments')"><i class="fas fa-money-check-alt mr-1"></i>Tình trạng thanh toán</button>
+          <button class="tab-btn" id="ltab-completed" onclick="switchLegalTab('completed')" style="border-color:#10b981;color:#065f46;background:#f0fdf4"><i class="fas fa-calendar-check mr-1 text-green-600"></i>Theo dõi hoàn thành</button>
         </div>
 
         <!-- Tab: Stages / Items -->
@@ -3958,8 +3959,14 @@
             </div>
           </div>
         </div>
-      </div>
-      <!-- ========== END HỒ SƠ PHÁP LÝ PAGE ========== -->
+
+        <!-- Tab: Theo dõi hoàn thành -->
+        <div id="legalTabCompleted" style="display:none">
+          <div id="legalCompletedContainer">
+            <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
+          </div>
+        </div>
+      </div>= -->
 
       </div><!-- End Pages -->
       </div><!-- End max-width wrapper -->
