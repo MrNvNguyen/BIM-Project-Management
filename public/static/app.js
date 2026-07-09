@@ -17011,6 +17011,9 @@ function renderCompletedItemsTab() {
 
 
 
+// ── Package collapse state ────────────────────────────────────────────────────
+const _pkgCollapseState = {}
+
 // ── Render Packages (3-level: Package → Stage A-D → Items) ───────────────────
 function renderLegalPackages(packages, flatStages) {
   const container = $('legalStagesContainer')
