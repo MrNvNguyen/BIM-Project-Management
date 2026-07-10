@@ -19915,6 +19915,10 @@ function renderCostBreakdown(el, data) {
   window._cbPivotPage          = 1
   window._cbPivotPageSize      = 15
 
+  // ── Store pivot filter state ───────────────────────────────────
+  window._cbPivotFilterText = ''
+  window._cbPivotSelectedProject = null  // { code, name } | null
+
   const pivotHtml = `
     <div class="card mb-6" id="cbPivotCard">
       <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
@@ -19928,6 +19932,20 @@ function renderCostBreakdown(el, data) {
             <option value="50">50</option>
           </select>
         </div>
+      </div>
+      <!-- Search/filter bar for pivot -->
+      <div class="flex flex-wrap items-center gap-2 mb-2 p-2 bg-indigo-50 rounded-lg border border-indigo-100">
+        <div class="relative flex-1 min-w-40">
+          <i class="fas fa-search absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+          <input type="text" id="cbPivotSearch" placeholder="Tìm dự án trong bảng..." oninput="cbFilterPivot(this.value)"
+            class="w-full pl-6 pr-2 py-1 border rounded text-xs outline-none focus:border-indigo-400">
+        </div>
+        <div id="cbPivotSelectedBadge" class="hidden items-center gap-1.5 bg-indigo-600 text-white text-xs rounded px-2 py-1">
+          <i class="fas fa-filter text-xs"></i>
+          <span id="cbPivotSelectedName"></span>
+          <button onclick="cbClearPivotSelection()" class="ml-1 hover:text-red-200" title="Bỏ chọn"><i class="fas fa-times"></i></button>
+        </div>
+        <span class="text-xs text-indigo-500"><i class="fas fa-mouse-pointer mr-1"></i>Click dòng dự án → xem chi tiết phiếu bên dưới</span>
       </div>
       <div class="text-xs text-gray-400 mb-2"><i class="fas fa-info-circle mr-1"></i>Số tiền (màu) · <span class="text-indigo-500 font-medium">% GTHĐ</span> hiển thị bên dưới từng loại chi phí</div>
       <div class="overflow-x-auto" id="cbPivotTableWrap">
@@ -20278,7 +20296,7 @@ function cbSetPageSize(val) {
 
 // ── Pivot table pagination helpers ────────────────────────────
 function cbRenderPivotPage(page) {
-  const projects   = window._cbPivotProjects   || []
+  const allProjects = window._cbPivotProjects   || []
   const typeList   = window._cbPivotTypeList   || []
   const typeColorMap = window._cbPivotTypeColorMap || {}
   const typeNameMap  = window._cbPivotTypeNameMap  || {}
@@ -20290,6 +20308,16 @@ function cbRenderPivotPage(page) {
   const grandTotalAll      = window._cbPivotGrandAll      || 0
   const total_contract_value = window._cbPivotContractValue || 0
   const pageSize   = window._cbPivotPageSize   || 15
+  const filterText = (window._cbPivotFilterText || '').toLowerCase().trim()
+  const selectedCode = window._cbPivotSelectedProject?.code || null
+
+  // Apply text filter
+  const projects = filterText
+    ? allProjects.filter(p =>
+        p.code.toLowerCase().includes(filterText) ||
+        p.name.toLowerCase().includes(filterText))
+    : allProjects
+
   const total      = projects.length
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   page = Math.max(1, Math.min(page, totalPages))
@@ -20324,9 +20352,13 @@ function cbRenderPivotPage(page) {
     const pctGthd  = p.contract_value > 0 ? (rowTotal / p.contract_value * 100) : null
     const pctColor = pctGthd === null ? 'text-gray-400' : pctGthd > 100 ? 'text-red-600 font-bold' : pctGthd > 80 ? 'text-orange-600' : 'text-green-600'
     const cv = p.contract_value || 0
-    return `<tr class="hover:bg-gray-50">
+    const isSelected = selectedCode === p.code
+    const rowBg = isSelected ? 'bg-indigo-50 ring-1 ring-indigo-300' : 'hover:bg-blue-50'
+    const safeName = (p.name || '').replace(/'/g, "\\'")
+    return `<tr class="${rowBg} cursor-pointer transition-colors" onclick="cbPivotSelectProject('${p.code}','${safeName}')" title="Click để lọc chi tiết phiếu của [${p.code}]">
       <td class="py-2 pr-3 text-gray-400 whitespace-nowrap">${start + i + 1}</td>
       <td class="py-2 pr-3 font-medium whitespace-nowrap">
+        ${isSelected ? '<i class="fas fa-filter text-indigo-500 mr-1 text-xs"></i>' : ''}
         <span class="text-gray-400 text-xs">[${p.code}]</span> ${p.name.length>28?p.name.substring(0,28)+'…':p.name}
       </td>
       <td class="py-2 pr-3 text-right text-gray-500">${cv > 0 ? fmtM(cv) : '—'}</td>
@@ -20349,12 +20381,13 @@ function cbRenderPivotPage(page) {
   }).join('')
 
   // Footer total row (always shown)
+  const shownProjects = filterText ? projects : allProjects
   tbody.innerHTML += `<tr class="font-bold border-t-2 bg-blue-50 text-sm">
     <td class="py-2 pr-3 text-gray-400 text-xs">Tổng</td>
-    <td class="py-2 pr-3">Tất cả ${total} dự án</td>
-    <td class="py-2 pr-3 text-right">${fmtM(projects.reduce((s,p)=>s+(p.contract_value||0),0))}</td>
+    <td class="py-2 pr-3">Tất cả ${filterText ? `<span class="text-indigo-600">${total}</span> / ${allProjects.length}` : total} dự án</td>
+    <td class="py-2 pr-3 text-right">${fmtM(shownProjects.reduce((s,p)=>s+(p.contract_value||0),0))}</td>
     ${typeList.map(t => {
-      const sum = by_project_type.filter(r=>r.cost_type===t).reduce((s,r)=>s+r.amount,0)
+      const sum = shownProjects.reduce((s,p)=>s+(p.types[t]||0), 0)
       return `<td class="py-2 pr-3 text-right" style="color:${typeColorMap[t]}">${fmtM(sum)}</td>`
     }).join('')}
     ${total_labor > 0 ? `<td class="py-2 pr-3 text-right text-green-700">${fmtM(total_labor)}</td>` : ''}
@@ -20366,7 +20399,7 @@ function cbRenderPivotPage(page) {
   // Pager
   const pager = document.getElementById('cbPivotPager')
   if (!pager) return
-  if (totalPages <= 1) { pager.innerHTML = `<span class="text-gray-400">${total} dự án</span>`; return }
+  if (totalPages <= 1) { pager.innerHTML = `<span class="text-gray-400">${total} dự án${filterText ? ' (đã lọc)' : ''}</span>`; return }
   const pw = 2
   let btns = `<button onclick="cbRenderPivotPage(${page-1})" ${page<=1?'disabled':''} class="px-2 py-1 rounded border text-xs ${page<=1?'text-gray-300 cursor-not-allowed':'hover:bg-gray-100'}"><i class="fas fa-chevron-left"></i> Trước</button>`
   const pagesHtml = []
@@ -20379,12 +20412,52 @@ function cbRenderPivotPage(page) {
   if (page < totalPages-pw) pagesHtml.push(`<button onclick="cbRenderPivotPage(${totalPages})" class="px-2 py-1 rounded border text-xs hover:bg-gray-100">${totalPages}</button>`)
   btns += pagesHtml.join('')
   btns += `<button onclick="cbRenderPivotPage(${page+1})" ${page>=totalPages?'disabled':''} class="px-2 py-1 rounded border text-xs ${page>=totalPages?'text-gray-300 cursor-not-allowed':'hover:bg-gray-100'}">Tiếp <i class="fas fa-chevron-right"></i></button>`
-  pager.innerHTML = `<span class="text-gray-400">Hiển thị ${start+1}–${end} / ${total} dự án (trang ${page}/${totalPages})</span><div class="flex items-center gap-1">${btns}</div>`
+  pager.innerHTML = `<span class="text-gray-400">Hiển thị ${start+1}–${end} / ${total} dự án${filterText?` (lọc từ ${allProjects.length})`:''}  (trang ${page}/${totalPages})</span><div class="flex items-center gap-1">${btns}</div>`
 }
 
 function cbSetPivotPageSize(val) {
   window._cbPivotPageSize = parseInt(val) || 15
   cbRenderPivotPage(1)
+}
+
+// ── Pivot filter by text search ────────────────────────────────
+function cbFilterPivot(text) {
+  window._cbPivotFilterText = text || ''
+  cbRenderPivotPage(1)
+}
+
+// ── Click dòng dự án trong pivot → filter bảng chi tiết ────────
+function cbPivotSelectProject(code, name) {
+  const isSame = window._cbPivotSelectedProject?.code === code
+  if (isSame) {
+    // Toggle off nếu click lại dự án đang chọn
+    cbClearPivotSelection()
+    return
+  }
+  window._cbPivotSelectedProject = { code, name }
+  // Cập nhật badge trên pivot
+  const badge = document.getElementById('cbPivotSelectedBadge')
+  const label = document.getElementById('cbPivotSelectedName')
+  if (badge) badge.classList.remove('hidden'), badge.classList.add('flex')
+  if (label) label.textContent = `[${code}] ${name.length > 25 ? name.substring(0,25)+'…' : name}`
+  // Re-render pivot để highlight
+  cbRenderPivotPage(window._cbPivotPage || 1)
+  // Filter bảng chi tiết theo project_code
+  cbSelectDetailProj(code, `[${code}] ${name}`)
+  // Scroll xuống bảng chi tiết
+  setTimeout(() => {
+    const detail = document.getElementById('cbDetailCard')
+    if (detail) detail.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, 150)
+}
+
+function cbClearPivotSelection() {
+  window._cbPivotSelectedProject = null
+  const badge = document.getElementById('cbPivotSelectedBadge')
+  if (badge) badge.classList.add('hidden'), badge.classList.remove('flex')
+  cbRenderPivotPage(window._cbPivotPage || 1)
+  // Xóa filter detail
+  cbSelectDetailProj('', '-- Tất cả dự án --')
 }
 // ── END pivot table pagination ─────────────────────────────────
 
