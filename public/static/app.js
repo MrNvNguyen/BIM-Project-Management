@@ -18362,6 +18362,9 @@ function renderPaymentStatus(payments) {
   const summaryEl = $('paymentSummaryCards')
   if (!container) return
 
+  // Lấy thông tin dự án để tính doanh thu net (VAT/phí QL)
+  const proj = _legalOverviewData?.project || {}
+
   // Summary cards
   const total = payments.length
   const totalAmount = payments.reduce((s, p) => s + (p.amount || 0), 0)
