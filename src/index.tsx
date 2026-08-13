@@ -12763,11 +12763,16 @@ function paymentStatusToRevenue(status: string): string {
 }
 
 // ── Helper: tạo hoặc cập nhật revenue từ payment request ─────────────────────
+// Quy tắc:
+//   - `amount`      = Giá trị nghiệm thu  → dùng để tính DOANH THU vào sổ
+//   - `paid_amount` = Số tiền đã thanh toán (Dòng tiền) → KHÔNG dùng tính doanh thu
 async function syncPaymentToRevenue(
   db: D1Database,
   payment: {
     id: number, project_id: number, description: string,
-    paid_amount: number, currency: string,
+    amount: number,      // Giá trị nghiệm thu → làm căn cứ doanh thu
+    paid_amount: number, // Dòng tiền thực thu (lưu nhưng không tính doanh thu)
+    currency: string,
     paid_date: string | null, invoice_number: string | null,
     payment_phase: string | null, status: string,
     revenue_id: number | null, notes: string | null,
@@ -12782,11 +12787,13 @@ async function syncPaymentToRevenue(
     'SELECT management_fee_pct FROM projects WHERE id = ?'
   ).bind(payment.project_id).first() as any
   const feePct = (projRow?.management_fee_pct || 0) as number
-  const rawAmount = payment.paid_amount || 0
+
+  // Sử dụng `amount` (Giá trị nghiệm thu) làm căn cứ tính doanh thu
+  const rawAmount = payment.amount || 0
   const vatPct = (payment.vat_pct != null ? payment.vat_pct : 0) as number
 
-  // BƯỚC 1: Tính doanh thu trước VAT = paid_amount / (1 + vat_pct/100)
-  // Ví dụ: paid=1,100,000, VAT=10% → trước VAT = 1,100,000 / 1.10 = 1,000,000
+  // BƯỚC 1: Tính doanh thu trước VAT = amount (nghiệm thu) / (1 + vat_pct/100)
+  // Ví dụ: nghiệm thu=1,100,000, VAT=10% → trước VAT = 1,100,000 / 1.10 = 1,000,000
   const amountBeforeVat = vatPct > 0
     ? Math.round(rawAmount / (1 + vatPct / 100))
     : rawAmount
@@ -12810,16 +12817,20 @@ async function syncPaymentToRevenue(
     : payment.description
   const revenueStatus = paymentStatusToRevenue(payment.status)
 
-  // Ghi chú: bổ sung thông tin VAT + phí QL nếu có
+  // Ghi chú: bổ sung thông tin nguồn gốc + VAT + phí QL
   let calcNote = ''
   if (vatPct > 0 && feePct > 0) {
-    calcNote = `\n[VAT ${vatPct}%: ${rawAmount.toLocaleString('vi-VN')} ÷ ${(100+vatPct)}% = ${amountBeforeVat.toLocaleString('vi-VN')} VNĐ trước thuế → Phí QL ${feePct}%: × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ doanh thu]`
+    calcNote = `\n[NT: ${rawAmount.toLocaleString('vi-VN')} VNĐ ÷ ${(100+vatPct)}% = ${amountBeforeVat.toLocaleString('vi-VN')} VNĐ trước thuế → Phí QL ${feePct}%: × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ doanh thu]`
   } else if (vatPct > 0) {
-    calcNote = `\n[VAT ${vatPct}%: ${rawAmount.toLocaleString('vi-VN')} ÷ ${(100+vatPct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ trước thuế]`
+    calcNote = `\n[NT: ${rawAmount.toLocaleString('vi-VN')} VNĐ ÷ ${(100+vatPct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ trước thuế]`
   } else if (feePct > 0) {
-    calcNote = `\n[Phí QL ${feePct}%: ${rawAmount.toLocaleString('vi-VN')} × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ]`
+    calcNote = `\n[NT: ${rawAmount.toLocaleString('vi-VN')} VNĐ × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ]`
   }
-  const revenueNotes = `[Đồng bộ từ Hồ Sơ Pháp Lý - Tình trạng thanh toán]${calcNote}${payment.notes ? '\n' + payment.notes : ''}`
+  // Ghi thêm dòng tiền thực thu để tham chiếu
+  const paidRef = payment.paid_amount > 0
+    ? `\n[Dòng tiền thực thu: ${payment.paid_amount.toLocaleString('vi-VN')} VNĐ]`
+    : ''
+  const revenueNotes = `[Đồng bộ từ Hồ Sơ Pháp Lý - Giá trị nghiệm thu]${calcNote}${paidRef}${payment.notes ? '\n' + payment.notes : ''}`
 
   if (payment.revenue_id) {
     // Cập nhật revenue đã có
@@ -12903,7 +12914,9 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
     // Auto-sync revenue nếu cần
     const revenueId = await syncPaymentToRevenue(c.env.DB, {
       id: paymentId, project_id: projectId, description,
-      paid_amount: paid_amount || 0, currency: currency || 'VND',
+      amount: amount || 0,           // Giá trị nghiệm thu → tính doanh thu
+      paid_amount: paid_amount || 0, // Dòng tiền → chỉ lưu tham chiếu
+      currency: currency || 'VND',
       paid_date: paid_date || null, invoice_number: invoice_number || null,
       payment_phase: payment_phase || null, status: status || 'pending',
       revenue_id: null, notes: notes || null, vat_pct: vatPctVal
@@ -12971,7 +12984,8 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
     const revenueId = await syncPaymentToRevenue(c.env.DB, {
       id, project_id: current.project_id,
       description: merged.description,
-      paid_amount: merged.paid_amount || 0,
+      amount: merged.amount || 0,           // Giá trị nghiệm thu → tính doanh thu
+      paid_amount: merged.paid_amount || 0, // Dòng tiền → chỉ lưu tham chiếu
       currency: merged.currency || 'VND',
       paid_date: merged.paid_date || null,
       invoice_number: merged.invoice_number || null,
@@ -13079,14 +13093,16 @@ app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, asy
   const user = c.get('user') as any
   try {
     const payments = await c.env.DB.prepare(
-      `SELECT * FROM payment_requests WHERE project_id = ? AND status IN ('paid','partial') AND paid_amount > 0`
+      `SELECT * FROM payment_requests WHERE project_id = ? AND status IN ('paid','partial') AND amount > 0`
     ).bind(projectId).all()
 
     let synced = 0
     for (const p of payments.results as any[]) {
       await syncPaymentToRevenue(c.env.DB, {
         id: p.id, project_id: p.project_id,
-        description: p.description, paid_amount: p.paid_amount || 0,
+        description: p.description,
+        amount: p.amount || 0,           // Giá trị nghiệm thu → tính doanh thu
+        paid_amount: p.paid_amount || 0, // Dòng tiền → chỉ tham chiếu
         currency: p.currency || 'VND', paid_date: p.paid_date || null,
         invoice_number: p.invoice_number || null,
         payment_phase: p.payment_phase || null, status: p.status,
@@ -13106,7 +13122,7 @@ app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) 
   const user = c.get('user') as any
   try {
     const payments = await c.env.DB.prepare(
-      `SELECT * FROM payment_requests WHERE status IN ('paid','partial') AND paid_amount > 0`
+      `SELECT * FROM payment_requests WHERE status IN ('paid','partial') AND amount > 0`
     ).all()
 
     let synced = 0
@@ -13115,7 +13131,9 @@ app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) 
       try {
         await syncPaymentToRevenue(c.env.DB, {
           id: p.id, project_id: p.project_id,
-          description: p.description, paid_amount: p.paid_amount || 0,
+          description: p.description,
+          amount: p.amount || 0,           // Giá trị nghiệm thu → tính doanh thu
+          paid_amount: p.paid_amount || 0, // Dòng tiền → chỉ tham chiếu
           currency: p.currency || 'VND', paid_date: p.paid_date || null,
           invoice_number: p.invoice_number || null,
           payment_phase: p.payment_phase || null, status: p.status,

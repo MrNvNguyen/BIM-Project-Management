@@ -18377,11 +18377,11 @@ function renderPaymentStatus(payments) {
       </div>
       <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center">
         <div class="text-sm font-bold text-amber-700">${fmtMoney(totalAmount)}</div>
-        <div class="text-xs text-amber-500 mt-1">Tổng đề nghị</div>
+        <div class="text-xs text-amber-500 mt-1">Tổng nghiệm thu</div>
       </div>
-      <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center">
-        <div class="text-sm font-bold text-emerald-700">${fmtMoney(paidAmount)}</div>
-        <div class="text-xs text-emerald-500 mt-1">Đã thanh toán</div>
+      <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
+        <div class="text-sm font-bold text-blue-600">${fmtMoney(paidAmount)}</div>
+        <div class="text-xs text-blue-400 mt-1">Dòng tiền đã thu</div>
       </div>
       <div class="bg-rose-50 border border-rose-200 rounded-xl p-3 text-center">
         <div class="text-2xl font-bold text-rose-700">${pending}</div>
@@ -18413,8 +18413,8 @@ function renderPaymentStatus(payments) {
         <div class="h-2 rounded-full transition-all" style="width:${progressPct}%;background:${progressColor}"></div>
       </div>
       <div class="flex justify-between text-xs text-gray-400 mt-1">
-        <span>Đã TT: ${fmtMoney(paidAmount)}</span>
-        <span>Tổng ĐN: ${fmtMoney(totalAmount)}</span>
+        <span>Dòng tiền đã thu: ${fmtMoney(paidAmount)}</span>
+        <span>Tổng nghiệm thu: ${fmtMoney(totalAmount)}</span>
       </div>
     </div>
     <div class="overflow-x-auto">
@@ -18423,8 +18423,8 @@ function renderPaymentStatus(payments) {
         <tr class="border-b border-gray-200 bg-gray-50">
           <th class="py-2 px-3 text-left text-gray-600 font-semibold">Đợt TT</th>
           <th class="py-2 px-3 text-left text-gray-600 font-semibold">Nội dung</th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Số tiền ĐN</th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT</th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Nghiệm thu<br><span class="font-normal text-xs text-emerald-500">→ Doanh thu</span></th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT<br><span class="font-normal text-xs text-blue-400">→ Dòng tiền</span></th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">VAT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Ngày TT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Trạng thái</th>
@@ -18458,9 +18458,12 @@ function renderPaymentStatus(payments) {
             : ''}
           ${p.notes ? `<div class="text-xs text-gray-400 mt-0.5 italic">${p.notes}</div>` : ''}
         </td>
-        <td class="py-2 px-3 text-right font-mono text-gray-700">${fmtMoney(p.amount || 0)}</td>
+        <td class="py-2 px-3 text-right font-mono text-gray-700">
+          <div>${fmtMoney(p.amount || 0)}</div>
+          ${p.vat_pct > 0 || (proj?.management_fee_pct > 0) ? `<div class="text-xs text-emerald-600" title="Doanh thu sau VAT/phí QL">DT: ${fmtMoney(calcRevenueNet(p.amount||0, p.vat_pct||0, proj?.management_fee_pct||0))}</div>` : ''}
+        </td>
         <td class="py-2 px-3 text-right">
-          <div class="font-mono text-emerald-700">${fmtMoney(p.paid_amount || 0)}</div>
+          <div class="font-mono text-blue-600">${fmtMoney(p.paid_amount || 0)}</div>
           ${p.amount > 0 ? `<div class="text-xs text-gray-400">${paidPct}%</div>` : ''}
         </td>
         <td class="py-2 px-3 text-center">
@@ -18509,7 +18512,16 @@ function renderPaymentStatus(payments) {
   container.innerHTML = html
 }
 
+// ─── Helper: tính doanh thu net từ giá trị nghiệm thu ────────────────────────
+function calcRevenueNet(amount, vatPct, feePct) {
+  if (!amount) return 0
+  const noVat = vatPct > 0 ? Math.round(amount / (1 + vatPct / 100)) : amount
+  return feePct > 0 ? Math.round(noVat * (1 - feePct / 100)) : noVat
+}
+
 // ─── Preview doanh thu sau VAT + phí quản lý trong form thanh toán ───────────
+// - `amount`      = Giá trị nghiệm thu → tính DOANH THU vào sổ
+// - `paidAmount`  = Dòng tiền thực thu → hiển thị riêng, không tính doanh thu
 function updatePaymentRevenuePreview() {
   const proj = _legalOverviewData?.project
   const feePct = proj?.management_fee_pct || 0
@@ -18517,8 +18529,8 @@ function updatePaymentRevenuePreview() {
   if (!previewEl) return
 
   const vatPct     = parseFloat($('paymentVatPct')?.value) || 0
-  const amount     = parseMoneyVal('paymentAmount')     || 0
-  const paidAmount = parseMoneyVal('paymentPaidAmount') || 0
+  const amount     = parseMoneyVal('paymentAmount')     || 0  // Giá trị nghiệm thu
+  const paidAmount = parseMoneyVal('paymentPaidAmount') || 0  // Dòng tiền
 
   // Ẩn preview nếu không có VAT và không có phí QL
   if (!feePct && !vatPct) {
@@ -18526,15 +18538,16 @@ function updatePaymentRevenuePreview() {
     return
   }
 
-  // BƯỚC 1: Loại VAT ra
-  const vatFactor      = vatPct > 0 ? (1 + vatPct / 100) : 1
-  const amountNoVat    = vatPct > 0 ? Math.round(amount     / vatFactor) : amount
-  const paidNoVat      = vatPct > 0 ? Math.round(paidAmount / vatFactor) : paidAmount
+  // BƯỚC 1: Loại VAT ra — tính từ NGHIỆM THU (amount)
+  const vatFactor   = vatPct > 0 ? (1 + vatPct / 100) : 1
+  const amountNoVat = vatPct > 0 ? Math.round(amount / vatFactor) : amount
 
-  // BƯỚC 2: Trừ phí QL
-  const feeFactor      = feePct > 0 ? (1 - feePct / 100) : 1
-  const amountNet      = Math.round(amountNoVat * feeFactor)
-  const paidNet        = Math.round(paidNoVat   * feeFactor)
+  // Dòng tiền sau VAT (chỉ hiển thị tham chiếu, không ghi doanh thu)
+  const paidNoVat   = vatPct > 0 ? Math.round(paidAmount / vatFactor) : paidAmount
+
+  // BƯỚC 2: Trừ phí QL — tính từ nghiệm thu trước VAT
+  const feeFactor   = feePct > 0 ? (1 - feePct / 100) : 1
+  const amountNet   = Math.round(amountNoVat * feeFactor)  // → Doanh thu vào sổ
 
   const fmtVND = n => n > 0 ? n.toLocaleString('vi-VN') + ' VNĐ' : '—'
 
@@ -18544,21 +18557,23 @@ function updatePaymentRevenuePreview() {
   if (feePct > 0) feeLabel.push(`Phí QL ${feePct}%`)
   $('paymentFeeLabel').textContent = feeLabel.length ? `(${feeLabel.join(' + ')})` : ''
 
-  // Cập nhật kết quả
+  // Cột trái: Nghiệm thu → Doanh thu (giá trị ghi sổ)
   $('paymentAmountNet').textContent = fmtVND(amountNet)
-  $('paymentPaidNet').textContent   = fmtVND(paidNet)
+
+  // Cột phải: Dòng tiền thực thu (sau VAT, không trừ phí QL — chỉ tham chiếu)
+  $('paymentPaidNet').textContent = paidAmount > 0 ? fmtVND(paidNoVat) : '—'
 
   // Ghi chú công thức chi tiết
   let amountDesc = '', paidDesc = ''
   if (vatPct > 0 && feePct > 0) {
     amountDesc = amount > 0 ? `${fmtVND(amount)} ÷${(1+vatPct/100).toFixed(2)} ×${((100-feePct)/100).toFixed(2)}` : ''
-    paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} ÷${(1+vatPct/100).toFixed(2)} ×${((100-feePct)/100).toFixed(2)}` : ''
+    paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} ÷ ${(1+vatPct/100).toFixed(2)} (trước thuế)` : ''
   } else if (vatPct > 0) {
     amountDesc = amount > 0 ? `${fmtVND(amount)} ÷ ${(1+vatPct/100).toFixed(2)}` : ''
     paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} ÷ ${(1+vatPct/100).toFixed(2)}` : ''
   } else if (feePct > 0) {
     amountDesc = amount > 0 ? `${fmtVND(amount)} × ${(100-feePct)}%` : ''
-    paidDesc   = paidAmount > 0 ? `${fmtVND(paidAmount)} × ${(100-feePct)}%` : ''
+    paidDesc   = paidAmount > 0 ? fmtVND(paidAmount) + ' (chưa trừ phí QL)' : ''
   }
   $('paymentAmountNetPct').textContent = amountDesc
   $('paymentPaidNetPct').textContent   = paidDesc
@@ -18569,11 +18584,11 @@ function updatePaymentRevenuePreview() {
   if (vatRateEl) vatRateEl.textContent = vatPct
   if (formulaEl) {
     if (vatPct > 0 && feePct > 0) {
-      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>DT = TT ÷ (1+${vatPct}%) × (1−${feePct}%) <span class="text-amber-500">← loại VAT trước, rồi trừ phí QL</span>`
+      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>DT = NT ÷ (1+${vatPct}%) × (1−${feePct}%) <span class="text-amber-500">← loại VAT trước, rồi trừ phí QL</span>`
     } else if (vatPct > 0) {
-      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>Doanh thu = Số tiền TT ÷ (1 + <strong>${vatPct}%</strong> VAT)`
+      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>Doanh thu = Giá trị nghiệm thu ÷ (1 + <strong>${vatPct}%</strong> VAT)`
     } else {
-      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>Doanh thu = Số tiền × (1 − <strong>${feePct}%</strong> phí QL)`
+      formulaEl.innerHTML = `<i class="fas fa-info-circle mr-1"></i>Doanh thu = Giá trị nghiệm thu × (1 − <strong>${feePct}%</strong> phí QL)`
     }
   }
 
