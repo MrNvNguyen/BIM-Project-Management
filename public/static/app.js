@@ -15943,8 +15943,8 @@ async function renderProjectFinancialTab(force = false) {
 
     const nghiemThuTotal  = totals.revenue_collected_original || totals.revenue_collected
     const paidAmtTotal    = totals.paid_amount_total || 0
-    // Công nợ theo HĐ = GTHĐ - Nghiệm thu
-    const debtHD          = Math.max(0, totals.contract_value - nghiemThuTotal)
+    // Công nợ theo HĐ = GTHĐ - Giá trị TT thực tế (paid_amount) → số tiền khách còn nợ
+    const debtHD          = Math.max(0, totals.contract_value - paidAmtTotal)
     // Công nợ theo NS  = Ngân sách - Doanh thu NS
     const debtNS          = Math.max(0, totals.project_budget - totals.revenue_collected)
     const hasBudget       = totals.project_budget > 0
@@ -15993,7 +15993,7 @@ async function renderProjectFinancialTab(force = false) {
           </div>
           <div class="${numCls} ${debtHD > 0 ? 'text-red-500' : 'text-green-600'}">${fmtM(debtHD)}</div>
           <div class="text-xs mt-1 ${debtHD > 0 ? 'text-red-400' : 'text-green-500'}">
-            ${debtHD > 0 ? `GTHĐ − Nghiệm thu` : '✅ Đã nghiệm thu đủ'}
+            ${debtHD > 0 ? `GTHĐ − TT thực tế` : '✅ Đã thanh toán đủ'}
           </div>
         </div>
       </div>
