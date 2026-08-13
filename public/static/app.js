@@ -23567,8 +23567,6 @@ let _hstkCurrentSub = null   // submission đang xem
 let _hstkDocTypes = {}       // cache: stage → [{...}]
 let _hstkPendingChanges = {} // itemId → {has_doc, file_ref, notes}
 
-let _hstkPendingChanges = {} // itemId → {has_doc, file_ref, notes}
-
 // ===================================================
 // ESTIMATE TAB — Dự toán dự án vs Thực tế
 // ===================================================
