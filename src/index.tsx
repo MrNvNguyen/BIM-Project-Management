@@ -11306,12 +11306,12 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       GROUP BY project_id
     `).all()
 
-    // ── Doanh thu gốc (theo HĐ) toàn vòng đời – amount (nghiệm thu)
-    // ĐỒNG THỜI lấy paid_amount_total (dòng tiền thực thu)
+    // ── Nghiệm thu gốc (toàn vòng đời) + dòng tiền thực thu
+    // COALESCE(pr.amount_original, pr.amount): backfill cho data cũ chưa có amount_original
     const revOrigRowsLT = await db.prepare(`
       SELECT pr.project_id,
-        SUM(pr.amount)                   as revenue_collected_original,
-        SUM(COALESCE(pq.paid_amount, 0)) as paid_amount_total
+        SUM(COALESCE(pr.amount_original, pr.amount))  as revenue_collected_original,
+        SUM(COALESCE(pq.paid_amount, 0))               as paid_amount_total
       FROM project_revenues pr
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status IN ('paid','partial')
@@ -12858,11 +12858,11 @@ async function syncPaymentToRevenue(
     // Cập nhật revenue đã có
     await db.prepare(`
       UPDATE project_revenues
-      SET description = ?, amount = ?, currency = ?, revenue_date = ?,
+      SET description = ?, amount = ?, amount_original = ?, currency = ?, revenue_date = ?,
           invoice_number = ?, payment_status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).bind(
-      revenueDesc, syncAmount, payment.currency || 'VND',
+      revenueDesc, syncAmount, rawAmount, payment.currency || 'VND',
       payment.paid_date || null, payment.invoice_number || null,
       revenueStatus, revenueNotes, payment.revenue_id
     ).run()
@@ -12871,10 +12871,10 @@ async function syncPaymentToRevenue(
     // Tạo revenue mới
     const result = await db.prepare(`
       INSERT INTO project_revenues
-        (project_id, description, amount, currency, revenue_date, invoice_number, payment_status, notes, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?)
+        (project_id, description, amount, amount_original, currency, revenue_date, invoice_number, payment_status, notes, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
     `).bind(
-      payment.project_id, revenueDesc, syncAmount, payment.currency || 'VND',
+      payment.project_id, revenueDesc, syncAmount, rawAmount, payment.currency || 'VND',
       payment.paid_date || null, payment.invoice_number || null,
       revenueStatus, revenueNotes, userId
     ).run()
