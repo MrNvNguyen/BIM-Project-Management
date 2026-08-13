@@ -18503,21 +18503,21 @@ function renderPaymentStatus(payments) {
         </td>
         <td class="py-2 px-3 text-right">
           ${(() => {
-            const paidAmt   = p.paid_amount || 0
+            const nghiemThu = p.amount || 0              // Giá trị nghiệm thu → căn cứ tính doanh thu
             const vatPct    = p.vat_pct || 0
             const feePct    = _legalOverviewData?.project?.management_fee_pct || 0
-            const noVat     = vatPct > 0 ? Math.round(paidAmt / (1 + vatPct / 100)) : paidAmt
+            const noVat     = vatPct > 0 ? Math.round(nghiemThu / (1 + vatPct / 100)) : nghiemThu
             const netRev    = feePct > 0 ? Math.round(noVat * (1 - feePct / 100)) : noVat
             const isSynced  = p.revenue_synced || p.revenue_synced_id
-            const isActive  = ['paid','partial'].includes(p.status) && paidAmt > 0
+            const isActive  = ['paid','partial'].includes(p.status) && nghiemThu > 0
             if (!isActive) return `<span class="text-xs text-gray-300">—</span>`
             let titleParts = []
-            if (vatPct > 0) titleParts.push(`Loại VAT ${vatPct}%: ${paidAmt.toLocaleString('vi-VN')} ÷ ${(1+vatPct/100).toFixed(2)} = ${noVat.toLocaleString('vi-VN')} VNĐ`)
+            if (vatPct > 0) titleParts.push(`Loại VAT ${vatPct}%: ${nghiemThu.toLocaleString('vi-VN')} ÷ ${(1+vatPct/100).toFixed(2)} = ${noVat.toLocaleString('vi-VN')} VNĐ`)
             if (feePct > 0) titleParts.push(`Phí QL ${feePct}%: ×${(100-feePct)}% = ${netRev.toLocaleString('vi-VN')} VNĐ`)
             const tooltip = titleParts.length ? titleParts.join(' → ') : ''
             return `<div class="font-mono font-semibold text-blue-700" title="${tooltip}">${fmtMoney(netRev)}</div>
                     ${vatPct > 0 ? `<div class="text-xs text-amber-500 mt-0.5">−VAT ${vatPct}%</div>` : ''}
-                    ${feePct > 0 && vatPct > 0 ? `<div class="text-xs text-orange-400">−QL ${feePct}%</div>` : feePct > 0 ? `<div class="text-xs text-orange-400">−QL ${feePct}%</div>` : ''}
+                    ${feePct > 0 ? `<div class="text-xs text-orange-400">−QL ${feePct}%</div>` : ''}
                     ${isSynced ? `<div class="text-xs text-emerald-500 mt-0.5"><i class="fas fa-sync-alt" style="font-size:9px"></i> Đã ĐB</div>` : ''}`
           })()}
         </td>
