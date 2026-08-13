@@ -16154,10 +16154,10 @@ async function renderProjectFinancialTab(force = false) {
     // Dùng 1 table duy nhất với sticky thead/tfoot để tránh lệch cột khi tên dài
     const hasBudgetCol = projects.some(p => p.project_budget > 0)
     const nameColW  = isLifetime ? 200 : 220   // px — cột tên dự án cố định
-    // GTHĐ, Đã thu HĐ, Công nợ, [NS], DT đã thu, CP TT, CP lương, CP chung, Tổng CP, LN, Biên, Tiến độ
+    // GTHĐ, Đã nghiệm thu, GTTT Thực tế, Công nợ, [NS], DT đã thu, CP TT, CP lương, CP chung, Tổng CP, LN, Biên, Tiến độ
     const numCols   = hasBudgetCol
-      ? [90, 90, 85, 90, 90, 80, 80, 70, 80, 80, 60, 105]
-      : [95, 95, 85, 90, 85, 85, 75, 85, 85, 65, 110]
+      ? [90, 85, 85, 80, 90, 90, 80, 80, 70, 80, 80, 60, 105]
+      : [90, 85, 85, 80, 90, 85, 85, 75, 85, 85, 65, 110]
     const totalMinW = nameColW + numCols.reduce((a,b)=>a+b,0)
     const colgroup  = `<colgroup>
         <col style="width:${nameColW}px;min-width:${nameColW}px;max-width:${nameColW}px">
@@ -16188,8 +16188,9 @@ async function renderProjectFinancialTab(force = false) {
               <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
                 <th class="text-left py-3 px-3 font-semibold border-b border-gray-200" style="overflow:hidden">Dự án</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">GTHĐ</th>
-                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#0891b2"><i class="fas fa-hand-holding-usd mr-1"></i>Đã thu HĐ</th>
-                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#dc2626" title="Công nợ = GTHĐ − Đã thu HĐ"><i class="fas fa-exclamation-circle mr-1"></i>Công nợ</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#0891b2" title="Giá trị nghiệm thu gốc"><i class="fas fa-clipboard-check mr-1"></i>Đã nghiệm thu</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#2563eb" title="Dòng tiền thực thu từ khách hàng"><i class="fas fa-money-bill-wave mr-1"></i>GTTT Thực tế</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#dc2626" title="Công nợ = GTHĐ − GTTT Thực tế"><i class="fas fa-exclamation-circle mr-1"></i>Công nợ</th>
                 ${hasBudgetCol ? `<th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#059669"><i class="fas fa-wallet mr-1"></i>Ngân sách</th>` : ''}
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">DT đã thu</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">CP trực tiếp</th>
@@ -16237,7 +16238,11 @@ async function renderProjectFinancialTab(force = false) {
                       <span class="font-semibold text-cyan-700">${(p.revenue_collected_original || p.revenue_collected) > 0 ? fmtM(p.revenue_collected_original || p.revenue_collected) : '<span class="text-gray-300">—</span>'}</span>
                       ${(p.revenue_collected_original || p.revenue_collected) > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.revenue_collected_original || p.revenue_collected, pctBaseRow)}%</div>` : ''}
                     </td>
-                    ${(() => { const debt = Math.max(0, (p.contract_value||0) - (p.revenue_collected_original || p.revenue_collected||0)); return `<td class="py-2 px-3 text-right whitespace-nowrap" style="background:${debt>0?'#fff5f5':''}"><span class="font-semibold ${debt>0?'text-red-500':'text-gray-300'}">${debt>0?fmtM(debt):'—'}</span>${debt>0&&pctBaseRow>0?`<div class="text-xs text-gray-400">${pct(debt,pctBaseRow)}%</div>`:''}</td>`; })()}
+                    <td class="py-2 px-3 text-right whitespace-nowrap" style="background:#eff6ff">
+                      <span class="font-semibold text-blue-600">${p.paid_amount_total > 0 ? fmtM(p.paid_amount_total) : '<span class="text-gray-300">—</span>'}</span>
+                      ${p.paid_amount_total > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.paid_amount_total, pctBaseRow)}%</div>` : ''}
+                    </td>
+                    ${(() => { const debt = Math.max(0, (p.contract_value||0) - (p.paid_amount_total||0)); return `<td class="py-2 px-3 text-right whitespace-nowrap" style="background:${debt>0?'#fff5f5':''}"><span class="font-semibold ${debt>0?'text-red-500':'text-gray-300'}">${debt>0?fmtM(debt):'—'}</span>${debt>0&&pctBaseRow>0?`<div class="text-xs text-gray-400">${pct(debt,pctBaseRow)}%</div>`:''}</td>`; })()}
                     ${hasBudgetCol ? `
                     <td class="py-2 px-3 text-right whitespace-nowrap" style="background:${p.project_budget>0?'#f0fdf4':''}">
                       ${p.project_budget > 0
@@ -16324,7 +16329,9 @@ async function renderProjectFinancialTab(force = false) {
           <span><strong>GTHĐ</strong>: Giá trị hợp đồng</span>
           ${hasBudgetCol ? `<span><strong class="text-emerald-700">Ngân sách</strong>: GTHĐ × (1 − % phí quản lý) — ngân sách thực tế để kiểm soát chi phí</span>` : ''}
           <span><strong>DT đã thu</strong>: Doanh thu trạng thái <em>paid + partial</em></span>
-          <span><strong class="text-red-600">Công nợ</strong>: GTHĐ − Đã thu HĐ (số tiền khách hàng chưa thanh toán)</span>
+          <span><strong style="color:#0891b2">Đã nghiệm thu</strong>: Giá trị nghiệm thu gốc theo hợp đồng</span>
+          <span><strong style="color:#2563eb">GTTT Thực tế</strong>: Dòng tiền thực thu từ khách hàng</span>
+          <span><strong class="text-red-600">Công nợ</strong>: GTHĐ − GTTT Thực tế (số tiền khách hàng chưa thanh toán)</span>
           <span><strong>CP trực tiếp</strong>: Chi phí vật liệu, thiết bị, đi lại, văn phòng…</span>
           <span><strong>CP lương</strong>: Từ bảng project_labor_costs (tính theo timesheet)</span>
           <span><strong>CP chung</strong>: Chi phí chung phân bổ (điện, nước, văn phòng…)</span>
