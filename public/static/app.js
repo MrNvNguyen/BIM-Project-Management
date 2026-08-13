@@ -2052,6 +2052,10 @@ async function openProjectDetail(id, openChatTab = false) {
             class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-table mr-1"></i>Tổng hợp CV
           </button>
+          <button id="projTab-estimate" onclick="switchProjectTab('estimate',${project.id})"
+            class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
+            <i class="fas fa-calculator mr-1"></i>Dự toán
+          </button>
           <button id="projTab-hstk" onclick="switchProjectTab('hstk',${project.id})"
             class="tab-btn text-xs py-2 px-4 whitespace-nowrap" style="border:2px solid #ef4444;color:#ef4444">
             <i class="fas fa-clipboard-check mr-1"></i>Checklist HSTK
@@ -2094,6 +2098,10 @@ async function openProjectDetail(id, openChatTab = false) {
         <!-- Work Summary panel (lazy-loaded) -->
         <div id="projPanel-summary" class="hidden p-4" style="min-height:400px">
           <div id="workSummaryContainer_${project.id}"></div>
+        </div>
+        <!-- Estimate panel (lazy-loaded) -->
+        <div id="projPanel-estimate" class="hidden p-4" style="min-height:400px">
+          <div id="estimateContainer_${project.id}"></div>
         </div>
         <!-- Checklist HSTK Panel -->
         <div id="projPanel-hstk" class="hidden p-4" style="min-height:400px">
@@ -4923,13 +4931,15 @@ function openImageViewer(src, name) {
 function switchProjectTab(tab, projectId) {
   const pid = projectId || window._currentProjectDetailId
   // Show/hide panels
-  const taskPanel    = $('projPanel-tasks')
-  const weeklyPanel  = $('projPanel-weekly')
-  const chatPanel    = $('projPanel-chat')
-  const summaryPanel = $('projPanel-summary')
-  const hstkPanel    = $('projPanel-hstk')
-  if (taskPanel)    taskPanel.style.display    = tab === 'tasks'   ? 'block' : 'none'
-  if (weeklyPanel)  weeklyPanel.style.display  = tab === 'weekly'  ? 'block' : 'none'
+  const taskPanel     = $('projPanel-tasks')
+  const weeklyPanel   = $('projPanel-weekly')
+  const chatPanel     = $('projPanel-chat')
+  const summaryPanel  = $('projPanel-summary')
+  const hstkPanel     = $('projPanel-hstk')
+  const estimatePanel = $('projPanel-estimate')
+  if (taskPanel)     taskPanel.style.display     = tab === 'tasks'    ? 'block' : 'none'
+  if (weeklyPanel)   weeklyPanel.style.display   = tab === 'weekly'   ? 'block' : 'none'
+  if (estimatePanel) { estimatePanel.classList.remove('hidden'); estimatePanel.style.display = tab === 'estimate' ? 'block' : 'none' }
   if (chatPanel) {
     chatPanel.classList.remove('hidden')
     chatPanel.style.display = tab === 'chat' ? 'block' : 'none'
@@ -4944,7 +4954,7 @@ function switchProjectTab(tab, projectId) {
   }
 
   // Update tab buttons
-  ;['tasks','weekly','chat','summary'].forEach(key => {
+  ;['tasks','weekly','chat','summary','estimate'].forEach(key => {
     const btn = $(`projTab-${key}`)
     if (btn) btn.className = `tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap${key === tab ? ' active' : ''}`
   })
@@ -4997,6 +5007,14 @@ function switchProjectTab(tab, projectId) {
     if (container && !container._initialized) {
       container._initialized = true
       initHstkTab(container, pid)
+    }
+  }
+
+  if (tab === 'estimate') {
+    const container = $(`estimateContainer_${pid}`)
+    if (container && !container._initialized) {
+      container._initialized = true
+      initEstimateTab(container, pid)
     }
   }
 }
@@ -23548,6 +23566,281 @@ let _hstkSubmissions = []
 let _hstkCurrentSub = null   // submission đang xem
 let _hstkDocTypes = {}       // cache: stage → [{...}]
 let _hstkPendingChanges = {} // itemId → {has_doc, file_ref, notes}
+
+let _hstkPendingChanges = {} // itemId → {has_doc, file_ref, notes}
+
+// ===================================================
+// ESTIMATE TAB — Dự toán dự án vs Thực tế
+// ===================================================
+
+const EST_CAT = {
+  revenue:     { label: 'Doanh thu',         icon: 'fa-hand-holding-usd', color: '#0891b2', bg: '#f0f9ff' },
+  direct_cost: { label: 'CP trực tiếp',      icon: 'fa-tools',            color: '#7c3aed', bg: '#f5f3ff' },
+  labor:       { label: 'CP lương',           icon: 'fa-users',            color: '#d97706', bg: '#fffbeb' },
+  shared:      { label: 'CP chung',           icon: 'fa-building',         color: '#0284c7', bg: '#f0f9ff' },
+  other:       { label: 'CP khác',            icon: 'fa-ellipsis-h',       color: '#6b7280', bg: '#f9fafb' },
+}
+
+async function initEstimateTab(container, projectId) {
+  container.innerHTML = `<div class="flex items-center justify-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải dự toán...</div>`
+  try {
+    const [estimates, vsActual] = await Promise.all([
+      api(`/projects/${projectId}/estimates`),
+      api(`/projects/${projectId}/estimate-vs-actual`)
+    ])
+    window._estimateProjectId = projectId
+    window._estimateData = estimates || []
+    _renderEstimateTab(container, projectId, estimates || [], vsActual)
+  } catch(e) {
+    container.innerHTML = `<div class="text-red-500 p-4">Lỗi: ${e.message}</div>`
+  }
+}
+
+async function _reloadEstimateTab(projectId) {
+  const container = $(`estimateContainer_${projectId}`)
+  if (!container) return
+  container._initialized = false
+  await initEstimateTab(container, projectId)
+}
+
+function _renderEstimateTab(container, projectId, estimates, vsActual) {
+  const fmtE = v => v > 0 ? (v/1e6).toFixed(1).replace(/\.0$/,'') + ' tr' : v < 0 ? '-' + (Math.abs(v)/1e6).toFixed(1).replace(/\.0$/,'') + ' tr' : '—'
+  const fmtFull = v => v ? v.toLocaleString('vi-VN') + ' ₫' : '—'
+  const hasEst = estimates && estimates.length > 0
+  const s = vsActual?.summary || {}
+  const act = vsActual?.actual || {}
+  const estTot = vsActual?.est_totals || {}
+
+  // ── Helper: render ô so sánh ──────────────────────────────────────
+  function cmpCell(key, isRevenue = false) {
+    const d = s[key] || {}
+    const est = d.estimate || 0
+    const actual = d.actual || 0
+    const diff = d.diff || 0
+    const pct = d.pct
+    // Với doanh thu: thực tế > dự toán là tốt (xanh)
+    // Với chi phí:  thực tế > dự toán là xấu (đỏ)
+    const isGood = isRevenue ? diff >= 0 : diff <= 0
+    const diffColor = diff === 0 ? '#6b7280' : isGood ? '#059669' : '#dc2626'
+    const diffIcon  = diff === 0 ? '' : isGood ? '▲' : '▼'
+    const pctBadge  = pct != null ? `<span class="text-xs px-1.5 py-0.5 rounded font-bold" style="background:${isGood?'#dcfce7':'#fee2e2'};color:${diffColor}">${pct}%</span>` : ''
+    return `
+      <td class="py-2 px-3 text-right whitespace-nowrap text-indigo-700 font-semibold">${est > 0 ? fmtE(est) : '<span class="text-gray-300">—</span>'}</td>
+      <td class="py-2 px-3 text-right whitespace-nowrap font-semibold" style="color:${actual>0?'#374151':'#9ca3af'}">${fmtE(actual)||'—'}</td>
+      <td class="py-2 px-3 text-right whitespace-nowrap">
+        <span style="color:${diffColor}" class="font-semibold text-xs">${diff!==0?diffIcon+' '+fmtE(Math.abs(diff)):'—'}</span>
+        <div class="mt-0.5">${pctBadge}</div>
+      </td>`
+  }
+
+  // ── Phần 1: Bảng so sánh tổng hợp ────────────────────────────────
+  const summaryRows = [
+    { key:'revenue',     label:'Doanh thu (nghiệm thu)', isRev:true,  icon:'fa-hand-holding-usd', color:'#0891b2' },
+    { key:'direct_cost', label:'CP trực tiếp',           isRev:false, icon:'fa-tools',            color:'#7c3aed' },
+    { key:'labor',       label:'CP lương',               isRev:false, icon:'fa-users',            color:'#d97706' },
+    { key:'shared',      label:'CP chung phân bổ',       isRev:false, icon:'fa-building',         color:'#0284c7' },
+    { key:'total_cost',  label:'Tổng chi phí',           isRev:false, icon:'fa-calculator',       color:'#dc2626', bold:true },
+    { key:'profit',      label:'Lợi nhuận ước tính',     isRev:true,  icon:'fa-chart-line',       color:'#059669', bold:true },
+  ]
+
+  const summaryHtml = `
+    <div class="card mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-semibold text-gray-700 text-sm"><i class="fas fa-balance-scale mr-2 text-indigo-500"></i>So sánh Dự toán vs Thực tế — Toàn vòng đời dự án</h3>
+        ${act.dong_tien > 0 ? `<span class="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded"><i class="fas fa-money-bill-wave mr-1"></i>Dòng tiền thực thu: <strong>${fmtE(act.dong_tien)}</strong></span>` : ''}
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm border-collapse">
+          <thead>
+            <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide border-b border-gray-200">
+              <th class="py-2 px-3 text-left">Hạng mục</th>
+              <th class="py-2 px-3 text-right text-indigo-600">Dự toán</th>
+              <th class="py-2 px-3 text-right text-gray-600">Thực tế</th>
+              <th class="py-2 px-3 text-right">Chênh lệch</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${summaryRows.map(r => {
+              const d = s[r.key] || {}
+              const rowBg = r.bold ? 'bg-gray-50 border-t-2 border-gray-200' : 'border-b border-gray-100'
+              return `<tr class="${rowBg}">
+                <td class="py-2 px-3 ${r.bold?'font-bold':'font-medium'}" style="color:${r.color}">
+                  <i class="fas ${r.icon} mr-1.5 opacity-70"></i>${r.label}
+                </td>
+                ${cmpCell(r.key, r.isRev)}
+              </tr>`
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${!hasEst ? `<div class="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
+        <i class="fas fa-info-circle mr-1"></i>Chưa có dự toán. Hãy thêm các hạng mục dự toán bên dưới để so sánh.
+      </div>` : ''}
+    </div>`
+
+  // ── Phần 2: Bảng nhập dự toán chi tiết ───────────────────────────
+  const groupedEst = {}
+  Object.keys(EST_CAT).forEach(k => { groupedEst[k] = [] })
+  ;(estimates || []).forEach(e => { if (groupedEst[e.category]) groupedEst[e.category].push(e) })
+
+  const estRows = Object.entries(EST_CAT).map(([catKey, catCfg]) => {
+    const items = groupedEst[catKey] || []
+    const catTotal = items.reduce((s,i) => s + (i.amount||0), 0)
+    const itemsHtml = items.map(item => `
+      <tr class="border-b border-gray-50 hover:bg-gray-50/50 group" id="est-row-${item.id}">
+        <td class="py-1.5 px-3 pl-8 text-xs text-gray-700">${item.description}</td>
+        <td class="py-1.5 px-3 text-right text-xs font-semibold text-indigo-700">${item.amount > 0 ? item.amount.toLocaleString('vi-VN') : '—'}</td>
+        <td class="py-1.5 px-3 text-xs text-gray-400">${item.unit||''}</td>
+        <td class="py-1.5 px-3 text-xs text-gray-400 max-w-[150px] truncate" title="${item.notes||''}">${item.notes||''}</td>
+        <td class="py-1.5 px-3 text-center whitespace-nowrap">
+          <button onclick="openEstimateEditModal(${item.id},'${catKey}')" class="opacity-0 group-hover:opacity-100 text-xs text-blue-500 hover:text-blue-700 mr-2 transition-opacity"><i class="fas fa-edit"></i></button>
+          <button onclick="deleteEstimateItem(${item.id},${projectId})" class="opacity-0 group-hover:opacity-100 text-xs text-red-400 hover:text-red-600 transition-opacity"><i class="fas fa-trash"></i></button>
+        </td>
+      </tr>`).join('')
+
+    return `
+      <tr class="border-b border-gray-200" style="background:${catCfg.bg}">
+        <td class="py-2 px-3 font-semibold text-sm" style="color:${catCfg.color}">
+          <i class="fas ${catCfg.icon} mr-1.5"></i>${catCfg.label}
+          <span class="text-xs font-normal text-gray-400 ml-1">(${items.length} hạng mục)</span>
+        </td>
+        <td class="py-2 px-3 text-right font-bold text-sm" style="color:${catCfg.color}">${catTotal > 0 ? catTotal.toLocaleString('vi-VN') : '—'}</td>
+        <td colspan="2"></td>
+        <td class="py-2 px-3 text-center">
+          <button onclick="openEstimateAddModal('${catKey}',${projectId})"
+            class="text-xs px-2 py-1 rounded font-medium transition-colors"
+            style="background:${catCfg.color}20;color:${catCfg.color};border:1px solid ${catCfg.color}40"
+            title="Thêm hạng mục dự toán ${catCfg.label}">
+            <i class="fas fa-plus mr-1"></i>Thêm
+          </button>
+        </td>
+      </tr>
+      ${itemsHtml}`
+  }).join('')
+
+  const estTableHtml = `
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-semibold text-gray-700 text-sm"><i class="fas fa-list-alt mr-2 text-indigo-500"></i>Chi tiết dự toán</h3>
+        <span class="text-xs text-gray-400">Nhấn <kbd class="px-1 py-0.5 bg-gray-100 rounded text-xs">+ Thêm</kbd> để nhập dự toán từng hạng mục</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm border-collapse">
+          <thead>
+            <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide border-b border-gray-200">
+              <th class="py-2 px-3 text-left">Hạng mục</th>
+              <th class="py-2 px-3 text-right">Giá trị (₫)</th>
+              <th class="py-2 px-3 text-left">Đơn vị</th>
+              <th class="py-2 px-3 text-left">Ghi chú</th>
+              <th class="py-2 px-3 text-center w-20">Thao tác</th>
+            </tr>
+          </thead>
+          <tbody>${estRows}</tbody>
+        </table>
+      </div>
+    </div>`
+
+  container.innerHTML = summaryHtml + estTableHtml
+}
+
+// ── Modal thêm/sửa dự toán ────────────────────────────────────────────────
+function openEstimateAddModal(category, projectId) {
+  _openEstimateModal({ category, projectId, mode: 'add' })
+}
+
+function openEstimateEditModal(id, category) {
+  const item = (window._estimateData || []).find(e => e.id === id)
+  if (!item) return
+  _openEstimateModal({ ...item, projectId: window._estimateProjectId, mode: 'edit' })
+}
+
+function _openEstimateModal(data) {
+  const { mode, id, category, description='', amount=0, unit='', notes='', projectId } = data
+  const title = mode === 'add' ? `Thêm dự toán — ${EST_CAT[category]?.label||category}` : 'Chỉnh sửa dự toán'
+  const catOptions = Object.entries(EST_CAT).map(([k,v]) =>
+    `<option value="${k}" ${k===category?'selected':''}>${v.label}</option>`).join('')
+
+  const modal = document.createElement('div')
+  modal.id = 'estimateModal'
+  modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-50'
+  modal.innerHTML = `
+    <div class="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-bold text-gray-800"><i class="fas fa-calculator mr-2 text-indigo-500"></i>${title}</h3>
+        <button onclick="this.closest('#estimateModal').remove()" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+      </div>
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Loại hạng mục</label>
+          <select id="estCat" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 outline-none">${catOptions}</select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Mô tả hạng mục <span class="text-red-500">*</span></label>
+          <input id="estDesc" type="text" value="${description.replace(/"/g,'&quot;')}" placeholder="VD: Chi phí khảo sát địa hình, Nhân công TKCS..."
+            class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 outline-none">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Giá trị dự toán (₫) <span class="text-red-500">*</span></label>
+            <input id="estAmt" type="number" value="${amount||0}" min="0" step="1000000"
+              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 outline-none"
+              oninput="$('estAmtPreview').textContent = this.value > 0 ? (this.value/1e6).toFixed(2) + ' triệu ₫' : ''">
+            <div id="estAmtPreview" class="text-xs text-indigo-500 mt-1 font-medium">${amount > 0 ? (amount/1e6).toFixed(2) + ' triệu ₫' : ''}</div>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Đơn vị</label>
+            <input id="estUnit" type="text" value="${unit||''}" placeholder="VD: đồng, %..."
+              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 outline-none">
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Ghi chú</label>
+          <textarea id="estNotes" rows="2" placeholder="Ghi chú thêm nếu cần..."
+            class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 outline-none resize-none">${notes||''}</textarea>
+        </div>
+      </div>
+      <div class="flex gap-2 mt-5">
+        <button onclick="this.closest('#estimateModal').remove()" class="flex-1 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50">Hủy</button>
+        <button onclick="_saveEstimateItem(${mode==='edit'?id:'null'}, ${projectId})"
+          class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors">
+          <i class="fas fa-save mr-1"></i>${mode === 'add' ? 'Thêm dự toán' : 'Lưu thay đổi'}
+        </button>
+      </div>
+    </div>`
+  document.body.appendChild(modal)
+  setTimeout(() => $('estDesc')?.focus(), 100)
+}
+
+async function _saveEstimateItem(id, projectId) {
+  const desc   = ($('estDesc')?.value || '').trim()
+  const amount = parseFloat($('estAmt')?.value) || 0
+  const cat    = $('estCat')?.value || 'direct_cost'
+  const unit   = ($('estUnit')?.value || '').trim()
+  const notes  = ($('estNotes')?.value || '').trim()
+  if (!desc)   { alert('Vui lòng nhập mô tả hạng mục'); return }
+  if (amount <= 0) { alert('Vui lòng nhập giá trị dự toán > 0'); return }
+  try {
+    if (id) {
+      await api(`/projects/${projectId}/estimates/${id}`, { method:'PUT', body: JSON.stringify({ category:cat, description:desc, amount, unit, notes }) })
+    } else {
+      await api(`/projects/${projectId}/estimates`, { method:'POST', body: JSON.stringify({ category:cat, description:desc, amount, unit, notes }) })
+    }
+    $('estimateModal')?.remove()
+    await _reloadEstimateTab(projectId)
+  } catch(e) {
+    alert('Lỗi lưu dự toán: ' + e.message)
+  }
+}
+
+async function deleteEstimateItem(id, projectId) {
+  if (!confirm('Xóa hạng mục dự toán này?')) return
+  try {
+    await api(`/projects/${projectId}/estimates/${id}`, { method:'DELETE' })
+    await _reloadEstimateTab(projectId)
+  } catch(e) {
+    alert('Lỗi xóa: ' + e.message)
+  }
+}
 
 // ── Init tab ───────────────────────────────────────────────────────
 async function initHstkTab(container, projectId) {
