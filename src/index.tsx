@@ -4290,6 +4290,7 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
       JOIN projects p ON p.id = pq.project_id
       WHERE pq.status = 'pending'
         ${project_id ? `AND pq.project_id = ${parseInt(project_id)}` : ''}
+        ${year ? `AND (pq.request_date IS NULL OR (pq.request_date >= '${fyStart}' AND pq.request_date <= '${fyEnd}'))` : ''}
     `
 
     const [paidRows, pendingRows] = await Promise.all([
@@ -11101,9 +11102,13 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       FROM project_revenues pr
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status IN ('paid','partial','pending')
-        AND (pr.revenue_date IS NULL OR (pr.revenue_date >= ? AND pr.revenue_date <= ?))
+        AND (
+          (pr.payment_status IN ('paid','partial') AND pr.revenue_date >= ? AND pr.revenue_date <= ?)
+          OR
+          (pr.payment_status = 'pending' AND (pq.request_date IS NULL OR (pq.request_date >= ? AND pq.request_date <= ?)))
+        )
       GROUP BY pr.project_id
-    `).bind(fyStart, fyEnd).all()
+    `).bind(fyStart, fyEnd, fyStart, fyEnd).all()
     const revOrigMap: Record<number, number> = {}
     const paidAmtMap: Record<number, number> = {}
     ;(revOrigRows.results as any[]).forEach((r: any) => {
