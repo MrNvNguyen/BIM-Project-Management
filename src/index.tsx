@@ -4234,7 +4234,8 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
     const dateFilter   = year ? `AND pr.revenue_date >= '${fyStart}' AND pr.revenue_date <= '${fyEnd}'` : ''
 
     // ── Phần 1: project_revenues (paid / partial) đã có revenue_date ──────────
-    // LEFT JOIN payment_requests để lấy paid_amount gốc (trước khi trừ phí QL)
+    // paid_amount_original = amount (Giá trị nghiệm thu) → Cột "Theo HĐ"
+    // paid_amount          = paid_amount thực tế từ payment_requests → Cột "Dòng tiền"
     const paidQuery = `
       SELECT
         pr.id            AS id,
@@ -4250,10 +4251,12 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         pr.payment_status,
         pr.notes,
         'revenue'        AS source,
-        -- Lấy paid_amount gốc từ payment_requests nếu có liên kết
-        COALESCE(pq.paid_amount, pr.amount) AS paid_amount_original,
-        p.management_fee_pct       AS fee_pct,
-        COALESCE(pq.vat_pct, 0)    AS vat_pct
+        -- Theo HĐ = Giá trị nghiệm thu (amount từ payment_requests nếu có, fallback pr.amount)
+        COALESCE(pq.amount, pr.amount)      AS paid_amount_original,
+        -- Dòng tiền = số tiền thực đã thu (paid_amount từ payment_requests)
+        COALESCE(pq.paid_amount, 0)         AS paid_amount,
+        p.management_fee_pct               AS fee_pct,
+        COALESCE(pq.vat_pct, 0)            AS vat_pct
       FROM project_revenues pr
       JOIN projects p ON p.id = pr.project_id
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
@@ -4279,7 +4282,8 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         'pending'        AS payment_status,
         pq.notes,
         'payment_request' AS source,
-        pq.amount        AS paid_amount_original,
+        pq.amount           AS paid_amount_original,  -- Theo HĐ = nghiệm thu
+        COALESCE(pq.paid_amount, 0) AS paid_amount,   -- Dòng tiền (thường = 0 với pending)
         p.management_fee_pct AS fee_pct,
         COALESCE(pq.vat_pct, 0) AS vat_pct
       FROM payment_requests pq
