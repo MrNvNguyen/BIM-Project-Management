@@ -11092,12 +11092,12 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       GROUP BY project_id
     `).all()
 
-    // ── Doanh thu gốc (theo HĐ) trước khi trừ % phí QL — amount (nghiệm thu)
-    // ĐỒNG THỜI lấy paid_amount_total (dòng tiền thực thu từ khách hàng)
+    // ── Nghiệm thu gốc (NTC) + dòng tiền thực thu
+    // COALESCE(pr.amount_original, pr.amount): backfill cho data cũ chưa có amount_original
     const revOrigRows = await db.prepare(`
       SELECT pr.project_id,
-        SUM(pr.amount)                     as revenue_collected_original,
-        SUM(COALESCE(pq.paid_amount, 0))   as paid_amount_total
+        SUM(COALESCE(pr.amount_original, pr.amount))  as revenue_collected_original,
+        SUM(COALESCE(pq.paid_amount, 0))               as paid_amount_total
       FROM project_revenues pr
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status IN ('paid','partial')
