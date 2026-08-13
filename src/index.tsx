@@ -11092,10 +11092,12 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       GROUP BY project_id
     `).all()
 
-    // ── Doanh thu gốc (theo HĐ) trước khi trừ % phí QL — COALESCE(paid_amount, amount)
+    // ── Doanh thu gốc (theo HĐ) trước khi trừ % phí QL — amount (nghiệm thu)
+    // ĐỒNG THỜI lấy paid_amount_total (dòng tiền thực thu từ khách hàng)
     const revOrigRows = await db.prepare(`
       SELECT pr.project_id,
-        SUM(COALESCE(pq.paid_amount, pr.amount)) as revenue_collected_original
+        SUM(pr.amount)                     as revenue_collected_original,
+        SUM(COALESCE(pq.paid_amount, 0))   as paid_amount_total
       FROM project_revenues pr
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status IN ('paid','partial')
@@ -11103,7 +11105,11 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       GROUP BY pr.project_id
     `).bind(fyStart, fyEnd).all()
     const revOrigMap: Record<number, number> = {}
-    ;(revOrigRows.results as any[]).forEach((r: any) => { revOrigMap[r.project_id] = r.revenue_collected_original || 0 })
+    const paidAmtMap: Record<number, number> = {}
+    ;(revOrigRows.results as any[]).forEach((r: any) => {
+      revOrigMap[r.project_id] = r.revenue_collected_original || 0
+      paidAmtMap[r.project_id] = r.paid_amount_total || 0
+    })
 
     // ── 3. Chi phí trực tiếp theo dự án (non-salary, trong NTC)
     const directCostRows = await db.prepare(`
@@ -11160,7 +11166,8 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       const feePct           = p.management_fee_pct || 0
       const projectBudget    = contractValue > 0 ? Math.round(contractValue * (1 - feePct / 100)) : 0
       const revenueCollected = rev.revenue_collected || 0
-      const revenueCollectedOriginal = revOrigMap[p.id] || revenueCollected  // gross trước phí QL
+      const revenueCollectedOriginal = revOrigMap[p.id] || revenueCollected  // nghiệm thu gốc
+      const paidAmountTotal  = paidAmtMap[p.id] || 0                         // dòng tiền thực thu
       const revenuePaid      = rev.revenue_paid || 0
       const revenuePartial   = rev.revenue_partial || 0
       const revenuePending   = rev.revenue_pending || 0
@@ -11195,6 +11202,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
         project_budget: projectBudget,
         revenue_collected: revenueCollected,
         revenue_collected_original: revenueCollectedOriginal,
+        paid_amount_total: paidAmountTotal,
         revenue_paid: revenuePaid,
         revenue_partial: revenuePartial,
         revenue_pending: revenuePending,
@@ -11226,6 +11234,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       acc.project_budget             += (p.project_budget             || 0)
       acc.revenue_collected          += (p.revenue_collected          || 0)
       acc.revenue_collected_original += (p.revenue_collected_original || 0)
+      acc.paid_amount_total          += (p.paid_amount_total          || 0)
       acc.revenue_pending            += (p.revenue_pending            || 0)
       acc.revenue_total              += (p.revenue_total              || 0)
       acc.direct_cost                += (p.direct_cost                || 0)
@@ -11235,7 +11244,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       acc.profit                     += (p.profit                     || 0)
       return acc
     }, { contract_value:0, project_budget:0, revenue_collected:0, revenue_collected_original:0,
-         revenue_pending:0, revenue_total:0,
+         paid_amount_total:0, revenue_pending:0, revenue_total:0,
          direct_cost:0, labor_cost:0, shared_cost:0, total_cost:0, profit:0 })
 
     totals.margin = totals.revenue_collected > 0
@@ -11297,17 +11306,23 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       GROUP BY project_id
     `).all()
 
-    // ── Doanh thu gốc (theo HĐ) toàn vòng đời – COALESCE(paid_amount, amount)
+    // ── Doanh thu gốc (theo HĐ) toàn vòng đời – amount (nghiệm thu)
+    // ĐỒNG THỜI lấy paid_amount_total (dòng tiền thực thu)
     const revOrigRowsLT = await db.prepare(`
       SELECT pr.project_id,
-        SUM(COALESCE(pq.paid_amount, pr.amount)) as revenue_collected_original
+        SUM(pr.amount)                   as revenue_collected_original,
+        SUM(COALESCE(pq.paid_amount, 0)) as paid_amount_total
       FROM project_revenues pr
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status IN ('paid','partial')
       GROUP BY pr.project_id
     `).all()
     const revOrigMapLT: Record<number, number> = {}
-    ;(revOrigRowsLT.results as any[]).forEach((r: any) => { revOrigMapLT[r.project_id] = r.revenue_collected_original || 0 })
+    const paidAmtMapLT: Record<number, number> = {}
+    ;(revOrigRowsLT.results as any[]).forEach((r: any) => {
+      revOrigMapLT[r.project_id] = r.revenue_collected_original || 0
+      paidAmtMapLT[r.project_id] = r.paid_amount_total || 0
+    })
 
     // ── 3. Chi phí trực tiếp theo dự án (TOÀN BỘ – không lọc ngày)
     const directCostRows = await db.prepare(`
@@ -11363,7 +11378,8 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       const feePctLT         = p.management_fee_pct || 0
       const projectBudgetLT  = contractValue > 0 ? Math.round(contractValue * (1 - feePctLT / 100)) : 0
       const revenueCollected = rev.revenue_collected || 0
-      const revenueCollectedOriginal = revOrigMapLT[p.id] || revenueCollected  // gross trước phí QL
+      const revenueCollectedOriginal = revOrigMapLT[p.id] || revenueCollected  // nghiệm thu gốc
+      const paidAmountTotal  = paidAmtMapLT[p.id] || 0                         // dòng tiền thực thu
       const revenuePaid      = rev.revenue_paid      || 0
       const revenuePartial   = rev.revenue_partial   || 0
       const revenuePending   = rev.revenue_pending   || 0
@@ -11402,6 +11418,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
         project_budget: projectBudgetLT,
         revenue_collected: revenueCollected,
         revenue_collected_original: revenueCollectedOriginal,
+        paid_amount_total: paidAmountTotal,
         revenue_paid: revenuePaid,
         revenue_partial: revenuePartial,
         revenue_pending: revenuePending,
@@ -11433,6 +11450,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       acc.project_budget             += (p.project_budget             || 0)
       acc.revenue_collected          += (p.revenue_collected          || 0)
       acc.revenue_collected_original += (p.revenue_collected_original || 0)
+      acc.paid_amount_total          += (p.paid_amount_total          || 0)
       acc.revenue_pending            += (p.revenue_pending            || 0)
       acc.revenue_total              += (p.revenue_total              || 0)
       acc.direct_cost                += (p.direct_cost                || 0)
@@ -11442,7 +11460,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       acc.profit                     += (p.profit                     || 0)
       return acc
     }, { contract_value:0, project_budget:0, revenue_collected:0, revenue_collected_original:0,
-         revenue_pending:0, revenue_total:0,
+         paid_amount_total:0, revenue_pending:0, revenue_total:0,
          direct_cost:0, labor_cost:0, shared_cost:0, total_cost:0, profit:0 })
 
     totals.margin = totals.revenue_collected > 0

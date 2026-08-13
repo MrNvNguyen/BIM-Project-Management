@@ -15936,61 +15936,162 @@ async function renderProjectFinancialTab(force = false) {
     // Bar helper (width capped at 100%)
     const bar = (pct, color) => `<div class="w-full bg-gray-100 rounded-full h-1.5 mt-1"><div class="h-1.5 rounded-full ${color}" style="width:${Math.min(100,Math.max(0,pct))}%"></div></div>`
 
-    // ── KPI summary row ─────────────────────────────────────────────
-    const hasBudget = totals.project_budget > 0
-    // Tính công nợ = GTHĐ - đã thu theo HĐ
-    const revOrig       = totals.revenue_collected_original || totals.revenue_collected
-    const hasOrigDiff   = revOrig > totals.revenue_collected + 1
-    const debtRemaining = Math.max(0, totals.contract_value - revOrig)
-    // Helper: số KPI dùng class kpi-value (clamp font-size, no-wrap)
-    const numCls = 'kpi-value'
+    // ── KPI summary rows (3 hàng × 4 cột) ─────────────────────────
+    // Row 1: GTHĐ | Đã nghiệm thu | Giá trị TT thực tế | Công nợ theo HĐ
+    // Row 2: Ngân sách | Doanh thu NS | Công nợ NS | Tiến độ NS
+    // Row 3: Tổng chi phí | Lợi nhuận ròng | Biên lợi nhuận | Tiến độ tổng theo HĐ
+
+    const nghiemThuTotal  = totals.revenue_collected_original || totals.revenue_collected
+    const paidAmtTotal    = totals.paid_amount_total || 0
+    // Công nợ theo HĐ = GTHĐ - Nghiệm thu
+    const debtHD          = Math.max(0, totals.contract_value - nghiemThuTotal)
+    // Công nợ theo NS  = Ngân sách - Doanh thu NS
+    const debtNS          = Math.max(0, totals.project_budget - totals.revenue_collected)
+    const hasBudget       = totals.project_budget > 0
+    const numCls          = 'kpi-value'
+
     const kpiHtml = `
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+      <!-- ── Hàng 1: Hợp đồng ───────────────────────────────────────── -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+
+        <!-- Tổng GTHĐ -->
         <div class="kpi-card" style="border-left-color:#6366f1">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng GTHĐ</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-file-signature mr-1 text-indigo-400"></i>Tổng GTHĐ
+          </div>
           <div class="${numCls} text-indigo-600">${fmtM(totals.contract_value)}</div>
           <div class="text-xs text-gray-400 mt-1">Giá trị hợp đồng</div>
         </div>
-        ${hasBudget ? `
-        <div class="kpi-card" style="border-left-color:#059669;background:linear-gradient(135deg,#f0fdf4,#ffffff)">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide"><i class="fas fa-wallet mr-1 text-emerald-500"></i>Tổng ngân sách</div>
-          <div class="${numCls} text-emerald-700">${fmtM(totals.project_budget)}</div>
-          <div class="text-xs text-gray-400 mt-1">Sau trừ % phí quản lý</div>
-        </div>` : ''}
-        <div class="kpi-card" style="border-left-color:#06b6d4">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide"><i class="fas fa-file-contract mr-1 text-cyan-500"></i>Đã thu theo HĐ</div>
-          <div class="${numCls} text-cyan-600">${fmtM(revOrig)}</div>
-          <div class="text-xs mt-1 space-y-0.5">
-            ${totals.contract_value > 0
-              ? `<div class="${debtRemaining > 0 ? 'text-red-400 font-medium' : 'text-green-500'}"><i class="fas fa-${debtRemaining > 0 ? 'exclamation-circle' : 'check-circle'} mr-0.5"></i>Công nợ: ${fmtM(debtRemaining)}</div>`
-              : '<div class="text-gray-400">Số tiền gốc khách TT</div>'}
-            ${totals.revenue_pending > 0 ? `<div class="text-amber-500"><i class="fas fa-clock mr-0.5"></i>Chờ thu: ${fmtM(totals.revenue_pending)}</div>` : ''}
+
+        <!-- Đã nghiệm thu (Doanh thu HĐ) -->
+        <div class="kpi-card" style="border-left-color:#0891b2">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-clipboard-check mr-1 text-cyan-500"></i>Đã nghiệm thu
+          </div>
+          <div class="${numCls} text-cyan-700">${fmtM(nghiemThuTotal)}</div>
+          <div class="text-xs text-gray-400 mt-1">
+            Doanh thu HĐ${totals.contract_value > 0 ? ` · ${pct(nghiemThuTotal, totals.contract_value)}%` : ''}
+          </div>
+          ${totals.revenue_pending > 0 ? `<div class="text-xs text-amber-500 mt-0.5"><i class="fas fa-clock mr-0.5"></i>Chờ NT: ${fmtM(totals.revenue_pending)}</div>` : ''}
+        </div>
+
+        <!-- Giá trị TT thực tế (Dòng tiền) -->
+        <div class="kpi-card" style="border-left-color:#2563eb">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-money-bill-wave mr-1 text-blue-400"></i>Giá trị TT thực tế
+          </div>
+          <div class="${numCls} text-blue-600">${paidAmtTotal > 0 ? fmtM(paidAmtTotal) : '—'}</div>
+          <div class="text-xs text-gray-400 mt-1">
+            Dòng tiền thực thu${nghiemThuTotal > 0 && paidAmtTotal > 0 ? ` · ${pct(paidAmtTotal, nghiemThuTotal)}% NT` : ''}
           </div>
         </div>
+
+        <!-- Công nợ theo HĐ -->
+        <div class="kpi-card" style="border-left-color:${debtHD > 0 ? '#dc2626' : '#16a34a'}">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-exclamation-circle mr-1 ${debtHD > 0 ? 'text-red-400' : 'text-green-400'}"></i>Công nợ theo HĐ
+          </div>
+          <div class="${numCls} ${debtHD > 0 ? 'text-red-500' : 'text-green-600'}">${fmtM(debtHD)}</div>
+          <div class="text-xs mt-1 ${debtHD > 0 ? 'text-red-400' : 'text-green-500'}">
+            ${debtHD > 0 ? `GTHĐ − Nghiệm thu` : '✅ Đã nghiệm thu đủ'}
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Hàng 2: Ngân sách ──────────────────────────────────────── -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+
+        <!-- Tổng ngân sách -->
+        <div class="kpi-card" style="border-left-color:#059669;${hasBudget ? 'background:linear-gradient(135deg,#f0fdf4,#ffffff)' : ''}">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-wallet mr-1 text-emerald-500"></i>Tổng ngân sách
+          </div>
+          <div class="${numCls} text-emerald-700">${hasBudget ? fmtM(totals.project_budget) : '—'}</div>
+          <div class="text-xs text-gray-400 mt-1">${hasBudget ? 'Sau trừ % phí quản lý' : 'Chưa có ngân sách'}</div>
+        </div>
+
+        <!-- Doanh thu NS -->
         <div class="kpi-card" style="border-left-color:#10b981">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Doanh thu theo NS</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-chart-line mr-1 text-green-500"></i>Doanh thu NS
+          </div>
           <div class="${numCls} text-emerald-600">${fmtM(totals.revenue_collected)}</div>
-          <div class="text-xs text-gray-400 mt-1">${hasOrigDiff ? 'Sau trừ phí QL' : 'Doanh thu ghi nhận'}</div>
+          <div class="text-xs text-gray-400 mt-1">
+            Sau VAT + phí QL${hasBudget && totals.project_budget > 0 ? ` · ${pct(totals.revenue_collected, totals.project_budget)}% NS` : ''}
+          </div>
         </div>
+
+        <!-- Công nợ theo NS -->
+        <div class="kpi-card" style="border-left-color:${debtNS > 0 && hasBudget ? '#f59e0b' : '#16a34a'}">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-balance-scale mr-1 ${debtNS > 0 && hasBudget ? 'text-amber-400' : 'text-green-400'}"></i>Công nợ theo NS
+          </div>
+          <div class="${numCls} ${debtNS > 0 && hasBudget ? 'text-amber-600' : 'text-green-600'}">${hasBudget ? fmtM(debtNS) : '—'}</div>
+          <div class="text-xs mt-1 ${debtNS > 0 && hasBudget ? 'text-amber-500' : 'text-green-500'}">
+            ${hasBudget ? (debtNS > 0 ? 'NS − Doanh thu NS' : '✅ Đạt ngân sách') : 'Không có ngân sách'}
+          </div>
+        </div>
+
+        <!-- Tiến độ NS -->
+        <div class="kpi-card" style="border-left-color:#7c3aed">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-tachometer-alt mr-1 text-violet-500"></i>Tiến độ NS
+          </div>
+          <div class="${numCls} text-violet-600">${hasBudget ? totals.budget_progress : totals.contract_progress}%</div>
+          <div class="text-xs text-gray-400 mt-1">Tỷ lệ thực hiện${hasBudget ? ' / NS' : ' / HĐ'}</div>
+          <div class="w-full bg-gray-100 rounded-full h-1.5 mt-1.5">
+            <div class="h-1.5 rounded-full bg-violet-400" style="width:${Math.min(100, hasBudget ? totals.budget_progress : totals.contract_progress)}%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Hàng 3: Chi phí & Lợi nhuận ───────────────────────────── -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+
+        <!-- Tổng chi phí -->
         <div class="kpi-card" style="border-left-color:#ef4444">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tổng chi phí</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-receipt mr-1 text-red-400"></i>Tổng chi phí
+          </div>
           <div class="${numCls} text-red-500">${fmtM(totals.total_cost)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.total_cost, totals.contract_value) + '% GTHĐ · ' : ''}${totals.pct_cost}% DT</div>
+          <div class="text-xs text-gray-400 mt-1">
+            ${totals.contract_value > 0 ? pct(totals.total_cost, totals.contract_value) + '% GTHĐ' : ''}${totals.contract_value > 0 && totals.revenue_collected > 0 ? ' · ' : ''}${totals.revenue_collected > 0 ? totals.pct_cost + '% DT' : ''}
+          </div>
         </div>
-        <div class="kpi-card" style="border-left-color:#3b82f6">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Lợi nhuận ròng</div>
+
+        <!-- Lợi nhuận ròng -->
+        <div class="kpi-card" style="border-left-color:${totals.profit >= 0 ? '#3b82f6' : '#f97316'}">
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-coins mr-1 ${totals.profit >= 0 ? 'text-blue-400' : 'text-orange-400'}"></i>Lợi nhuận ròng
+          </div>
           <div class="${numCls} ${profitColor(totals.profit)}">${fmtM(totals.profit)}</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.contract_value > 0 ? pct(totals.profit, totals.contract_value) + '% GTHĐ' : 'Sau toàn bộ CP'}</div>
+          <div class="text-xs text-gray-400 mt-1">
+            ${totals.contract_value > 0 ? pct(totals.profit, totals.contract_value) + '% GTHĐ' : 'Sau toàn bộ CP'}
+          </div>
         </div>
+
+        <!-- Biên lợi nhuận -->
         <div class="kpi-card" style="border-left-color:#8b5cf6">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Biên lợi nhuận</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-percentage mr-1 text-purple-400"></i>Biên lợi nhuận
+          </div>
           <div class="${numCls} ${marginColor(totals.margin)}">${totals.margin}%</div>
-          <div class="text-xs text-gray-400 mt-1">${totals.margin>=30?'✅ Tốt':totals.margin>=10?'🟡 Trung bình':'🔴 Thấp'}</div>
+          <div class="text-xs text-gray-400 mt-1">${totals.margin >= 30 ? '✅ Tốt' : totals.margin >= 10 ? '🟡 Trung bình' : '🔴 Thấp'}</div>
+          <div class="w-full bg-gray-100 rounded-full h-1.5 mt-1.5">
+            <div class="h-1.5 rounded-full ${totals.margin >= 30 ? 'bg-green-400' : totals.margin >= 10 ? 'bg-blue-400' : totals.margin >= 0 ? 'bg-yellow-400' : 'bg-red-400'}" style="width:${Math.min(100, Math.max(0, totals.margin))}%"></div>
+          </div>
         </div>
+
+        <!-- Tiến độ tổng theo HĐ -->
         <div class="kpi-card" style="border-left-color:#f59e0b">
-          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">Tiến độ GTHĐ</div>
+          <div class="text-xs text-gray-500 mb-1 font-medium uppercase tracking-wide">
+            <i class="fas fa-flag-checkered mr-1 text-amber-500"></i>Tiến độ tổng
+          </div>
           <div class="${numCls} text-amber-600">${totals.contract_progress}%</div>
-          <div class="text-xs text-gray-400 mt-1">Doanh thu / GTHĐ</div>
+          <div class="text-xs text-gray-400 mt-1">Nghiệm thu / GTHĐ</div>
+          <div class="w-full bg-gray-100 rounded-full h-1.5 mt-1.5">
+            <div class="h-1.5 rounded-full bg-amber-400" style="width:${Math.min(100, totals.contract_progress)}%"></div>
+          </div>
         </div>
       </div>
     `
