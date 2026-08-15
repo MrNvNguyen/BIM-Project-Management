@@ -23821,9 +23821,9 @@ async function _saveEstimateItem(id, projectId) {
   if (amount <= 0) { alert('Vui lòng nhập giá trị dự toán > 0'); return }
   try {
     if (id) {
-      await api(`/projects/${projectId}/estimates/${id}`, { method:'PUT', body: JSON.stringify({ category:cat, description:desc, amount, unit, notes }) })
+      await api(`/projects/${projectId}/estimates/${id}`, { method:'PUT', data: { category:cat, description:desc, amount, unit, notes } })
     } else {
-      await api(`/projects/${projectId}/estimates`, { method:'POST', body: JSON.stringify({ category:cat, description:desc, amount, unit, notes }) })
+      await api(`/projects/${projectId}/estimates`, { method:'POST', data: { category:cat, description:desc, amount, unit, notes } })
     }
     $('estimateModal')?.remove()
     await _reloadEstimateTab(projectId)
