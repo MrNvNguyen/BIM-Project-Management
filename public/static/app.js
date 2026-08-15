@@ -23604,8 +23604,28 @@ async function _reloadEstimateTab(projectId) {
 }
 
 function _renderEstimateTab(container, projectId, estimates, vsActual) {
-  const fmtE = v => v > 0 ? (v/1e6).toFixed(1).replace(/\.0$/,'') + ' tr' : v < 0 ? '-' + (Math.abs(v)/1e6).toFixed(1).replace(/\.0$/,'') + ' tr' : '—'
-  const fmtFull = v => v ? v.toLocaleString('vi-VN') + ' ₫' : '—'
+  // Format tiền: tỷ nếu ≥ 1 tỷ, tr nếu ≥ 1 triệu, có dấu phân cách nghìn
+  const fmtE = v => {
+    if (v === 0 || v == null) return '—'
+    const abs = Math.abs(v), sign = v < 0 ? '-' : ''
+    if (abs >= 1e9) {
+      const bil = abs / 1e9
+      const bilStr = bil % 1 === 0 ? bil.toLocaleString('vi-VN') : bil.toFixed(2).replace(/\.?0+$/, '')
+      return sign + bilStr + ' tỷ'
+    }
+    const m = abs / 1e6
+    const mStr = m % 1 === 0 ? m.toLocaleString('vi-VN') : m.toFixed(1).replace(/\.0$/, '')
+    return sign + mStr + ' tr'
+  }
+  // Format số nguyên đầy đủ có đơn vị tỷ/tr/K phù hợp với bảng chi tiết
+  const fmtAmt = v => {
+    if (!v || v === 0) return '—'
+    const abs = Math.abs(v), sign = v < 0 ? '-' : ''
+    if (abs >= 1e9) return sign + (abs/1e9).toLocaleString('vi-VN', {minimumFractionDigits:0,maximumFractionDigits:3}) + ' tỷ'
+    if (abs >= 1e6) return sign + (abs/1e6).toLocaleString('vi-VN', {minimumFractionDigits:0,maximumFractionDigits:1}) + ' tr'
+    if (abs >= 1e3) return sign + (abs/1e3).toLocaleString('vi-VN', {minimumFractionDigits:0,maximumFractionDigits:1}) + ' K'
+    return sign + abs.toLocaleString('vi-VN')
+  }
   const hasEst = estimates && estimates.length > 0
   const s = vsActual?.summary || {}
   const act = vsActual?.actual || {}
@@ -23689,7 +23709,7 @@ function _renderEstimateTab(container, projectId, estimates, vsActual) {
     const itemsHtml = items.map(item => `
       <tr class="border-b border-gray-50 hover:bg-gray-50/50 group" id="est-row-${item.id}">
         <td class="py-1.5 px-3 pl-8 text-xs text-gray-700">${item.description}</td>
-        <td class="py-1.5 px-3 text-right text-xs font-semibold text-indigo-700">${item.amount > 0 ? item.amount.toLocaleString('vi-VN') : '—'}</td>
+        <td class="py-1.5 px-3 text-right text-xs font-semibold text-indigo-700" title="${item.amount > 0 ? item.amount.toLocaleString('vi-VN') + ' ₫' : ''}">${fmtAmt(item.amount)}</td>
         <td class="py-1.5 px-3 text-xs text-gray-400">${item.unit||''}</td>
         <td class="py-1.5 px-3 text-xs text-gray-400 max-w-[150px] truncate" title="${item.notes||''}">${item.notes||''}</td>
         <td class="py-1.5 px-3 text-center whitespace-nowrap">
@@ -23704,7 +23724,7 @@ function _renderEstimateTab(container, projectId, estimates, vsActual) {
           <i class="fas ${catCfg.icon} mr-1.5"></i>${catCfg.label}
           <span class="text-xs font-normal text-gray-400 ml-1">(${items.length} hạng mục)</span>
         </td>
-        <td class="py-2 px-3 text-right font-bold text-sm" style="color:${catCfg.color}">${catTotal > 0 ? catTotal.toLocaleString('vi-VN') : '—'}</td>
+        <td class="py-2 px-3 text-right font-bold text-sm" style="color:${catCfg.color}" title="${catTotal > 0 ? catTotal.toLocaleString('vi-VN') + ' ₫' : ''}">${fmtAmt(catTotal)}</td>
         <td colspan="2"></td>
         <td class="py-2 px-3 text-center">
           <button onclick="openEstimateAddModal('${catKey}',${projectId})"
@@ -23729,7 +23749,7 @@ function _renderEstimateTab(container, projectId, estimates, vsActual) {
           <thead>
             <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide border-b border-gray-200">
               <th class="py-2 px-3 text-left">Hạng mục</th>
-              <th class="py-2 px-3 text-right">Giá trị (₫)</th>
+              <th class="py-2 px-3 text-right">Giá trị</th>
               <th class="py-2 px-3 text-left">Đơn vị</th>
               <th class="py-2 px-3 text-left">Ghi chú</th>
               <th class="py-2 px-3 text-center w-20">Thao tác</th>
@@ -23781,11 +23801,11 @@ function _openEstimateModal(data) {
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="block text-xs font-medium text-gray-600 mb-1">Giá trị dự toán (₫) <span class="text-red-500">*</span></label>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Giá trị dự toán (VNĐ) <span class="text-red-500">*</span></label>
             <input id="estAmt" type="number" value="${amount||0}" min="0" step="1000000"
               class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 outline-none"
-              oninput="$('estAmtPreview').textContent = this.value > 0 ? (this.value/1e6).toFixed(2) + ' triệu ₫' : ''">
-            <div id="estAmtPreview" class="text-xs text-indigo-500 mt-1 font-medium">${amount > 0 ? (amount/1e6).toFixed(2) + ' triệu ₫' : ''}</div>
+              oninput="const v=parseFloat(this.value)||0; const el=$('estAmtPreview'); if(v>=1e9) el.textContent=(v/1e9).toLocaleString('vi-VN',{maximumFractionDigits:3})+' tỷ ₫'; else if(v>=1e6) el.textContent=(v/1e6).toLocaleString('vi-VN',{maximumFractionDigits:2})+' triệu ₫'; else if(v>0) el.textContent=v.toLocaleString('vi-VN')+' ₫'; else el.textContent=''">
+            <div id="estAmtPreview" class="text-xs text-indigo-500 mt-1 font-medium h-4">${amount > 0 ? (amount>=1e9 ? (amount/1e9).toLocaleString('vi-VN',{maximumFractionDigits:3})+' tỷ ₫' : (amount/1e6).toLocaleString('vi-VN',{maximumFractionDigits:2})+' triệu ₫') : ''}</div>
           </div>
           <div>
             <label class="block text-xs font-medium text-gray-600 mb-1">Đơn vị</label>
