@@ -2052,10 +2052,11 @@ async function openProjectDetail(id, openChatTab = false) {
             class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-table mr-1"></i>Tổng hợp CV
           </button>
+          ${currentUser?.role === 'system_admin' ? `
           <button id="projTab-estimate" onclick="switchProjectTab('estimate',${project.id})"
             class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-calculator mr-1"></i>Dự toán
-          </button>
+          </button>` : ''}
           <button id="projTab-hstk" onclick="switchProjectTab('hstk',${project.id})"
             class="tab-btn text-xs py-2 px-4 whitespace-nowrap" style="border:2px solid #ef4444;color:#ef4444">
             <i class="fas fa-clipboard-check mr-1"></i>Checklist HSTK
@@ -2099,10 +2100,11 @@ async function openProjectDetail(id, openChatTab = false) {
         <div id="projPanel-summary" class="hidden p-4" style="min-height:400px">
           <div id="workSummaryContainer_${project.id}"></div>
         </div>
-        <!-- Estimate panel (lazy-loaded) -->
+        <!-- Estimate panel (lazy-loaded, system_admin only) -->
+        ${currentUser?.role === 'system_admin' ? `
         <div id="projPanel-estimate" class="hidden p-4" style="min-height:400px">
           <div id="estimateContainer_${project.id}"></div>
-        </div>
+        </div>` : ''}
         <!-- Checklist HSTK Panel -->
         <div id="projPanel-hstk" class="hidden p-4" style="min-height:400px">
           <div id="hstkContainer_${project.id}"></div>

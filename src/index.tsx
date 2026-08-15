@@ -12894,8 +12894,8 @@ async function syncPaymentToRevenue(
 
 const ESTIMATE_CATEGORIES = ['revenue','direct_cost','labor','shared','other'] as const
 
-// GET /api/projects/:id/estimates — danh sách dự toán
-app.get('/api/projects/:id/estimates', authMiddleware, async (c) => {
+// GET /api/projects/:id/estimates — danh sách dự toán (system_admin only)
+app.get('/api/projects/:id/estimates', authMiddleware, adminOnly, async (c) => {
   const db        = c.env.DB
   const projectId = parseInt(c.req.param('id'))
   const rows = await db.prepare(
@@ -12952,8 +12952,8 @@ app.delete('/api/projects/:id/estimates/:eid', authMiddleware, adminOnly, async 
   return c.json({ success: true })
 })
 
-// GET /api/projects/:id/estimate-vs-actual — so sánh dự toán vs thực tế toàn vòng đời
-app.get('/api/projects/:id/estimate-vs-actual', authMiddleware, async (c) => {
+// GET /api/projects/:id/estimate-vs-actual — so sánh dự toán vs thực tế (system_admin only)
+app.get('/api/projects/:id/estimate-vs-actual', authMiddleware, adminOnly, async (c) => {
   const db        = c.env.DB
   const projectId = parseInt(c.req.param('id'))
 
