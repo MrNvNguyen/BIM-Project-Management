@@ -580,7 +580,18 @@ function logout() {
 // ================================================================
 // NAVIGATION
 // ================================================================
-function navigate(page) {
+// Valid pages that can be deep-linked via URL hash
+const _navigablePages = [
+  'dashboard', 'projects', 'tasks', 'timesheet', 'gantt', 'costs',
+  'assets', 'depreciation', 'users', 'profile', 'email-admin',
+  'productivity', 'finance-project', 'labor-cost', 'cost-types',
+  'system-config', 'analytics', 'legal', 'leave', 'executive-dashboard'
+]
+
+// Flag to prevent hashchange loop when navigate() itself sets the hash
+let _navigatingByHash = false
+
+function navigate(page, opts = {}) {
   // Stop project chat polling when leaving project-detail
   if (window._currentProjectDetailId && page !== 'project-detail') {
     const pid = window._currentProjectDetailId
@@ -617,11 +628,25 @@ function navigate(page) {
     productivity: 'Năng suất nhân sự', 'finance-project': 'Tài chính dự án',
     'labor-cost': 'Chi phí lương', 'cost-types': 'Loại chi phí',
     'system-config': 'Cấu hình hệ thống', analytics: 'Báo cáo & Phân tích',
-    legal: 'Hồ Sơ Pháp Lý Dự Án', leave: 'Đăng ký Nghỉ phép'
+    legal: 'Hồ Sơ Pháp Lý Dự Án', leave: 'Đăng ký Nghỉ phép',
+    'executive-dashboard': '🏆 Executive PMO Hub'
   }
   $('breadcrumb').textContent = breadcrumbs[page] || page
 
-  if (page === 'dashboard') loadDashboard()
+  // Update URL hash for deep-linking (skip for sub-pages like project-detail)
+  if (_navigablePages.includes(page) && !opts.fromHash) {
+    const newHash = '#/' + page
+    if (window.location.hash !== newHash) {
+      _navigatingByHash = true
+      window.location.hash = newHash
+      setTimeout(() => { _navigatingByHash = false }, 100)
+    }
+  }
+
+  if (page === 'executive-dashboard') {
+    if (typeof initExecutiveDashboard === 'function') initExecutiveDashboard()
+  }
+  else if (page === 'dashboard') loadDashboard()
   else if (page === 'projects') loadProjects()
   else if (page === 'tasks') loadTasks()
   else if (page === 'timesheet') loadTimesheets()
@@ -643,6 +668,17 @@ function navigate(page) {
 
   closeAllDropdowns()
 }
+
+// Handle browser back/forward button via hash changes
+window.addEventListener('hashchange', () => {
+  if (_navigatingByHash) return  // Avoid loop: navigate() triggered this
+  if (!authToken) return          // Not logged in yet
+  const hash = window.location.hash // e.g. "#/projects"
+  const page = hash.replace(/^#\//, '') || 'dashboard'
+  if (_navigablePages.includes(page)) {
+    navigate(page, { fromHash: true })
+  }
+})
 
 function toggleSidebar() {
   const sidebar = $('sidebar')
@@ -782,6 +818,13 @@ async function initApp() {
     document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none')
   } else {
     document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none')
+  }
+
+  // Executive PMO Hub: hiện cho system_admin và project_admin
+  if (currentUser.role === 'system_admin' || currentUser.role === 'project_admin') {
+    document.querySelectorAll('.pmo-only').forEach(el => el.style.display = 'flex')
+  } else {
+    document.querySelectorAll('.pmo-only').forEach(el => el.style.display = 'none')
   }
 
   // Initialize DB
@@ -17474,13 +17517,13 @@ function renderPackageStageCard(stage, pkgColor) {
       <table class="w-full" style="font-size:13px">
         <thead>
           <tr style="background:${sc.bg}">
-            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:70px">STT</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:40px" title="Click checkbox để đánh dấu hoàn thành">✓</th>
+            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:60px">STT</th>
             <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:100px">Hạn</th>
-            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Ngày HT thực tế</th>
-            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
-            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:160px">Ghi chú</th>
-            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:160px">Thao tác</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Ngày HT thực tế</th>
+            <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:170px">Ghi chú</th>
+            <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Thao tác</th>
           </tr>
         </thead>
         <tbody>`}
@@ -17494,14 +17537,20 @@ function renderPackageStageCard(stage, pkgColor) {
         html += renderLegalItemRow(child, sc, rowBg, true, stage.id)
       })
     })
-    html += `</tbody></table>`
   }
+  // Quick-add inline row (ẩn mặc định)
+  html += renderLegalQuickAddRow(stage.id, _legalCurrentProjectId, null)
+  html += `</tbody></table>`
 
   html += `
-      <div style="padding:7px 14px;border-top:1px solid #f3f4f6;display:flex;justify-content:flex-end">
+      <div style="padding:7px 14px;border-top:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
+        <button onclick="legalQuickAddShow(${stage.id})"
+          style="font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:7px;padding:5px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:5px">
+          <i class="fas fa-plus" style="font-size:10px"></i> Thêm dòng
+        </button>
         <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
           style="font-size:11px;color:#6366f1;background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:3px">
-          <i class="fas fa-plus-circle" style="font-size:10px"></i> Thêm hạng mục
+          <i class="fas fa-external-link-alt" style="font-size:9px"></i> Nhập chi tiết
         </button>
       </div>
     </div>
@@ -17744,13 +17793,13 @@ function renderLegalStages(stages) {
         <table class="w-full" style="font-size:13px">
           <thead>
             <tr style="background:${sc.bg}">
-              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:70px">STT</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:40px" title="Click checkbox để đánh dấu hoàn thành">✓</th>
+              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:60px">STT</th>
               <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:100px">Hạn</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Ngày HT thực tế</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Trạng thái</th>
-              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:160px">Ghi chú</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:160px">Thao tác</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Ngày HT thực tế</th>
+              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:170px">Ghi chú</th>
+              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Thao tác</th>
             </tr>
           </thead>
           <tbody>`
@@ -17762,14 +17811,20 @@ function renderLegalStages(stages) {
         html += renderLegalItemRow(child, sc, rowBg, true, stage.id)
       })
     })
+    // Quick-add inline row
+    html += renderLegalQuickAddRow(stage.id, _legalCurrentProjectId, null)
 
     html += `
           </tbody>
         </table>
-        <div style="padding:8px 16px;border-top:1px solid #f3f4f6;display:flex;justify-content:flex-end">
+        <div style="padding:8px 16px;border-top:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
+          <button onclick="legalQuickAddShow(${stage.id})"
+            style="font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:7px;padding:5px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:5px">
+            <i class="fas fa-plus" style="font-size:10px"></i> Thêm dòng
+          </button>
           <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
-            style="font-size:12px;color:#6366f1;background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
-            <i class="fas fa-plus-circle" style="font-size:11px"></i> Thêm hạng mục vào giai đoạn này
+            style="font-size:11px;color:#6366f1;background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+            <i class="fas fa-external-link-alt" style="font-size:9px"></i> Nhập chi tiết
           </button>
         </div>
       </div><!-- /body -->
@@ -17882,56 +17937,632 @@ function openAddStageModal() {
     .catch(err => toast('Lỗi: ' + err.message, 'error'))
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// QUICK-ADD ROW — thêm dòng công việc trực tiếp trong bảng (kiểu Excel)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Render hàng nhập liệu nhanh (ẩn mặc định)
+function renderLegalQuickAddRow(stageId, projectId, parentId) {
+  const rowId = `legal-quickadd-${stageId}${parentId ? '-'+parentId : ''}`
+  return `
+  <tr id="${rowId}" style="display:none;background:#f0fdf4;border-bottom:2px solid #6ee7b7">
+    <!-- checkbox placeholder -->
+    <td style="padding:6px 6px;text-align:center;width:40px">
+      <i class="fas fa-plus" style="color:#10b981;font-size:12px"></i>
+    </td>
+    <!-- STT auto -->
+    <td style="padding:6px 8px;width:60px">
+      <span id="${rowId}-stt" style="font-size:12px;color:#9ca3af;font-style:italic">auto</span>
+    </td>
+    <!-- Title — focus ngay khi hiện -->
+    <td style="padding:4px 6px;min-width:180px">
+      <input id="${rowId}-title" type="text"
+        placeholder="Nhập tên hạng mục... (Enter để lưu)"
+        style="width:100%;border:1.5px solid #6ee7b7;border-radius:6px;padding:5px 8px;font-size:13px;outline:none;background:#fff"
+        onkeydown="legalQuickAddKeydown(event, ${stageId}, ${projectId}, ${parentId||'null'})"
+      />
+    </td>
+    <!-- Hạn -->
+    <td style="padding:4px 6px;width:110px">
+      <input id="${rowId}-due" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+        onkeydown="legalQuickAddKeydown(event, ${stageId}, ${projectId}, ${parentId||'null'})"
+      />
+    </td>
+    <!-- Ngày HT thực tế -->
+    <td style="padding:4px 6px;width:120px">
+      <input id="${rowId}-actual" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+        onkeydown="legalQuickAddKeydown(event, ${stageId}, ${projectId}, ${parentId||'null'})"
+      />
+    </td>
+    <!-- Ghi chú -->
+    <td style="padding:4px 6px;width:170px">
+      <input id="${rowId}-notes" type="text"
+        placeholder="Ghi chú..."
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+        onkeydown="legalQuickAddKeydown(event, ${stageId}, ${projectId}, ${parentId||'null'})"
+      />
+    </td>
+    <!-- Nút Lưu / Huỷ -->
+    <td style="padding:4px 8px;text-align:center;width:120px">
+      <div style="display:flex;gap:5px;justify-content:center;align-items:center">
+        <button onclick="legalQuickAddSave(${stageId}, ${projectId}, ${parentId||'null'})"
+          style="font-size:11px;font-weight:700;color:#fff;background:#10b981;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+          <i class="fas fa-check" style="font-size:10px"></i> Lưu
+        </button>
+        <button onclick="legalQuickAddCancel(${stageId}, ${parentId||'null'})"
+          style="font-size:11px;font-weight:600;color:#6b7280;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:5px 10px;cursor:pointer">
+          Huỷ
+        </button>
+      </div>
+    </td>
+  </tr>`
+}
+
+// Hiện hàng quick-add và focus vào ô title
+function legalQuickAddShow(stageId, parentId) {
+  const rowId = `legal-quickadd-${stageId}${parentId ? '-'+parentId : ''}`
+  const row = document.getElementById(rowId)
+  if (!row) return
+  row.style.display = 'table-row'
+  // Preview STT
+  const sttEl = document.getElementById(`${rowId}-stt`)
+  if (sttEl) {
+    _previewAutoStt(stageId, parentId || null)
+    // Lấy giá trị preview từ hàm hiện có
+    const prev = document.getElementById('legalItemSttPreviewVal')
+    if (prev) sttEl.textContent = prev.textContent
+  }
+  // Focus vào title
+  const titleEl = document.getElementById(`${rowId}-title`)
+  if (titleEl) { titleEl.value = ''; titleEl.focus() }
+  // Clear các ô còn lại
+  const dueEl = document.getElementById(`${rowId}-due`)
+  const actualEl = document.getElementById(`${rowId}-actual`)
+  const notesEl = document.getElementById(`${rowId}-notes`)
+  if (dueEl) dueEl.value = ''
+  if (actualEl) actualEl.value = ''
+  if (notesEl) notesEl.value = ''
+}
+
+// Ẩn hàng quick-add
+function legalQuickAddCancel(stageId, parentId) {
+  const rowId = `legal-quickadd-${stageId}${parentId ? '-'+parentId : ''}`
+  const row = document.getElementById(rowId)
+  if (row) row.style.display = 'none'
+}
+
+// Xử lý phím: Enter = lưu, Escape = huỷ, Tab = chuyển ô
+function legalQuickAddKeydown(e, stageId, projectId, parentId) {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    legalQuickAddCancel(stageId, parentId)
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    legalQuickAddSave(stageId, projectId, parentId)
+  }
+}
+
+// Lưu dòng mới — POST rồi focus vào title hàng tiếp theo (chuỗi thêm liên tục)
+async function legalQuickAddSave(stageId, projectId, parentId) {
+  const rowId = `legal-quickadd-${stageId}${parentId ? '-'+parentId : ''}`
+  const titleEl  = document.getElementById(`${rowId}-title`)
+  const dueEl    = document.getElementById(`${rowId}-due`)
+  const actualEl = document.getElementById(`${rowId}-actual`)
+  const notesEl  = document.getElementById(`${rowId}-notes`)
+
+  const title = titleEl ? titleEl.value.trim() : ''
+  if (!title) {
+    if (titleEl) {
+      titleEl.style.border = '1.5px solid #ef4444'
+      titleEl.focus()
+      setTimeout(() => { if (titleEl) titleEl.style.border = '1.5px solid #6ee7b7' }, 1500)
+    }
+    return
+  }
+
+  // Disable inputs khi đang lưu
+  ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = true })
+
+  try {
+    const res = await api(`/legal/${projectId}/items`, {
+      method: 'POST',
+      data: {
+        stage_id: stageId,
+        parent_id: parentId || null,
+        title,
+        item_type: 'task',
+        due_date: dueEl?.value || null,
+        actual_completion_date: actualEl?.value || null,
+        status: 'pending',
+        notes: notesEl?.value?.trim() || null,
+      }
+    })
+    toast(`✓ Đã thêm: ${title}`)
+
+    // Ẩn row trước khi reload
+    legalQuickAddCancel(stageId, parentId)
+
+    // Reload và sau đó tự động hiện lại quick-add row để nhập tiếp
+    await loadLegalProject(projectId)
+
+    // Sau reload, hiện lại hàng thêm mới để nhập tiếp (luồng liên tục)
+    setTimeout(() => legalQuickAddShow(stageId, parentId), 100)
+
+  } catch(err) {
+    toast('Lỗi thêm hạng mục: ' + err.message, 'error')
+    ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = false })
+    if (titleEl) titleEl.focus()
+  }
+}
+
+// ── Keyboard handler trong ô title của hàng tồn tại ─────────────────────────
+// Enter → thêm dòng mới ngay bên dưới (cùng cấp)
+// Tab   → thêm sub-hạng mục (nếu là parent item)
+function legalItemKeydown(e, itemId, stageId, projectId, parentId, isChild) {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    // Lưu nội dung hiện tại trước
+    const el = e.target
+    if (el) {
+      const val = el.innerText.trim()
+      if (val) legalInlineSave(itemId, 'title', val, null)
+      el.blur()
+    }
+    // Chèn quick-add row ngay bên dưới hàng này
+    legalInsertRowAfter(itemId, stageId, projectId, parentId)
+  } else if (e.key === 'Tab') {
+    e.preventDefault()
+    if (!isChild) {
+      // Tạo sub-hạng mục (child của itemId)
+      const el = e.target
+      if (el) { const val = el.innerText.trim(); if (val) legalInlineSave(itemId, 'title', val, null); el.blur() }
+      legalInsertSubRow(itemId, stageId, projectId)
+    }
+    // Nếu đã là child → Tab không làm gì thêm (hoặc có thể jump sang ô khác)
+  }
+}
+
+// ── Chèn quick-add row ngay sau hàng itemId (cùng cấp) ──────────────────────
+function legalInsertRowAfter(afterItemId, stageId, projectId, parentId) {
+  const anchorId = `legalTaskPanelRow_${afterItemId}`
+  const anchor = document.getElementById(anchorId)
+  if (!anchor) {
+    // Fallback: hiện quick-add cuối stage
+    legalQuickAddShow(stageId, parentId)
+    return
+  }
+
+  const rowId = `legal-quickadd-after-${afterItemId}`
+
+  // Nếu đã tồn tại row này → chỉ focus lại
+  let existingRow = document.getElementById(rowId)
+  if (existingRow) {
+    existingRow.style.display = 'table-row'
+    const titleEl = document.getElementById(`${rowId}-title`)
+    if (titleEl) { titleEl.value = ''; titleEl.focus() }
+    return
+  }
+
+  // Tạo hàng mới và inject vào DOM sau anchor
+  const tr = document.createElement('tr')
+  tr.id = rowId
+  tr.style.cssText = 'background:#f0fdf4;border-bottom:2px solid #6ee7b7'
+  tr.innerHTML = `
+    <td style="padding:6px 6px;text-align:center;width:40px">
+      <i class="fas fa-plus" style="color:#10b981;font-size:12px"></i>
+    </td>
+    <td style="padding:6px 8px;width:60px">
+      <span style="font-size:12px;color:#9ca3af;font-style:italic">auto</span>
+    </td>
+    <td style="padding:4px 6px;min-width:180px">
+      <input id="${rowId}-title" type="text"
+        placeholder="Nhập tên hạng mục... (Enter để lưu, Esc để huỷ)"
+        style="width:100%;border:1.5px solid #6ee7b7;border-radius:6px;padding:5px 8px;font-size:13px;outline:none;background:#fff"
+      />
+    </td>
+    <td style="padding:4px 6px;width:110px">
+      <input id="${rowId}-due" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 6px;width:120px">
+      <input id="${rowId}-actual" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 6px;width:170px">
+      <input id="${rowId}-notes" type="text"
+        placeholder="Ghi chú..."
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 8px;text-align:center;width:120px">
+      <div style="display:flex;gap:5px;justify-content:center;align-items:center">
+        <button onclick="legalInsertRowAfterSave(${afterItemId}, ${stageId}, ${projectId}, ${parentId||'null'})"
+          style="font-size:11px;font-weight:700;color:#fff;background:#10b981;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+          <i class="fas fa-check" style="font-size:10px"></i> Lưu
+        </button>
+        <button onclick="legalInsertRowAfterCancel(${afterItemId})"
+          style="font-size:11px;font-weight:600;color:#6b7280;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:5px 10px;cursor:pointer">
+          Huỷ
+        </button>
+      </div>
+    </td>`
+
+  // Insert sau anchor
+  anchor.insertAdjacentElement('afterend', tr)
+
+  // Bind keyboard handler
+  const titleEl = document.getElementById(`${rowId}-title`)
+  if (titleEl) {
+    titleEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); legalInsertRowAfterCancel(afterItemId) }
+      else if (e.key === 'Enter') { e.preventDefault(); legalInsertRowAfterSave(afterItemId, stageId, projectId, parentId) }
+    })
+    // Bind các ô khác
+    ;[`${rowId}-due`, `${rowId}-actual`, `${rowId}-notes`].forEach(id => {
+      const el2 = document.getElementById(id)
+      if (el2) el2.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); legalInsertRowAfterCancel(afterItemId) }
+        else if (e.key === 'Enter') { e.preventDefault(); legalInsertRowAfterSave(afterItemId, stageId, projectId, parentId) }
+      })
+    })
+    titleEl.value = ''
+    titleEl.focus()
+  }
+}
+
+// Huỷ hàng insert-after
+function legalInsertRowAfterCancel(afterItemId) {
+  const row = document.getElementById(`legal-quickadd-after-${afterItemId}`)
+  if (row) row.remove()
+}
+
+// Lưu hàng insert-after
+async function legalInsertRowAfterSave(afterItemId, stageId, projectId, parentId) {
+  const rowId = `legal-quickadd-after-${afterItemId}`
+  const titleEl  = document.getElementById(`${rowId}-title`)
+  const dueEl    = document.getElementById(`${rowId}-due`)
+  const actualEl = document.getElementById(`${rowId}-actual`)
+  const notesEl  = document.getElementById(`${rowId}-notes`)
+
+  const title = titleEl ? titleEl.value.trim() : ''
+  if (!title) {
+    if (titleEl) {
+      titleEl.style.border = '1.5px solid #ef4444'
+      titleEl.focus()
+      setTimeout(() => { if (titleEl) titleEl.style.border = '1.5px solid #6ee7b7' }, 1500)
+    }
+    return
+  }
+
+  ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = true })
+
+  try {
+    await api(`/legal/${projectId}/items`, {
+      method: 'POST',
+      data: {
+        stage_id: stageId,
+        parent_id: parentId || null,
+        title,
+        item_type: 'task',
+        due_date: dueEl?.value || null,
+        actual_completion_date: actualEl?.value || null,
+        status: 'pending',
+        notes: notesEl?.value?.trim() || null,
+        after_item_id: afterItemId,  // hint cho backend sort_order (optional)
+      }
+    })
+    toast(`✓ Đã thêm: ${title}`)
+
+    // Xóa row tạm
+    legalInsertRowAfterCancel(afterItemId)
+
+    // Reload và sau đó focus vào nút "+" của item vừa tạo (hoặc để user Enter tiếp)
+    await loadLegalProject(projectId)
+
+  } catch(err) {
+    toast('Lỗi thêm hạng mục: ' + err.message, 'error')
+    ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = false })
+    if (titleEl) titleEl.focus()
+  }
+}
+
+// ── Chèn sub-hạng mục (child item) ngay sau parent item ─────────────────────
+function legalInsertSubRow(parentItemId, stageId, projectId) {
+  // Tái dụng legalInsertRowAfter nhưng với parentId = parentItemId
+  // Row sẽ xuất hiện ngay dưới parent, tạo item với parent_id = parentItemId
+  const anchorId = `legalTaskPanelRow_${parentItemId}`
+  const anchor = document.getElementById(anchorId)
+  if (!anchor) {
+    // Fallback: dùng quick-add cuối stage với parentId
+    legalQuickAddShow(stageId, parentItemId)
+    return
+  }
+
+  const rowId = `legal-quickadd-sub-${parentItemId}`
+
+  let existingRow = document.getElementById(rowId)
+  if (existingRow) {
+    existingRow.style.display = 'table-row'
+    const titleEl = document.getElementById(`${rowId}-title`)
+    if (titleEl) { titleEl.value = ''; titleEl.focus() }
+    return
+  }
+
+  const tr = document.createElement('tr')
+  tr.id = rowId
+  tr.style.cssText = 'background:#f5f3ff;border-bottom:2px solid #c4b5fd'
+  tr.innerHTML = `
+    <td style="padding:6px 6px;text-align:center;width:40px">
+      <i class="fas fa-level-down-alt" style="color:#7c3aed;font-size:12px"></i>
+    </td>
+    <td style="padding:6px 8px;width:60px">
+      <span style="font-size:11px;color:#9ca3af;font-style:italic;padding-left:16px">↳ auto</span>
+    </td>
+    <td style="padding:4px 6px;min-width:180px">
+      <div style="padding-left:20px">
+        <input id="${rowId}-title" type="text"
+          placeholder="Tên sub-hạng mục... (Enter lưu, Tab lưu+thêm tiếp, Esc huỷ)"
+          style="width:100%;border:1.5px solid #c4b5fd;border-radius:6px;padding:5px 8px;font-size:13px;outline:none;background:#fff"
+        />
+      </div>
+    </td>
+    <td style="padding:4px 6px;width:110px">
+      <input id="${rowId}-due" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 6px;width:120px">
+      <input id="${rowId}-actual" type="date"
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 6px;width:170px">
+      <input id="${rowId}-notes" type="text"
+        placeholder="Ghi chú..."
+        style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;outline:none"
+      />
+    </td>
+    <td style="padding:4px 8px;text-align:center;width:120px">
+      <div style="display:flex;gap:5px;justify-content:center;align-items:center">
+        <button onclick="legalInsertSubRowSave(${parentItemId}, ${stageId}, ${projectId})"
+          style="font-size:11px;font-weight:700;color:#fff;background:#7c3aed;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+          <i class="fas fa-check" style="font-size:10px"></i> Lưu
+        </button>
+        <button onclick="legalInsertSubRowCancel(${parentItemId})"
+          style="font-size:11px;font-weight:600;color:#6b7280;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:5px 10px;cursor:pointer">
+          Huỷ
+        </button>
+      </div>
+    </td>`
+
+  anchor.insertAdjacentElement('afterend', tr)
+
+  const titleEl = document.getElementById(`${rowId}-title`)
+  if (titleEl) {
+    titleEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); legalInsertSubRowCancel(parentItemId) }
+      else if (e.key === 'Enter') { e.preventDefault(); legalInsertSubRowSave(parentItemId, stageId, projectId) }
+      else if (e.key === 'Tab') {
+        // Tab trong sub-row: lưu và mở thêm sub tiếp theo
+        e.preventDefault()
+        legalInsertSubRowSaveAndContinue(parentItemId, stageId, projectId)
+      }
+    })
+    ;[`${rowId}-due`, `${rowId}-actual`, `${rowId}-notes`].forEach(id => {
+      const el2 = document.getElementById(id)
+      if (el2) el2.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); legalInsertSubRowCancel(parentItemId) }
+        else if (e.key === 'Enter') { e.preventDefault(); legalInsertSubRowSave(parentItemId, stageId, projectId) }
+      })
+    })
+    titleEl.value = ''
+    titleEl.focus()
+  }
+}
+
+function legalInsertSubRowCancel(parentItemId) {
+  const row = document.getElementById(`legal-quickadd-sub-${parentItemId}`)
+  if (row) row.remove()
+}
+
+async function legalInsertSubRowSave(parentItemId, stageId, projectId, andContinue) {
+  const rowId = `legal-quickadd-sub-${parentItemId}`
+  const titleEl  = document.getElementById(`${rowId}-title`)
+  const dueEl    = document.getElementById(`${rowId}-due`)
+  const actualEl = document.getElementById(`${rowId}-actual`)
+  const notesEl  = document.getElementById(`${rowId}-notes`)
+
+  const title = titleEl ? titleEl.value.trim() : ''
+  if (!title) {
+    if (titleEl) {
+      titleEl.style.border = '1.5px solid #ef4444'
+      titleEl.focus()
+      setTimeout(() => { if (titleEl) titleEl.style.border = '1.5px solid #c4b5fd' }, 1500)
+    }
+    return
+  }
+
+  ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = true })
+
+  try {
+    await api(`/legal/${projectId}/items`, {
+      method: 'POST',
+      data: {
+        stage_id: stageId,
+        parent_id: parentItemId,
+        title,
+        item_type: 'task',
+        due_date: dueEl?.value || null,
+        actual_completion_date: actualEl?.value || null,
+        status: 'pending',
+        notes: notesEl?.value?.trim() || null,
+      }
+    })
+    toast(`✓ Đã thêm sub: ${title}`)
+
+    legalInsertSubRowCancel(parentItemId)
+    await loadLegalProject(projectId)
+
+    if (andContinue) {
+      // Mở lại sub-row để nhập tiếp
+      setTimeout(() => legalInsertSubRow(parentItemId, stageId, projectId), 100)
+    }
+
+  } catch(err) {
+    toast('Lỗi thêm sub-hạng mục: ' + err.message, 'error')
+    ;[titleEl, dueEl, actualEl, notesEl].forEach(el => { if (el) el.disabled = false })
+    if (titleEl) titleEl.focus()
+  }
+}
+
+async function legalInsertSubRowSaveAndContinue(parentItemId, stageId, projectId) {
+  await legalInsertSubRowSave(parentItemId, stageId, projectId, true)
+}
+
 function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
-  const statusBadge = `<span class="badge ${LEGAL_STATUS_COLORS[item.status]||'badge-todo'}">${LEGAL_STATUS_LABELS[item.status]||item.status}</span>`
-  const checkIcon = item.status === 'completed'
-    ? `<i class="fas fa-check-circle text-green-500 mr-1"></i>`
-    : (item.item_type === 'document' ? `<i class="fas fa-file-alt text-blue-400 mr-1"></i>` : `<i class="fas fa-tasks text-gray-400 mr-1"></i>`)
+  const isDone     = item.status === 'completed'
+  const isInprog   = item.status === 'in_progress'
+  const isPending  = !isDone && !isInprog
 
-  // STT styling: parent = bold, child = thụt lề + màu xám
-  const sttDisplay = item.stt || ''
-  const sttCellStyle = isChild
-    ? 'color:#6b7280; padding-left:28px; font-size:12px;'
-    : 'font-weight:700; color:#374151;'
-  const titleIndent = isChild ? 'pl-7' : 'font-semibold'
+  // Màu nền hàng
+  const trBg = isDone ? '#f0fdf4' : isChild ? '#fafafa' : '#fff'
 
-  // Hạn + Trạng thái + Ghi chú: luôn hiển thị cho cả parent & child
-  const dueDateCell = item.due_date
-    ? `<span class="text-xs ${new Date(item.due_date) < new Date() && item.status !== 'completed' ? 'text-red-500 font-medium' : 'text-gray-500'}">${fmtDate(item.due_date)}</span>`
-    : `<span class="text-gray-300 text-xs">—</span>`
+  // Checkbox
+  const cbStyle = `width:16px;height:16px;cursor:pointer;accent-color:#10b981;border-radius:4px;flex-shrink:0`
 
-  const actualDateCell = item.actual_completion_date
-    ? `<span class="text-xs text-green-600 font-medium"><i class="fas fa-calendar-check mr-1"></i>${fmtDate(item.actual_completion_date)}</span>`
-    : `<span class="text-gray-300 text-xs">—</span>`
+  // STT
+  const sttDisplay   = item.stt || ''
+  const sttStyle     = isChild ? 'color:#9ca3af;font-size:11px;padding-left:24px' : 'font-weight:700;color:#374151;font-size:13px'
+
+  // Icon type (chỉ khi chưa hoàn thành)
+  const typeIcon = isDone
+    ? `<i class="fas fa-check-circle" style="color:#10b981;font-size:13px;flex-shrink:0"></i>`
+    : item.item_type === 'document'
+      ? `<i class="fas fa-file-alt" style="color:#60a5fa;font-size:12px;flex-shrink:0"></i>`
+      : `<i class="fas fa-tasks" style="color:#94a3b8;font-size:12px;flex-shrink:0"></i>`
+
+  // Trạng thái badge nhỏ (chỉ in_progress)
+  const statusChip = isInprog
+    ? `<span style="font-size:10px;font-weight:600;color:#2563eb;background:#dbeafe;border-radius:10px;padding:1px 7px;white-space:nowrap">⟳ Đang làm</span>`
+    : isPending
+      ? `<span style="font-size:10px;color:#9ca3af;white-space:nowrap">○ Chưa làm</span>`
+      : ''
+
+  // Title — contenteditable, blur to save
+  const titleStyle = `font-size:13px;${isDone?'text-decoration:line-through;color:#9ca3af':'color:#1e293b'};${isChild?'font-size:12px;padding-left:20px':''}`
+
+  // Due date inline
+  const dueDateIsOverdue = item.due_date && new Date(item.due_date) < new Date() && !isDone
+  const dueDateStyle = dueDateIsOverdue
+    ? 'border:1px solid #fca5a5;background:#fef2f2;border-radius:5px;padding:2px 4px;font-size:12px;color:#dc2626;font-weight:600;cursor:pointer;width:100%'
+    : 'border:1px solid transparent;background:transparent;border-radius:5px;padding:2px 4px;font-size:12px;color:#374151;cursor:pointer;width:100%;text-align:center'
+
+  // Actual date inline
+  const actualDateStyle = item.actual_completion_date
+    ? 'border:1px solid transparent;background:transparent;border-radius:5px;padding:2px 4px;font-size:12px;color:#059669;font-weight:600;cursor:pointer;width:100%;text-align:center'
+    : 'border:1px solid transparent;background:transparent;border-radius:5px;padding:2px 4px;font-size:12px;color:#9ca3af;cursor:pointer;width:100%;text-align:center'
 
   return `
-  <tr style="background:${item.status==='completed'?'#f0fdf4':isChild?'#fafafa':'#fff'};border-bottom:1px solid #f3f4f6" class="table-row">
-    <td class="py-2 px-3 text-xs" style="${sttCellStyle}">
-      <div class="flex items-center gap-1">
-        <span>${sttDisplay}</span>
-        <div class="flex flex-col opacity-0 group-hover:opacity-100" style="line-height:1">
-          <button onclick="reorderLegalItem(${item.id},'up')" class="text-gray-300 hover:text-gray-600 leading-none" title="Lên" style="font-size:9px;padding:0"><i class="fas fa-caret-up"></i></button>
-          <button onclick="reorderLegalItem(${item.id},'down')" class="text-gray-300 hover:text-gray-600 leading-none" title="Xuống" style="font-size:9px;padding:0"><i class="fas fa-caret-down"></i></button>
-        </div>
+  <tr id="legal-row-${item.id}" style="background:${trBg};border-bottom:1px solid #f3f4f6;transition:background .2s">
+
+    <!-- ☑ Checkbox hoàn thành -->
+    <td style="padding:8px 6px;text-align:center;vertical-align:middle;width:40px">
+      <input type="checkbox"
+        style="${cbStyle}"
+        ${isDone ? 'checked' : ''}
+        onchange="legalToggleComplete(${item.id}, this.checked, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        title="${isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'}"
+      />
+    </td>
+
+    <!-- STT -->
+    <td style="padding:8px 10px;vertical-align:middle;width:60px">
+      <span style="${sttStyle}">${sttDisplay}</span>
+    </td>
+
+    <!-- Tên hạng mục — inline contenteditable -->
+    <td style="padding:6px 8px;vertical-align:middle;min-width:180px">
+      <div style="display:flex;align-items:center;gap:6px">
+        ${typeIcon}
+        <span
+          contenteditable="true"
+          data-field="title"
+          data-item-id="${item.id}"
+          data-original="${item.title.replace(/"/g,'&quot;')}"
+          onblur="legalInlineSave(${item.id}, 'title', this.innerText.trim(), ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+          onkeydown="legalItemKeydown(event, ${item.id}, ${stageId}, ${_legalCurrentProjectId}, ${item.parent_id||'null'}, ${isChild?'true':'false'})"
+          style="${titleStyle};outline:none;border-radius:4px;padding:2px 4px;min-width:100px;display:block;flex:1;word-break:break-word"
+          onfocus="this.style.background='#f0fdf4';this.style.outline='1px solid #6ee7b7'"
+          title="Click để sửa · Enter: thêm dòng dưới · Tab: thêm sub-hạng mục"
+        >${item.title}</span>
+        ${statusChip}
       </div>
     </td>
-    <td class="py-2 px-3 ${titleIndent}">
-      <div class="flex items-center gap-2">
-        ${checkIcon}
-        <span class="${isChild ? 'text-sm text-gray-700' : 'text-gray-800'}">${item.title}</span>
-      </div>
+
+    <!-- Hạn thực hiện — date input inline -->
+    <td style="padding:6px 8px;vertical-align:middle;text-align:center;width:110px">
+      <input type="date"
+        value="${item.due_date || ''}"
+        style="${dueDateStyle}"
+        onchange="legalInlineSave(${item.id}, 'due_date', this.value, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        title="Ngày hết hạn — click để thay đổi"
+        onfocus="this.style.border='1px solid #6ee7b7';this.style.background='#f0fdf4'"
+        onblur="this.style.border='1px solid ${dueDateIsOverdue?'#fca5a5':'transparent'}';this.style.background='${dueDateIsOverdue?'#fef2f2':'transparent'}'"
+      />
     </td>
-    <td class="py-2 px-3 text-center">${dueDateCell}</td>
-    <td class="py-2 px-3 text-center">${actualDateCell}</td>
-    <td class="py-2 px-3 text-center">${statusBadge}</td>
-    <td class="py-2 px-3 text-xs text-gray-500">${item.notes ? `<span title="${item.notes}">${item.notes.length > 40 ? item.notes.substring(0,40)+'…' : item.notes}</span>` : '<span class="text-gray-300">—</span>'}</td>
-    <td class="py-2 px-3 text-center">
-      <div class="flex items-center justify-center gap-1 flex-wrap">
-        <button onclick="reorderLegalItem(${item.id},'up')" class="text-gray-400 hover:text-gray-600 p-1" title="Lên"><i class="fas fa-arrow-up text-xs"></i></button>
-        <button onclick="reorderLegalItem(${item.id},'down')" class="text-gray-400 hover:text-gray-600 p-1" title="Xuống"><i class="fas fa-arrow-down text-xs"></i></button>
-        ${!isChild ? `<button onclick="openAddLegalItem(${stageId}, ${item.id}, ${_legalCurrentProjectId})" class="text-blue-500 hover:text-blue-700 p-1" title="Thêm sub-hạng mục"><i class="fas fa-indent text-xs"></i></button>` : ''}
-        <button onclick="openEditLegalItem(${JSON.stringify(item).replace(/"/g,'&quot;')})" class="text-primary hover:text-green-700 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>
-        <button onclick="deleteLegalItem(${item.id})" class="text-red-400 hover:text-red-600 p-1" title="Xóa"><i class="fas fa-trash text-xs"></i></button>
+
+    <!-- Ngày hoàn thành thực tế — date input inline -->
+    <td style="padding:6px 8px;vertical-align:middle;text-align:center;width:120px">
+      <input type="date"
+        value="${item.actual_completion_date || ''}"
+        style="${actualDateStyle}"
+        onchange="legalInlineSave(${item.id}, 'actual_completion_date', this.value, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        title="Ngày hoàn thành thực tế — click để thay đổi"
+        onfocus="this.style.border='1px solid #6ee7b7';this.style.background='#f0fdf4'"
+        onblur="this.style.border='1px solid transparent';this.style.background='transparent'"
+      />
+    </td>
+
+    <!-- Ghi chú — contenteditable inline -->
+    <td style="padding:6px 8px;vertical-align:middle;width:170px">
+      <span
+        contenteditable="true"
+        data-field="notes"
+        data-item-id="${item.id}"
+        onblur="legalInlineSave(${item.id}, 'notes', this.innerText.trim(), ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
+        style="font-size:12px;color:#6b7280;font-style:italic;outline:none;border-radius:4px;padding:2px 4px;display:block;word-break:break-word;min-height:18px"
+        onfocus="this.style.background='#f0fdf4';this.style.outline='1px solid #6ee7b7';this.style.fontStyle='normal'"
+        onblur2=""
+        title="Click để thêm/sửa ghi chú"
+      >${item.notes || ''}</span>
+      ${!item.notes ? `<span style="font-size:11px;color:#d1d5db;pointer-events:none;position:absolute;margin-top:-18px;margin-left:6px">Ghi chú...</span>` : ''}
+    </td>
+
+    <!-- Thao tác -->
+    <td style="padding:6px 8px;vertical-align:middle;text-align:center;width:120px">
+      <div style="display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap">
+        <button onclick="legalInsertRowAfter(${item.id}, ${stageId}, ${_legalCurrentProjectId}, ${item.parent_id||'null'})"
+          style="width:24px;height:24px;border-radius:5px;border:1px solid #6ee7b7;background:#f0fdf4;color:#10b981;cursor:pointer;display:flex;align-items:center;justify-content:center"
+          title="Thêm dòng bên dưới (hoặc Enter trong ô tên)"><i class="fas fa-plus" style="font-size:9px"></i></button>
+        <button onclick="reorderLegalItem(${item.id},'up')"
+          style="width:24px;height:24px;border-radius:5px;border:1px solid #e5e7eb;background:#f9fafb;color:#9ca3af;cursor:pointer;display:flex;align-items:center;justify-content:center"
+          title="Dịch lên"><i class="fas fa-arrow-up" style="font-size:9px"></i></button>
+        <button onclick="reorderLegalItem(${item.id},'down')"
+          style="width:24px;height:24px;border-radius:5px;border:1px solid #e5e7eb;background:#f9fafb;color:#9ca3af;cursor:pointer;display:flex;align-items:center;justify-content:center"
+          title="Dịch xuống"><i class="fas fa-arrow-down" style="font-size:9px"></i></button>
+        ${!isChild ? `
+        <button onclick="legalInsertSubRow(${item.id}, ${stageId}, ${_legalCurrentProjectId})"
+          style="width:24px;height:24px;border-radius:5px;border:1px solid #c7d2fe;background:#eef2ff;color:#6366f1;cursor:pointer;display:flex;align-items:center;justify-content:center"
+          title="Thêm sub-hạng mục (hoặc Tab trong ô tên)"><i class="fas fa-indent" style="font-size:9px"></i></button>
+        ` : ''}
+        <button onclick="deleteLegalItem(${item.id})"
+          style="width:24px;height:24px;border-radius:5px;border:1px solid #fecaca;background:#fef2f2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center"
+          title="Xóa"><i class="fas fa-trash" style="font-size:9px"></i></button>
         <button id="taskToggleBtn_${item.id}" onclick="toggleLegalItemTasks(${item.id}, this)"
           style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:5px;padding:3px 7px;cursor:pointer"
           title="Xem / Quản lý tasks">
@@ -18193,6 +18824,99 @@ async function deleteLegalItem(id) {
     await loadLegalProject(_legalCurrentProjectId)
   } catch(err) {
     toast('Lỗi xóa: ' + err.message, 'error')
+  }
+}
+
+// ── Inline Edit: toggle hoàn thành bằng checkbox ─────────────────────────────
+async function legalToggleComplete(id, isChecked, item) {
+  if (typeof item === 'string') item = JSON.parse(item)
+  const newStatus = isChecked ? 'completed' : 'pending'
+
+  // Cập nhật giao diện tức thì (optimistic UI)
+  const row = document.getElementById(`legal-row-${id}`)
+  if (row) row.style.background = isChecked ? '#f0fdf4' : '#fff'
+
+  try {
+    await api(`/legal/items/${id}`, {
+      method: 'PUT',
+      data: {
+        title: item.title,
+        item_type: item.item_type || 'task',
+        due_date: item.due_date || null,
+        actual_completion_date: item.actual_completion_date || null,
+        status: newStatus,
+        notes: item.notes || null,
+      }
+    })
+    toast(isChecked ? '✓ Đã đánh dấu hoàn thành' : 'Đã bỏ đánh dấu hoàn thành')
+    // Reload để cập nhật progress bar + badge
+    await loadLegalProject(_legalCurrentProjectId)
+  } catch(err) {
+    toast('Lỗi cập nhật trạng thái: ' + err.message, 'error')
+    // Revert checkbox
+    const cb = document.querySelector(`#legal-row-${id} input[type=checkbox]`)
+    if (cb) cb.checked = !isChecked
+    if (row) row.style.background = ''
+  }
+}
+
+// ── Inline Edit: lưu trực tiếp từ contenteditable / date input ───────────────
+async function legalInlineSave(id, field, value, item) {
+  if (typeof item === 'string') item = JSON.parse(item)
+
+  // Không lưu nếu không thay đổi
+  const oldVal = (item[field] || '').toString().trim()
+  if (value === oldVal) return
+  if (field === 'title' && !value) return // không cho phép tên rỗng
+
+  // Build payload đầy đủ (PUT yêu cầu tất cả fields)
+  const payload = {
+    title: field === 'title' ? value : item.title,
+    item_type: item.item_type || 'task',
+    due_date: field === 'due_date' ? (value || null) : (item.due_date || null),
+    actual_completion_date: field === 'actual_completion_date' ? (value || null) : (item.actual_completion_date || null),
+    status: item.status || 'pending',
+    notes: field === 'notes' ? (value || null) : (item.notes || null),
+  }
+
+  try {
+    await api(`/legal/items/${id}`, { method: 'PUT', data: payload })
+    // Nhẹ nhàng — không reload toàn bộ, chỉ update item trong _legalOverviewData
+    _legalUpdateLocalItem(id, field, value)
+    // Reset focus style
+    const el = document.querySelector(`[data-item-id="${id}"][data-field="${field}"]`)
+    if (el) { el.style.background = ''; el.style.outline = '' }
+  } catch(err) {
+    toast('Lỗi lưu: ' + err.message, 'error')
+    // Revert giá trị hiển thị
+    const el = document.querySelector(`[data-item-id="${id}"][data-field="${field}"]`)
+    if (el) el.innerText = item[field] || ''
+  }
+}
+
+// Cập nhật item trong _legalOverviewData mà không reload
+function _legalUpdateLocalItem(id, field, value) {
+  if (!_legalOverviewData) return
+  const updateInList = (items) => {
+    for (const it of items || []) {
+      if (it.id === id) { it[field] = value; return true }
+      if (it.children) {
+        for (const ch of it.children) {
+          if (ch.id === id) { ch[field] = value; return true }
+        }
+      }
+    }
+    return false
+  }
+  const pkgs = _legalOverviewData.packages || []
+  for (const pkg of pkgs) {
+    for (const st of pkg.stages || []) {
+      if (updateInList(st.items)) return
+    }
+  }
+  // fallback: flat stages
+  for (const st of _legalOverviewData.stages || []) {
+    if (updateInList(st.items)) return
   }
 }
 

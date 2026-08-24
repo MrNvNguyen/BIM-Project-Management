@@ -876,6 +876,14 @@ const adminOnly = async (c: any, next: any) => {
   await next()
 }
 
+const pmoAccess = async (c: any, next: any) => {
+  const user = c.get('user') as any
+  if (!['system_admin', 'project_admin'].includes(user?.role)) {
+    return c.json({ error: 'Access denied. System Admin or Project Admin only.' }, 403)
+  }
+  await next()
+}
+
 // ===================================================
 // AUTH ROUTES
 // ===================================================
@@ -15562,5 +15570,544 @@ app.get('/api/projects/:id/checklist/summary', authMiddleware, async (c) => {
 // ===================================================
 // END CHECKLIST HSTK API
 // ===================================================
+
+// ===================================================
+// EXECUTIVE PMO DASHBOARD API
+// ===================================================
+
+// GET /api/executive/dashboard  — Tổng quan cho lãnh đạo (system_admin only)
+app.get('/api/executive/dashboard', authMiddleware, pmoAccess, async (c) => {
+  try {
+    const db = c.env.DB
+    const today = new Date().toISOString().split('T')[0]
+
+    // 1. KPI: Tổng giá trị hợp đồng
+    const contractKpi = await db.prepare(`
+      SELECT
+        COUNT(*) as total_projects,
+        SUM(CASE WHEN status IN ('active','planning','on_hold') THEN 1 ELSE 0 END) as active_count,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_count,
+        SUM(CASE WHEN status = 'planning' THEN 1 ELSE 0 END) as planning_count,
+        SUM(contract_value) as total_contract,
+        SUM(CASE WHEN status IN ('active','planning','on_hold','completed') THEN contract_value ELSE 0 END) as managing_contract
+      FROM projects WHERE status != 'cancelled'
+    `).first() as any
+
+    // 2. Tổng đã thu (từ payment_requests đã paid hoặc partial)
+    const revenueKpi = await db.prepare(`
+      SELECT
+        COALESCE(SUM(paid_amount), 0) as total_collected,
+        COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) as pending_amount
+      FROM payment_requests
+      WHERE status IN ('paid','partial','pending')
+    `).first() as any
+
+    // 3. Dự án cần chú ý (health_score < 60 hoặc risk_level = high/critical)
+    const alertProjects = await db.prepare(`
+      SELECT p.id, p.code, p.name, p.client, p.status, p.end_date, p.progress,
+             p.contract_value,
+             ph.health_score, ph.risk_level, ph.risk_notes, ph.current_phase,
+             ph.next_milestone, ph.next_milestone_date,
+             ph.pm_name, ph.pm_phone, ph.pm_report, ph.pm_report_date,
+             ph.client_contact_name, ph.client_contact_phone, ph.client_contact_title,
+             ph.next_payment_phase, ph.next_payment_amount, ph.next_payment_note
+      FROM projects p
+      LEFT JOIN project_health ph ON p.id = ph.project_id
+      WHERE p.status NOT IN ('cancelled','completed')
+        AND (ph.health_score < 60 OR ph.risk_level IN ('high','critical')
+             OR (p.end_date IS NOT NULL AND p.end_date <= date(?, '+30 days') AND p.status != 'completed'))
+      ORDER BY ph.health_score ASC, p.end_date ASC
+    `).bind(today).all()
+
+    // 4. Nhân lực triển khai
+    const laborKpi = await db.prepare(`
+      SELECT
+        COUNT(DISTINCT pm.user_id) as total_staff,
+        COUNT(DISTINCT CASE WHEN pm.role IN ('project_admin','project_leader') THEN pm.user_id END) as pm_count,
+        COUNT(DISTINCT pm.project_id) as projects_with_staff
+      FROM project_members pm
+      JOIN projects p ON pm.project_id = p.id
+      WHERE p.status IN ('active','planning','on_hold')
+    `).first() as any
+
+    // 5. Đang chờ ký / trạng thái
+    const statusBreakdown = await db.prepare(`
+      SELECT status, COUNT(*) as cnt FROM projects
+      WHERE status != 'cancelled'
+      GROUP BY status
+    `).all()
+
+    // 6. Tasks overdue / cần xử lý
+    const overdueKpi = await db.prepare(`
+      SELECT COUNT(*) as overdue_tasks
+      FROM tasks
+      WHERE status NOT IN ('completed','cancelled')
+        AND due_date IS NOT NULL AND due_date < ?
+    `).bind(today).first() as any
+
+    // 7. Chỉ đạo chưa xử lý
+    const pendingDirectives = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM boss_directives WHERE status IN ('open','in_progress')
+    `).first() as any
+
+    return c.json({
+      kpi: {
+        contract: contractKpi,
+        revenue: revenueKpi,
+        labor: laborKpi,
+        overdue_tasks: overdueKpi?.overdue_tasks || 0,
+        pending_directives: pendingDirectives?.cnt || 0,
+      },
+      status_breakdown: statusBreakdown.results,
+      alert_projects: alertProjects.results,
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/executive/projects  — Danh sách dự án đầy đủ cho Executive view
+app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
+  try {
+    const db = c.env.DB
+    const today = new Date().toISOString().split('T')[0]
+    const { status, search, sort = 'contract_value_desc' } = c.req.query()
+
+    let where = `WHERE p.status != 'cancelled'`
+    const params: any[] = []
+
+    if (status && status !== 'all') {
+      if (status === 'needs_attention') {
+        where += ` AND (ph.health_score < 60 OR ph.risk_level IN ('high','critical'))`
+      } else if (status === 'pending_sign') {
+        where += ` AND p.status = 'planning'`
+      } else if (status === 'completed') {
+        where += ` AND p.status = 'completed'`
+      } else if (status === 'active') {
+        where += ` AND p.status = 'active'`
+      }
+    }
+
+    if (search) {
+      where += ` AND (p.name LIKE ? OR p.code LIKE ? OR p.client LIKE ?)`
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`)
+    }
+
+    let orderBy = 'p.contract_value DESC'
+    if (sort === 'health_asc') orderBy = 'ph.health_score ASC'
+    else if (sort === 'end_date_asc') orderBy = 'p.end_date ASC'
+    else if (sort === 'progress_asc') orderBy = 'p.progress ASC'
+
+    const projects = await db.prepare(`
+      SELECT
+        p.id, p.code, p.name, p.client, p.project_type, p.status,
+        p.start_date, p.end_date, p.contract_value, p.progress, p.location,
+        p.description,
+        ph.health_score, ph.risk_level, ph.current_phase,
+        ph.next_milestone, ph.next_milestone_date,
+        ph.pm_report, ph.pm_report_date,
+        ph.risk_notes,
+        ph.client_contact_name, ph.client_contact_title, ph.client_contact_phone,
+        ph.pm_name, ph.pm_title, ph.pm_phone,
+        ph.next_payment_phase, ph.next_payment_amount, ph.next_payment_note,
+        -- Tổng đã thu từ payment_requests
+        COALESCE((SELECT SUM(paid_amount) FROM payment_requests WHERE project_id = p.id AND status IN ('paid','partial')), 0) as collected_amount,
+        -- Số tasks overdue
+        (SELECT COUNT(*) FROM tasks WHERE project_id = p.id AND status NOT IN ('completed','cancelled')
+          AND due_date IS NOT NULL AND due_date < ?) as overdue_tasks,
+        -- Số tasks đang chạy
+        (SELECT COUNT(*) FROM tasks WHERE project_id = p.id AND status = 'in_progress') as active_tasks,
+        -- PM user
+        u_leader.full_name as leader_name, u_leader.phone as leader_phone,
+        -- Số thành viên
+        (SELECT COUNT(*) FROM project_members WHERE project_id = p.id) as member_count,
+        -- Số chỉ đạo chưa xử lý
+        (SELECT COUNT(*) FROM boss_directives WHERE project_id = p.id AND status IN ('open','in_progress')) as open_directives
+      FROM projects p
+      LEFT JOIN project_health ph ON p.id = ph.project_id
+      LEFT JOIN users u_leader ON p.leader_id = u_leader.id
+      ${where}
+      ORDER BY ${orderBy}
+    `).bind(today, ...params).all()
+
+    return c.json(projects.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/executive/projects/:id  — Chi tiết 1 dự án trong Executive view
+app.get('/api/executive/projects/:id', authMiddleware, pmoAccess, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const today = new Date().toISOString().split('T')[0]
+
+    const project = await db.prepare(`
+      SELECT p.*, ph.health_score, ph.risk_level, ph.current_phase,
+        ph.next_milestone, ph.next_milestone_date, ph.pm_report, ph.pm_report_date,
+        ph.risk_notes, ph.client_contact_name, ph.client_contact_title, ph.client_contact_phone,
+        ph.pm_name, ph.pm_title, ph.pm_phone,
+        ph.next_payment_phase, ph.next_payment_amount, ph.next_payment_note
+      FROM projects p LEFT JOIN project_health ph ON p.id = ph.project_id
+      WHERE p.id = ?
+    `).bind(id).first()
+
+    if (!project) return c.json({ error: 'Not found' }, 404)
+
+    const [payments, directives, tasks_summary] = await Promise.all([
+      db.prepare(`SELECT * FROM payment_requests WHERE project_id = ? ORDER BY request_date DESC LIMIT 5`).bind(id).all(),
+      db.prepare(`SELECT bd.*, u.full_name as created_by_name FROM boss_directives bd LEFT JOIN users u ON bd.created_by = u.id WHERE bd.project_id = ? ORDER BY bd.created_at DESC`).bind(id).all(),
+      db.prepare(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN status IN ('completed','review') THEN 1 ELSE 0 END) as done,
+          SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) as in_progress,
+          SUM(CASE WHEN status NOT IN ('completed','review','cancelled') AND due_date < ? THEN 1 ELSE 0 END) as overdue
+        FROM tasks WHERE project_id = ?
+      `).bind(today, id).first(),
+    ])
+
+    return c.json({
+      ...project,
+      payments: payments.results,
+      directives: directives.results,
+      tasks_summary,
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PUT /api/executive/projects/:id/health  — Cập nhật thông tin sức khỏe dự án
+app.put('/api/executive/projects/:id/health', authMiddleware, pmoAccess, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const user = c.get('user') as any
+    const data = await c.req.json()
+
+    const existing = await db.prepare(`SELECT id FROM project_health WHERE project_id = ?`).bind(id).first()
+    const fields = [
+      'health_score','risk_level','current_phase','next_milestone','next_milestone_date',
+      'pm_report','pm_report_date','risk_notes',
+      'client_contact_name','client_contact_title','client_contact_phone',
+      'pm_name','pm_title','pm_phone',
+      'next_payment_phase','next_payment_amount','next_payment_note'
+    ]
+
+    if (existing) {
+      const sets = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
+      const vals = fields.filter(f => data[f] !== undefined).map(f => data[f])
+      if (sets.length > 0) {
+        sets.push('updated_by = ?', 'updated_at = CURRENT_TIMESTAMP')
+        vals.push(user.id, id)
+        await db.prepare(`UPDATE project_health SET ${sets.join(', ')} WHERE project_id = ?`).bind(...vals).run()
+      }
+    } else {
+      const cols = ['project_id', ...fields.filter(f => data[f] !== undefined), 'updated_by']
+      const vals = [id, ...fields.filter(f => data[f] !== undefined).map(f => data[f]), user.id]
+      const placeholders = cols.map(() => '?').join(', ')
+      await db.prepare(`INSERT INTO project_health (${cols.join(', ')}) VALUES (${placeholders})`).bind(...vals).run()
+    }
+
+    const updated = await db.prepare(`SELECT * FROM project_health WHERE project_id = ?`).bind(id).first()
+    return c.json(updated)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// GET /api/executive/directives  — Tất cả chỉ đạo của sếp
+app.get('/api/executive/directives', authMiddleware, pmoAccess, async (c) => {
+  try {
+    const db = c.env.DB
+    const { project_id, status } = c.req.query()
+    let where = 'WHERE 1=1'
+    const params: any[] = []
+    if (project_id) { where += ' AND bd.project_id = ?'; params.push(parseInt(project_id)) }
+    if (status) { where += ' AND bd.status = ?'; params.push(status) }
+    const rows = await db.prepare(`
+      SELECT bd.*, p.name as project_name, p.code as project_code,
+             u.full_name as created_by_name
+      FROM boss_directives bd
+      JOIN projects p ON bd.project_id = p.id
+      LEFT JOIN users u ON bd.created_by = u.id
+      ${where}
+      ORDER BY bd.created_at DESC
+    `).bind(...params).all()
+    return c.json(rows.results)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// POST /api/executive/directives  — Tạo chỉ đạo mới
+app.post('/api/executive/directives', authMiddleware, pmoAccess, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const { project_id, content, assignee_id, assignee_name, priority, due_date } = await c.req.json()
+    if (!project_id || !content) return c.json({ error: 'project_id and content required' }, 400)
+    const result = await db.prepare(`
+      INSERT INTO boss_directives (project_id, content, assignee_id, assignee_name, priority, due_date, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(project_id, content, assignee_id || null, assignee_name || null,
+             priority || 'high', due_date || null, user.id).run()
+    const created = await db.prepare(`SELECT * FROM boss_directives WHERE id = ?`).bind(result.meta.last_row_id).first()
+    return c.json(created, 201)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PUT /api/executive/directives/:id  — Cập nhật chỉ đạo
+app.put('/api/executive/directives/:id', authMiddleware, pmoAccess, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const id = parseInt(c.req.param('id'))
+    const data = await c.req.json()
+    const fields = ['content','assignee_id','assignee_name','priority','due_date','status','response']
+    const sets = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
+    const vals = fields.filter(f => data[f] !== undefined).map(f => data[f])
+    if (sets.length === 0) return c.json({ error: 'Nothing to update' }, 400)
+    if (data.response) {
+      sets.push('responded_at = CURRENT_TIMESTAMP', 'responded_by = ?')
+      vals.push(user.id)
+    }
+    sets.push('updated_at = CURRENT_TIMESTAMP')
+    vals.push(id)
+    await db.prepare(`UPDATE boss_directives SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run()
+    const updated = await db.prepare(`SELECT * FROM boss_directives WHERE id = ?`).bind(id).first()
+    return c.json(updated)
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// DELETE /api/executive/directives/:id
+app.delete('/api/executive/directives/:id', authMiddleware, pmoAccess, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    await db.prepare(`DELETE FROM boss_directives WHERE id = ?`).bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// EXECUTIVE PMO — PROJECT OVERVIEW (tổng hợp 1 dự án)
+// ===================================================
+
+// GET /api/executive/project-overview/:id
+// Tổng hợp toàn bộ thông tin 1 dự án cho Executive Detail Panel:
+//   - Thông tin cơ bản + health + đầu mối (TVTK/QLDA/CĐT/Nhà thầu)
+//   - Hồ sơ pháp lý (checklist packages/stages/items + tỉ lệ hoàn thành)
+//   - Văn bản đã gửi + biên bản họp
+//   - Thanh toán: giá trị HĐ, nghiệm thu, đã thu, công nợ
+//   - Vướng mắc (pm_report + major_issues)
+//   - Chỉ đạo của sếp
+app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const today = new Date().toISOString().split('T')[0]
+
+    // 1. Thông tin dự án + health + đầu mối
+    const project = await db.prepare(`
+      SELECT p.*,
+        u_admin.full_name  as admin_name,
+        u_leader.full_name as leader_name,
+        u_leader.phone     as leader_phone,
+        ph.health_score, ph.risk_level,
+        ph.current_phase, ph.next_milestone, ph.next_milestone_date,
+        ph.pm_report, ph.pm_report_date, ph.risk_notes, ph.major_issues,
+        ph.client_contact_name, ph.client_contact_title, ph.client_contact_phone,
+        ph.pm_name, ph.pm_title, ph.pm_phone,
+        ph.next_payment_phase, ph.next_payment_amount, ph.next_payment_note,
+        ph.tvtk_name, ph.tvtk_contact, ph.tvtk_phone,
+        ph.qlda_name, ph.qlda_contact, ph.qlda_phone,
+        ph.cdt_name,  ph.cdt_contact,  ph.cdt_phone,
+        ph.nthau_name, ph.nthau_contact, ph.nthau_phone
+      FROM projects p
+      LEFT JOIN users u_admin  ON u_admin.id  = p.admin_id
+      LEFT JOIN users u_leader ON u_leader.id = p.leader_id
+      LEFT JOIN project_health ph ON ph.project_id = p.id
+      WHERE p.id = ?
+    `).bind(id).first() as any
+    if (!project) return c.json({ error: 'Not found' }, 404)
+
+    // 2. Hồ sơ pháp lý — packages → stages → items với trạng thái
+    const legalItems = await db.prepare(`
+      SELECT li.id, li.title, li.stt, li.status, li.stage_id,
+             ls.name as stage_name, ls.code as stage_code,
+             lp.name as package_name, lp.id as package_id
+      FROM legal_items li
+      JOIN legal_stages ls ON ls.id = li.stage_id
+      JOIN legal_packages lp ON lp.id = ls.package_id
+      WHERE li.project_id = ?
+      ORDER BY lp.sort_order, ls.sort_order, li.sort_order
+    `).bind(id).all()
+
+    // Tính tỉ lệ hoàn thành theo package
+    const pkgMap: Record<string, any> = {}
+    for (const item of (legalItems.results as any[])) {
+      const pk = item.package_id
+      if (!pkgMap[pk]) pkgMap[pk] = { name: item.package_name, total: 0, done: 0, pending: 0, items: [] }
+      pkgMap[pk].total++
+      if (item.status === 'completed' || item.status === 'approved') pkgMap[pk].done++
+      else if (item.status === 'pending' || !item.status) pkgMap[pk].pending++
+      pkgMap[pk].items.push({ id: item.id, stt: item.stt, title: item.title, status: item.status, stage: item.stage_name })
+    }
+    const legalPackages = Object.values(pkgMap).map((p: any) => ({
+      ...p,
+      pct: p.total > 0 ? Math.round(p.done / p.total * 100) : 0
+    }))
+
+    // 3. Văn bản đi (letters) - 10 gần nhất
+    const letters = await db.prepare(`
+      SELECT ol.id, ol.letter_number, ol.subject, ol.sent_date, ol.recipient,
+             li.title as item_title, ls.code as stage_code
+      FROM outgoing_letters ol
+      LEFT JOIN legal_items li ON li.id = ol.legal_item_id
+      LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+      WHERE ol.project_id = ?
+      ORDER BY ol.sent_date DESC, ol.created_at DESC
+      LIMIT 10
+    `).bind(id).all()
+
+    // 4. Biên bản họp - 5 gần nhất
+    const minutes = await db.prepare(`
+      SELECT mm.id, mm.subject as title, mm.meeting_date, mm.location, mm.attendees,
+             mm.discussion as summary, mm.action_items, mm.meeting_number,
+             u.full_name as created_by_name
+      FROM meeting_minutes mm
+      LEFT JOIN users u ON u.id = mm.created_by
+      WHERE mm.project_id = ?
+      ORDER BY mm.meeting_date DESC
+      LIMIT 5
+    `).bind(id).all()
+
+    // 5. Thanh toán — tổng hợp tài chính
+    const paymentSummary = await db.prepare(`
+      SELECT
+        COUNT(*) as total_requests,
+        COALESCE(SUM(amount), 0) as total_amount,
+        COALESCE(SUM(CASE WHEN status IN ('paid','partial') THEN paid_amount ELSE 0 END), 0) as total_paid,
+        COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) as pending_amount,
+        COALESCE(SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END), 0) as fully_paid_amount
+      FROM payment_requests WHERE project_id = ?
+    `).bind(id).first() as any
+
+    const recentPayments = await db.prepare(`
+      SELECT pr.id, pr.request_number, pr.description, pr.payment_phase,
+             pr.amount, pr.paid_amount, pr.status, pr.request_date, pr.paid_date,
+             li.stt as item_stt, li.title as item_title
+      FROM payment_requests pr
+      LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+      WHERE pr.project_id = ?
+      ORDER BY pr.request_date DESC, pr.created_at DESC
+      LIMIT 10
+    `).bind(id).all()
+
+    // Tính công nợ
+    const contractValue  = project.contract_value  || 0
+    const totalPaid      = paymentSummary?.total_paid || 0
+    const totalInvoiced  = paymentSummary?.total_amount || 0
+    const debtAmount     = totalInvoiced - totalPaid  // Đã lập đề nghị nhưng chưa thu được
+
+    // 5b. Ngân sách / Doanh thu / Chi phí thực tế
+    const budgetValue = project.budget || 0
+    const costSummary = await db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as total_cost FROM project_costs WHERE project_id = ?
+    `).bind(id).first() as any
+    const revenueSummary = await db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as total_revenue FROM project_revenues WHERE project_id = ?
+    `).bind(id).first() as any
+    const totalCost    = costSummary?.total_cost    || 0
+    const totalRevenue = revenueSummary?.total_revenue || 0
+    const budgetDebt   = budgetValue - totalCost   // Công nợ ngân sách (ngân sách còn lại chưa chi)
+
+    // 6. Tasks tóm tắt
+    const tasksSummary = await db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status IN ('completed','review') THEN 1 ELSE 0 END) as done,
+        SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) as in_progress,
+        SUM(CASE WHEN status NOT IN ('completed','review','cancelled') AND due_date < ? THEN 1 ELSE 0 END) as overdue
+      FROM tasks WHERE project_id = ?
+    `).bind(today, id).first() as any
+
+    // 7. Chỉ đạo của sếp
+    const directives = await db.prepare(`
+      SELECT bd.*, u.full_name as created_by_name,
+             a.full_name as assignee_full_name
+      FROM boss_directives bd
+      LEFT JOIN users u ON u.id = bd.created_by
+      LEFT JOIN users a ON a.id = bd.assignee_id
+      WHERE bd.project_id = ?
+      ORDER BY bd.created_at DESC
+    `).bind(id).all()
+
+    return c.json({
+      project,
+      legal: {
+        packages: legalPackages,
+        total_items: (legalItems.results as any[]).length,
+        done_items:  (legalItems.results as any[]).filter((i: any) => i.status === 'completed' || i.status === 'approved').length,
+        pending_items: (legalItems.results as any[]).filter((i: any) => !i.status || i.status === 'pending').length,
+      },
+      letters: letters.results,
+      minutes: minutes.results,
+      finance: {
+        contract_value: contractValue,
+        total_invoiced:  totalInvoiced,
+        total_paid:      totalPaid,
+        debt_amount:     debtAmount,
+        pending_amount:  paymentSummary?.pending_amount || 0,
+        collected_pct:   contractValue > 0 ? Math.round(totalPaid / contractValue * 100) : 0,
+        invoiced_pct:    contractValue > 0 ? Math.round(totalInvoiced / contractValue * 100) : 0,
+        recent_payments: recentPayments.results,
+        // Ngân sách / Doanh thu / Chi phí
+        budget:          budgetValue,
+        total_revenue:   totalRevenue,
+        total_cost:      totalCost,
+        budget_debt:     budgetDebt,
+        cost_pct:        budgetValue > 0 ? Math.round(totalCost / budgetValue * 100) : 0,
+        revenue_pct:     budgetValue > 0 ? Math.round(totalRevenue / budgetValue * 100) : 0,
+      },
+      tasks: tasksSummary,
+      directives: directives.results,
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// PUT /api/executive/project-health/:id  — Cập nhật health + đầu mối mới (gộp với /health cũ)
+app.put('/api/executive/project-health/:id', authMiddleware, pmoAccess, async (c) => {
+  try {
+    const db = c.env.DB
+    const id = parseInt(c.req.param('id'))
+    const user = c.get('user') as any
+    const data = await c.req.json()
+
+    const fields = [
+      'health_score','risk_level','current_phase','next_milestone','next_milestone_date',
+      'pm_report','pm_report_date','risk_notes','major_issues',
+      'client_contact_name','client_contact_title','client_contact_phone',
+      'pm_name','pm_title','pm_phone',
+      'next_payment_phase','next_payment_amount','next_payment_note',
+      'tvtk_name','tvtk_contact','tvtk_phone',
+      'qlda_name','qlda_contact','qlda_phone',
+      'cdt_name','cdt_contact','cdt_phone',
+      'nthau_name','nthau_contact','nthau_phone',
+    ]
+    const existing = await db.prepare(`SELECT id FROM project_health WHERE project_id = ?`).bind(id).first()
+    const changed = fields.filter(f => data[f] !== undefined)
+    if (changed.length === 0) return c.json({ success: true })
+
+    if (existing) {
+      const sets = changed.map(f => `${f} = ?`)
+      const vals = changed.map(f => data[f])
+      sets.push('updated_by = ?', 'updated_at = CURRENT_TIMESTAMP')
+      vals.push(user.id, id)
+      await db.prepare(`UPDATE project_health SET ${sets.join(', ')} WHERE project_id = ?`).bind(...vals).run()
+    } else {
+      const cols = ['project_id', ...changed, 'updated_by']
+      const vals = [id, ...changed.map(f => data[f]), user.id]
+      await db.prepare(`INSERT INTO project_health (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})`).bind(...vals).run()
+    }
+    return c.json({ success: true })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+// ===================================================
+// END EXECUTIVE PMO DASHBOARD API
 
 export default app
