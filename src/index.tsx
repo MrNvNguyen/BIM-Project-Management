@@ -15998,10 +15998,12 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
     `).bind(id).all()
 
     // Tính công nợ
+    // Công nợ theo HĐ = Giá trị HĐ − Giá trị TT thực tế (đã thanh toán) → số tiền khách hàng còn nợ
+    // (theo đúng công thức chuẩn dùng thống nhất toàn hệ thống, xem app.js "Công nợ theo HĐ")
     const contractValue  = project.contract_value  || 0
     const totalPaid      = paymentSummary?.total_paid || 0
     const totalInvoiced  = paymentSummary?.total_amount || 0
-    const debtAmount     = totalInvoiced - totalPaid  // Đã lập đề nghị nhưng chưa thu được
+    const debtAmount     = Math.max(0, contractValue - totalPaid)
 
     // 5b. Ngân sách / Doanh thu / Chi phí thực tế
     // Ngân sách dự án = contract_value * (1 - management_fee_pct/100) — theo đúng công thức chuẩn
