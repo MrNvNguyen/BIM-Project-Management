@@ -16004,7 +16004,10 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
     const debtAmount     = totalInvoiced - totalPaid  // Đã lập đề nghị nhưng chưa thu được
 
     // 5b. Ngân sách / Doanh thu / Chi phí thực tế
-    const budgetValue = project.budget || 0
+    // Ngân sách dự án = contract_value * (1 - management_fee_pct/100) — theo đúng công thức chuẩn
+    // dùng thống nhất toàn hệ thống (cột projects.budget không được nhập trực tiếp, luôn = 0)
+    const feePctExec = project.management_fee_pct || 0
+    const budgetValue = contractValue > 0 ? Math.round(contractValue * (1 - feePctExec / 100)) : 0
     const costSummary = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total_cost FROM project_costs WHERE project_id = ?
     `).bind(id).first() as any
