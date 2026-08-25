@@ -69,7 +69,7 @@ function exec_riskBadge(risk) {
 function exec_statusBadge(status) {
   const map = {
     active:    { label: 'Đang triển khai', cls: 'bg-blue-100 text-blue-700' },
-    planning:  { label: 'Chờ ký HĐ',      cls: 'bg-purple-100 text-purple-700' },
+    planning:  { label: 'Lập kế hoạch',   cls: 'bg-purple-100 text-purple-700' },
     on_hold:   { label: 'Tạm dừng',       cls: 'bg-gray-100 text-gray-600' },
     completed: { label: 'Hoàn thành',     cls: 'bg-green-100 text-green-700' },
     cancelled: { label: 'Huỷ',            cls: 'bg-red-100 text-red-600' },
