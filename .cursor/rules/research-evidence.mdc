@@ -1,0 +1,28 @@
+---
+description: Conventions for research memos and evidence under 0 Documents — observation only, redact secrets, cite manifests.
+globs: "0 Documents/**/*"
+alwaysApply: false
+---
+
+# Research & evidence docs
+
+Applies when editing `0 Documents/**`.
+
+## Observation only
+
+- Thaoluan / V0 = **observation**. Không mở `authorized_box` hay claim FINAL SLA từ memo.
+- Implementation authorize sống ở `0 Documents/1-Sprints/**` sau PO quyết định.
+
+## Evidence hygiene
+
+- Mỗi run: `run-manifest.json` + `analyst-notes.md` (hoặc tương đương).
+- Screenshot / HAR: đường dẫn trong index — **không** nhúng base64 lớn vào markdown.
+- Redact tokens, cookies, signed URLs trước khi commit.
+- Phân biệt rõ: measured · inferred · hypothesis.
+- Không commit file >100 MiB hoặc binary lớn vào evidence.
+
+## Writing
+
+- Tiêu đề có ngày ISO (`YYYY-MM-DD`) khi là snapshot session.
+- Link tương đối tới evidence folder, không copy nguyên HAR.
+- Khi so sánh APS / UI ACC: ghi region, hub/project, cold/warm auth, filter điều kiện.
