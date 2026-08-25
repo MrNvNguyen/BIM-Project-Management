@@ -15677,8 +15677,11 @@ app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
     if (status && status !== 'all') {
       if (status === 'needs_attention') {
         where += ` AND (ph.health_score < 60 OR ph.risk_level IN ('high','critical'))`
-      } else if (status === 'pending_sign') {
+      } else if (status === 'pending_sign' || status === 'planning') {
+        // Chờ ký HĐ = dự án đang Lập kế hoạch
         where += ` AND p.status = 'planning'`
+      } else if (status === 'on_hold') {
+        where += ` AND p.status = 'on_hold'`
       } else if (status === 'completed') {
         where += ` AND p.status = 'completed'`
       } else if (status === 'active') {
