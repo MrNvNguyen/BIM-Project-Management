@@ -588,6 +588,35 @@ const _navigablePages = [
   'system-config', 'analytics', 'legal', 'leave', 'executive-dashboard'
 ]
 
+const _adminOnlyPages = [
+  'costs', 'finance-project', 'labor-cost', 'cost-types',
+  'analytics', 'system-config', 'assets', 'depreciation', 'users', 'email-admin'
+]
+const _pmoOnlyPages = ['executive-dashboard']
+
+function getPageFromHash() {
+  const raw = (window.location.hash || '').replace(/^#\/?/, '')
+  return (raw.split(/[/?#]/)[0] || '').trim()
+}
+
+function canAccessPage(page) {
+  const role = currentUser?.role
+  if (_adminOnlyPages.includes(page) && role !== 'system_admin') return false
+  if (_pmoOnlyPages.includes(page) && role !== 'system_admin' && role !== 'project_admin') return false
+  return true
+}
+
+// Restore the page from URL hash (used on refresh / first load).
+// hashchange does not fire on initial load, so initApp must call this.
+function restorePageFromHash() {
+  const page = getPageFromHash()
+  if (_navigablePages.includes(page) && canAccessPage(page)) {
+    navigate(page, { fromHash: true })
+    return
+  }
+  navigate('dashboard')
+}
+
 // Flag to prevent hashchange loop when navigate() itself sets the hash
 let _navigatingByHash = false
 
@@ -673,11 +702,7 @@ function navigate(page, opts = {}) {
 window.addEventListener('hashchange', () => {
   if (_navigatingByHash) return  // Avoid loop: navigate() triggered this
   if (!authToken) return          // Not logged in yet
-  const hash = window.location.hash // e.g. "#/projects"
-  const page = hash.replace(/^#\//, '') || 'dashboard'
-  if (_navigablePages.includes(page)) {
-    navigate(page, { fromHash: true })
-  }
+  restorePageFromHash()
 })
 
 function toggleSidebar() {
@@ -854,7 +879,7 @@ async function initApp() {
   } catch (e) { /* ignore */ }
 
   initDatetimeClock()
-  loadDashboard()
+  restorePageFromHash()
   loadNotifications()
   startSmartNotifPoll()          // Smart polling: 5s when active, pause when hidden
   initPushNotifications()        // Register SW + subscribe if permission already granted
