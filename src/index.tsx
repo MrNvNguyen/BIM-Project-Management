@@ -5,12 +5,38 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { serveStatic } from 'hono/cloudflare-workers'
+import {
+  applyWorkDateFilter,
+  computeBookedRevenue,
+  computeProjectBudget,
+  computeProjectLaborFromTimesheets,
+  enrichPaymentMetrics,
+  enrichRevenueRow,
+  monthDateRange,
+  resolveAssigneeNames,
+  syncPaymentToRevenue,
+  taskComputedProgress,
+  yearDateRange,
+} from './finance'
+import {
+  avatarApiPath,
+  getR2,
+  isR2Ref,
+  parseDataUri,
+  publicLegalDocument,
+  putR2,
+  r2KeyFromRef,
+  storeAvatar,
+  storeMaybeDataUri,
+} from './storage'
 
 // ---- Types ----
 type Bindings = {
   DB: D1Database
   JWT_SECRET: string
   RESEND_API_KEY: string
+  FILES?: R2Bucket
+  ALLOW_SYSTEM_INIT?: string
 }
 
 // ===================================================
@@ -855,10 +881,12 @@ app.use('/api/*', cors({
 // Auth middleware
 const authMiddleware = async (c: any, next: any) => {
   const authHeader = c.req.header('Authorization')
-  if (!authHeader?.startsWith('Bearer ')) {
+  let token: string | undefined
+  if (authHeader?.startsWith('Bearer ')) token = authHeader.slice(7)
+  if (!token) token = c.req.query('token') || undefined
+  if (!token) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
-  const token = authHeader.slice(7)
   const secret = c.env.JWT_SECRET || 'bim_management_secret_2024'
   const payload = await verifyToken(token, secret)
   if (!payload) {
@@ -896,7 +924,7 @@ app.post('/api/auth/login', async (c) => {
 
     const db = c.env.DB
     const user = await db.prepare(
-      'SELECT * FROM users WHERE username = ? AND is_active = 1'
+      'SELECT id, username, password_hash, full_name, email, role, department, is_active FROM users WHERE username = ? AND is_active = 1'
     ).bind(username).first() as any
 
     if (!user) {
@@ -930,7 +958,7 @@ app.post('/api/auth/login', async (c) => {
         email: user.email,
         role: user.role,
         department: user.department,
-        avatar: user.avatar
+        avatar: avatarApiPath(user.id)
       }
     })
   } catch (e: any) {
@@ -943,7 +971,7 @@ app.post('/api/auth/change-password', authMiddleware, async (c) => {
     const user = c.get('user') as any
     const { old_password, new_password } = await c.req.json()
     const db = c.env.DB
-    const dbUser = await db.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first() as any
+    const dbUser = await db.prepare('SELECT id, password_hash FROM users WHERE id = ?').bind(user.id).first() as any
 
     let isValid = false
     const hashedOld = await hashPassword(old_password)
@@ -964,8 +992,9 @@ app.post('/api/auth/change-password', authMiddleware, async (c) => {
 app.get('/api/auth/me', authMiddleware, async (c) => {
   const user = c.get('user') as any
   const db = c.env.DB
-  const dbUser = await db.prepare('SELECT id, username, full_name, email, phone, role, department, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree, cccd_issue_date, cccd_issue_place, gender, join_date, job_title, social_insurance_number, tax_number, bank_account, bank_name, bank_branch FROM users WHERE id = ?').bind(user.id).first()
-  return c.json(dbUser)
+  const dbUser = await db.prepare('SELECT id, username, full_name, email, phone, role, department, cccd, birthday, address, current_address, major, university, graduation_year, degree, cccd_issue_date, cccd_issue_place, gender, join_date, job_title, social_insurance_number, tax_number, bank_account, bank_name, bank_branch FROM users WHERE id = ?').bind(user.id).first() as any
+  if (!dbUser) return c.json({ error: 'Not found' }, 404)
+  return c.json({ ...dbUser, avatar: avatarApiPath(user.id) })
 })
 
 // POST /api/auth/upload-avatar — Upload avatar dạng base64
@@ -979,8 +1008,9 @@ app.post('/api/auth/upload-avatar', authMiddleware, async (c) => {
     if (avatar.length > 700000) return c.json({ error: 'Ảnh quá lớn, vui lòng chọn ảnh nhỏ hơn 500KB' }, 400)
     // Chỉ chấp nhận data URI image
     if (!avatar.startsWith('data:image/')) return c.json({ error: 'Định dạng ảnh không hợp lệ' }, 400)
-    await db.prepare('UPDATE users SET avatar = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(avatar, user.id).run()
-    return c.json({ success: true, avatar })
+    const stored = await storeAvatar(c.env, user.id, avatar)
+    await db.prepare('UPDATE users SET avatar = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(stored.avatar, user.id).run()
+    return c.json({ success: true, avatar: avatarApiPath(user.id) })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1064,15 +1094,30 @@ app.get('/api/users', authMiddleware, async (c) => {
     const user = c.get('user') as any
     // show_inactive=1 only for system_admin (e.g. from the Users management page)
     const showInactive = user.role === 'system_admin' && c.req.query('show_inactive') === '1'
-    let query = 'SELECT id, username, full_name, email, phone, role, department, is_active, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree, salary_monthly, created_at, cccd_issue_date, cccd_issue_place, gender, join_date, job_title, social_insurance_number, tax_number, bank_account, bank_name, bank_branch FROM users'
+    let query = 'SELECT id, username, full_name, email, phone, role, department, is_active, cccd, birthday, address, current_address, major, university, graduation_year, degree, salary_monthly, created_at, cccd_issue_date, cccd_issue_place, gender, join_date, job_title, social_insurance_number, tax_number, bank_account, bank_name, bank_branch FROM users'
     if (!showInactive) {
       query += ' WHERE is_active = 1'
     }
     const users = await db.prepare(query).all()
-    return c.json(users.results)
+    return c.json((users.results as any[]).map(u => ({ ...u, avatar: avatarApiPath(u.id) })))
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
+})
+
+app.get('/api/users/:id/avatar', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const row = await c.env.DB.prepare('SELECT avatar FROM users WHERE id = ?').bind(id).first() as { avatar?: string } | null
+  if (!row?.avatar) return c.body(null, 404)
+  if (isR2Ref(row.avatar)) {
+    const obj = await getR2(c.env, r2KeyFromRef(row.avatar))
+    if (!obj) return c.body(null, 404)
+    const contentType = obj.httpMetadata?.contentType || 'image/jpeg'
+    return new Response(obj.body, { headers: { 'Content-Type': contentType, 'Cache-Control': 'private, max-age=3600' } })
+  }
+  const parsed = parseDataUri(row.avatar)
+  if (!parsed) return c.body(null, 404)
+  return new Response(parsed.bytes, { headers: { 'Content-Type': parsed.contentType, 'Cache-Control': 'private, max-age=3600' } })
 })
 
 app.post('/api/users', authMiddleware, adminOnly, async (c) => {
@@ -1205,10 +1250,10 @@ app.get('/api/users/:id/detail', authMiddleware, async (c) => {
     const id = parseInt(c.req.param('id'))
     if (me.role !== 'system_admin' && me.id !== id) return c.json({ error: 'Access denied' }, 403)
     const user = await db.prepare(
-      'SELECT id, username, full_name, email, phone, role, department, is_active, avatar, cccd, birthday, address, current_address, major, university, graduation_year, degree, created_at, cccd_issue_date, cccd_issue_place, gender, join_date, job_title, social_insurance_number, tax_number, bank_account, bank_name, bank_branch FROM users WHERE id = ?'
-    ).bind(id).first()
+      'SELECT id, username, full_name, email, phone, role, department, is_active, cccd, birthday, address, current_address, major, university, graduation_year, degree, created_at, cccd_issue_date, cccd_issue_place, gender, join_date, job_title, social_insurance_number, tax_number, bank_account, bank_name, bank_branch FROM users WHERE id = ?'
+    ).bind(id).first() as any
     if (!user) return c.json({ error: 'Không tìm thấy' }, 404)
-    return c.json(user)
+    return c.json({ ...user, avatar: avatarApiPath(id) })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1225,7 +1270,7 @@ app.delete('/api/users/:id', authMiddleware, adminOnly, async (c) => {
     if (user.id === id) return c.json({ error: 'Không thể tự xóa tài khoản của mình' }, 400)
 
     // Kiểm tra user tồn tại
-    const target = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first() as any
+    const target = await db.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(id).first() as any
     if (!target) return c.json({ error: 'Không tìm thấy tài khoản' }, 404)
 
     // Cascade xóa dữ liệu liên quan — NULL-ify trước, xóa sau để tránh FK constraint
@@ -1276,9 +1321,9 @@ app.get('/api/projects', authMiddleware, async (c) => {
       SELECT p.*, 
         u1.full_name as admin_name, 
         u2.full_name as leader_name,
-        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) as total_tasks,
-        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'completed') as completed_tasks,
-        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled')) as overdue_tasks,
+        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status != 'cancelled') as total_tasks,
+        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status IN ('completed','review')) as completed_tasks,
+        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.due_date IS NOT NULL AND t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled')) as overdue_tasks,
         (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) as member_count,
         (SELECT pm2.role FROM project_members pm2 WHERE pm2.project_id = p.id AND pm2.user_id = ${user.id} LIMIT 1) as my_project_role
       FROM projects p
@@ -1294,13 +1339,31 @@ app.get('/api/projects', authMiddleware, async (c) => {
         let myRole = (p as any).my_project_role || null
         if ((p as any).admin_id === user.id) myRole = higherRole(myRole || 'member', 'project_admin')
         if ((p as any).leader_id === user.id) myRole = higherRole(myRole || 'member', 'project_leader')
-        return { ...p, contract_value: undefined, budget: undefined, my_project_role: myRole }
+        const total = p.total_tasks || 0
+        const done = p.completed_tasks || 0
+        return {
+          ...p,
+          contract_value: undefined,
+          budget: undefined,
+          my_project_role: myRole,
+          computed_progress: taskComputedProgress(total, done),
+          pm_progress: p.progress || 0,
+        }
       })
       return c.json(masked)
     }
 
     const result = await db.prepare(query).all()
-    return c.json(result.results)
+    return c.json((result.results as any[]).map((p: any) => {
+      const total = p.total_tasks || 0
+      const done = p.completed_tasks || 0
+      return {
+        ...p,
+        computed_progress: taskComputedProgress(total, done),
+        pm_progress: p.progress || 0,
+        project_budget: computeProjectBudget(p.contract_value, p.management_fee_pct),
+      }
+    }))
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -1333,7 +1396,7 @@ app.get('/api/projects/:id', authMiddleware, async (c) => {
     // Task stats thực tế (không bị lọc RBAC) — dùng cho tiến độ tổng và số trễ hạn
     const taskStats = await db.prepare(`
       SELECT
-        COUNT(*) as total_tasks,
+        COUNT(CASE WHEN status != 'cancelled' THEN 1 END) as total_tasks,
         SUM(CASE WHEN status IN ('completed','review') THEN 1 ELSE 0 END) as done_tasks,
         SUM(CASE WHEN due_date < date('now') AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks
       FROM tasks WHERE project_id = ?
@@ -1348,8 +1411,9 @@ app.get('/api/projects/:id', authMiddleware, async (c) => {
     // Tính project_budget = contract_value * (1 - management_fee_pct/100)
     const p = project as any
     const feePct2 = p.management_fee_pct || 0
-    const projectBudget = p.contract_value > 0 ? Math.round(p.contract_value * (1 - feePct2 / 100)) : 0
-    const projectWithBudget = { ...p, project_budget: projectBudget }
+    const projectBudget = computeProjectBudget(p.contract_value, p.management_fee_pct)
+    const computedProgress = taskComputedProgress(taskStatsObj.total_tasks, taskStatsObj.done_tasks)
+    const projectWithBudget = { ...p, project_budget: projectBudget, computed_progress: computedProgress, pm_progress: p.progress || 0 }
 
     // Hide financial data from non-system_admin
     const user = c.get('user') as any
@@ -1455,7 +1519,7 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     if (user.role !== 'system_admin' && proj.admin_id !== user.id)
       return c.json({ error: 'Không có quyền chỉnh sửa dự án này' }, 403)
     const allowedFields = user.role === 'system_admin'
-      ? ['code','name','description','client','project_type','status','start_date','end_date','budget','contract_value','management_fee_pct','location','admin_id','leader_id','progress','project_code_letter']
+      ? ['code','name','description','client','project_type','status','start_date','end_date','contract_value','management_fee_pct','location','admin_id','leader_id','progress','project_code_letter']
       : ['name','description','client','project_type','status','start_date','end_date','location','leader_id','progress','project_code_letter']
     const updates = allowedFields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = allowedFields.filter(f => data[f] !== undefined).map(f => data[f])
@@ -2782,8 +2846,16 @@ app.get('/api/timesheets/summary', authMiddleware, async (c) => {
     }
 
     if (status) { query += ` AND ts.status = ?`;                  params.push(status) }
-    if (month)  { query += ` AND strftime('%m', ts.work_date) = ?`; params.push(month.padStart(2,'0')) }
-    if (year)   { query += ` AND strftime('%Y', ts.work_date) = ?`; params.push(year) }
+    if (year && month) {
+      const { start, endExclusive } = monthDateRange(parseInt(year), parseInt(month))
+      query += ` AND ts.work_date >= ? AND ts.work_date < ?`
+      params.push(start, endExclusive)
+    } else if (year) {
+      const { start, endExclusive } = monthDateRange(parseInt(year), 1)
+      const endY = monthDateRange(parseInt(year), 12).endExclusive
+      query += ` AND ts.work_date >= ? AND ts.work_date < ?`
+      params.push(start, endY)
+    }
 
     const row = params.length
       ? await db.prepare(query).bind(...params).first() as any
@@ -2839,8 +2911,9 @@ app.get('/api/timesheets/members', authMiddleware, async (c) => {
     }
 
     if (project_id) { query += ` AND ts.project_id = ?`; params.push(parseInt(project_id)) }
-    if (month)      { query += ` AND strftime('%m', ts.work_date) = ?`; params.push(month.padStart(2, '0')) }
-    if (year)       { query += ` AND strftime('%Y', ts.work_date) = ?`; params.push(year) }
+    const dateFilterM = applyWorkDateFilter(year, month, 'ts.work_date')
+    query += dateFilterM.sql
+    params.push(...dateFilterM.params)
 
     query += ' GROUP BY u.id, u.full_name, u.department, u.role ORDER BY total_hours DESC'
 
@@ -2888,8 +2961,9 @@ app.get('/api/timesheets/projects', authMiddleware, async (c) => {
     }
 
     if (user_id) { query += ` AND ts.user_id = ?`; params.push(parseInt(user_id)) }
-    if (month)   { query += ` AND strftime('%m', ts.work_date) = ?`; params.push(month.padStart(2, '0')) }
-    if (year)    { query += ` AND strftime('%Y', ts.work_date) = ?`; params.push(year) }
+    const dateFilterP = applyWorkDateFilter(year, month, 'ts.work_date')
+    query += dateFilterP.sql
+    params.push(...dateFilterP.params)
 
     query += ' GROUP BY p.id, p.code, p.name, p.status ORDER BY total_hours DESC'
 
@@ -2909,6 +2983,7 @@ app.get('/api/timesheet-dashboard/:month/:year', authMiddleware, adminOnly, asyn
     const db = c.env.DB
     const m = c.req.param('month').padStart(2, '0')
     const y = c.req.param('year')
+    const { start, endExclusive } = monthDateRange(parseInt(y, 10), parseInt(m, 10))
 
     // Total hours — simple SUM, no JOIN
     const totals = await db.prepare(`
@@ -2924,8 +2999,8 @@ app.get('/api/timesheet-dashboard/:month/:year', authMiddleware, adminOnly, asyn
         COUNT(DISTINCT user_id)         AS active_members,
         COUNT(*)                        AS total_entries
       FROM timesheets
-      WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
-    `).bind(y, m).first() as any
+      WHERE work_date >= ? AND work_date < ?
+    `).bind(start, endExclusive).first() as any
 
     // Per-member breakdown
     const byMember = await db.prepare(`
@@ -2940,10 +3015,10 @@ app.get('/api/timesheet-dashboard/:month/:year', authMiddleware, adminOnly, asyn
         END) AS working_days
       FROM timesheets ts
       JOIN users u ON u.id = ts.user_id
-      WHERE strftime('%Y', ts.work_date) = ? AND strftime('%m', ts.work_date) = ?
+      WHERE ts.work_date >= ? AND ts.work_date < ?
       GROUP BY ts.user_id
       ORDER BY total_hours DESC
-    `).bind(y, m).all()
+    `).bind(start, endExclusive).all()
 
     // Per-project breakdown
     const byProject = await db.prepare(`
@@ -2954,10 +3029,10 @@ app.get('/api/timesheet-dashboard/:month/:year', authMiddleware, adminOnly, asyn
         COUNT(DISTINCT ts.user_id)        AS member_count
       FROM timesheets ts
       JOIN projects p ON p.id = ts.project_id
-      WHERE strftime('%Y', ts.work_date) = ? AND strftime('%m', ts.work_date) = ?
+      WHERE ts.work_date >= ? AND ts.work_date < ?
       GROUP BY ts.project_id
       ORDER BY total_hours DESC
-    `).bind(y, m).all()
+    `).bind(start, endExclusive).all()
 
     // Duplicate check
     const dupCheck = await db.prepare(`
@@ -3059,8 +3134,16 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
     }
 
     if (status) { query += ` AND ts.status = ?`; params.push(status) }
-    if (month)  { query += ` AND strftime('%m', ts.work_date) = ?`; params.push(month.padStart(2, '0')) }
-    if (year)   { query += ` AND strftime('%Y', ts.work_date) = ?`; params.push(year) }
+    if (year && month) {
+      const { start, endExclusive } = monthDateRange(parseInt(year), parseInt(month))
+      query += ` AND ts.work_date >= ? AND ts.work_date < ?`
+      params.push(start, endExclusive)
+    } else if (year) {
+      const { start } = monthDateRange(parseInt(year), 1)
+      const endY = monthDateRange(parseInt(year), 12).endExclusive
+      query += ` AND ts.work_date >= ? AND ts.work_date < ?`
+      params.push(start, endY)
+    }
 
     query += ' ORDER BY ts.work_date DESC, ts.id DESC LIMIT 500'
     const result = await db.prepare(query).bind(...params).all()
@@ -3097,8 +3180,16 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       if (user_id) { sumQ += ` AND ts.user_id = ?`; sumParams.push(parseInt(user_id)) }
     }
     if (status) { sumQ += ` AND ts.status = ?`; sumParams.push(status) }
-    if (month)  { sumQ += ` AND strftime('%m', ts.work_date) = ?`; sumParams.push(month.padStart(2, '0')) }
-    if (year)   { sumQ += ` AND strftime('%Y', ts.work_date) = ?`; sumParams.push(year) }
+    if (year && month) {
+      const { start, endExclusive } = monthDateRange(parseInt(year), parseInt(month))
+      sumQ += ` AND ts.work_date >= ? AND ts.work_date < ?`
+      sumParams.push(start, endExclusive)
+    } else if (year) {
+      const { start } = monthDateRange(parseInt(year), 1)
+      const endY = monthDateRange(parseInt(year), 12).endExclusive
+      sumQ += ` AND ts.work_date >= ? AND ts.work_date < ?`
+      sumParams.push(start, endY)
+    }
 
     const summary = sumParams.length
       ? await db.prepare(sumQ).bind(...sumParams).first() as any
@@ -3837,7 +3928,7 @@ app.get('/api/messages', authMiddleware, async (c) => {
         u.role as sender_role,
         (SELECT json_group_array(json_object(
           'id', a.id, 'file_name', a.file_name, 'file_type', a.file_type,
-          'file_size', a.file_size, 'data', a.data
+          'file_size', a.file_size, 'url', '/api/messages/attachments/' || a.id
         )) FROM message_attachments a WHERE a.message_id = m.id) as attachments
       FROM messages m
       JOIN users u ON m.sender_id = u.id
@@ -3853,6 +3944,28 @@ app.get('/api/messages', authMiddleware, async (c) => {
     }))
     return c.json(result)
   } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+app.get('/api/messages/attachments/:id', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const row = await c.env.DB.prepare('SELECT * FROM message_attachments WHERE id = ?').bind(id).first() as any
+  if (!row) return c.body(null, 404)
+  if (row.r2_key) {
+    const obj = await getR2(c.env, row.r2_key)
+    if (obj) {
+      return new Response(obj.body, {
+        headers: {
+          'Content-Type': row.content_type || obj.httpMetadata?.contentType || row.file_type || 'application/octet-stream',
+          'Content-Disposition': `inline; filename="${row.file_name}"`,
+        }
+      })
+    }
+  }
+  if (typeof row.data === 'string' && row.data.startsWith('data:')) {
+    const parsed = parseDataUri(row.data)
+    if (parsed) return new Response(parsed.bytes, { headers: { 'Content-Type': parsed.contentType } })
+  }
+  return c.body(null, 404)
 })
 
 // POST new message with optional attachments
@@ -3879,12 +3992,28 @@ app.post('/api/messages', authMiddleware, async (c) => {
 
     const msgId = msgResult.meta.last_row_id
 
-    // Insert attachments
     for (const att of attachments) {
       if (!att.file_name || !att.data) continue
-      await db.prepare(
+      let r2Key: string | null = null
+      let storedData = att.data
+      const parsed = typeof att.data === 'string' ? parseDataUri(att.data) : null
+      if (parsed) {
+        const key = `chat/${msgId}/${att.file_name}`
+        const ok = await putR2(c.env, key, parsed.bytes, att.file_type || parsed.contentType)
+        if (ok) {
+          r2Key = key
+          storedData = ''
+        }
+      }
+      const ins = await db.prepare(
         `INSERT INTO message_attachments (message_id, file_name, file_type, file_size, data) VALUES (?, ?, ?, ?, ?)`
-      ).bind(msgId, att.file_name, att.file_type || 'application/octet-stream', att.file_size || 0, att.data).run()
+      ).bind(msgId, att.file_name, att.file_type || 'application/octet-stream', att.file_size || 0, storedData).run()
+      if (r2Key && ins.meta.last_row_id) {
+        try {
+          await db.prepare(`UPDATE message_attachments SET r2_key = ?, content_type = ? WHERE id = ?`)
+            .bind(r2Key, att.file_type || parsed?.contentType || null, ins.meta.last_row_id).run()
+        } catch { /* column may not exist until migration 0045 */ }
+      }
     }
 
     // ── Send notifications ──────────────────────────────────────────────
@@ -4028,12 +4157,12 @@ app.post('/api/messages', authMiddleware, async (c) => {
       FROM messages m JOIN users u ON m.sender_id = u.id WHERE m.id = ?
     `).bind(msgId).first() as any
 
-    const atts = await db.prepare(`SELECT id, file_name, file_type, file_size, data FROM message_attachments WHERE message_id = ?`).bind(msgId).all()
+    const atts = await db.prepare(`SELECT id, file_name, file_type, file_size FROM message_attachments WHERE message_id = ?`).bind(msgId).all()
 
     return c.json({
       ...msg,
       mentions: JSON.parse(msg.mentions || '[]'),
-      attachments: atts.results
+      attachments: (atts.results as any[]).map(a => ({ ...a, url: `/api/messages/attachments/${a.id}` }))
     }, 201)
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
@@ -4308,9 +4437,9 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
 
     // Ghép: đã thu trước, chờ thu sau; sắp xếp trong từng nhóm theo ngày giảm dần
     const paid    = (paidRows.results    as any[]).sort((a, b) =>
-      (b.revenue_date || '').localeCompare(a.revenue_date || ''))
+      (b.revenue_date || '').localeCompare(a.revenue_date || '')).map(enrichRevenueRow)
     const pending = (pendingRows.results as any[]).sort((a, b) =>
-      (b.request_date || '').localeCompare(a.request_date || ''))
+      (b.request_date || '').localeCompare(a.request_date || '')).map(enrichRevenueRow)
 
     return c.json([...paid, ...pending])
   } catch (e: any) {
@@ -6672,7 +6801,10 @@ app.get('/api/assets', authMiddleware, adminOnly, async (c) => {
     query += ' ORDER BY COALESCE(a.parent_asset_id, a.id) ASC, a.parent_asset_id ASC, a.asset_code ASC'
 
     const result = await db.prepare(query).bind(...params).all()
-    const allRows = result.results as any[]
+    const allRows = (result.results as any[]).map(a => ({
+      ...a,
+      image_url: typeof a.image_url === 'string' && a.image_url.startsWith('data:') ? null : a.image_url,
+    }))
 
     // Tổ chức dạng cây: cha trước, con sau (gắn children vào từng parent)
     const map: Record<number, any> = {}
@@ -7552,20 +7684,23 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     const db = c.env.DB
     const user = c.get('user') as any
 
-    // Tổng dự án = tất cả trừ cancelled và completed (dự án đang tồn tại/hoạt động)
-    const totalProjects = await db.prepare(
-      'SELECT COUNT(*) as count FROM projects WHERE status NOT IN ("cancelled", "completed")'
-    ).first() as any
-    const activeProjects = await db.prepare(
-      'SELECT COUNT(*) as count FROM projects WHERE status = "active"'
-    ).first() as any
-    const totalTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE status != "cancelled"').first() as any
-    // Hoàn thành = completed + review (đang duyệt cũng đã xử lý xong phần việc)
-    const completedTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE status IN ("completed","review")').first() as any
-    // Quá hạn: loại trừ cả review + completed + cancelled
-    const overdueTasks = await db.prepare('SELECT COUNT(*) as count FROM tasks WHERE due_date < date("now") AND status NOT IN ("completed","review","cancelled")').first() as any
-    const totalUsers = await db.prepare("SELECT COUNT(*) as count FROM users WHERE is_active = 1 AND role != 'system_admin'").first() as any
-    const totalAssets = await db.prepare('SELECT COUNT(*) as count FROM assets WHERE status = "active"').first() as any
+    const counts = await db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM projects WHERE status NOT IN ('cancelled', 'completed')) as total_projects,
+        (SELECT COUNT(*) FROM projects WHERE status = 'active') as active_projects,
+        (SELECT COUNT(*) FROM tasks WHERE status != 'cancelled') as total_tasks,
+        (SELECT COUNT(*) FROM tasks WHERE status IN ('completed','review')) as completed_tasks,
+        (SELECT COUNT(*) FROM tasks WHERE due_date < date('now') AND status NOT IN ('completed','review','cancelled')) as overdue_tasks,
+        (SELECT COUNT(*) FROM users WHERE is_active = 1 AND role != 'system_admin') as total_users,
+        (SELECT COUNT(*) FROM assets WHERE status = 'active') as total_assets
+    `).first() as any
+    const totalProjects = { count: counts?.total_projects }
+    const activeProjects = { count: counts?.active_projects }
+    const totalTasks = { count: counts?.total_tasks }
+    const completedTasks = { count: counts?.completed_tasks }
+    const overdueTasks = { count: counts?.overdue_tasks }
+    const totalUsers = { count: counts?.total_users }
+    const totalAssets = { count: counts?.total_assets }
 
     // Monthly timesheet summary
     const monthlyHours = await db.prepare(`
@@ -7653,24 +7788,29 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     // Doanh thu năm tài chính hiện tại (paid + partial)
     const fySettings3 = await getFiscalYearSettings(db)
     const { startDate: fyStartNow, endDate: fyEndNow } = getFiscalYearDateRange(curYear, fySettings3)
-    const revenueNow = await db.prepare(`
-      SELECT SUM(amount) as total
-      FROM project_revenues
-      WHERE revenue_date >= ? AND revenue_date <= ?
-        AND payment_status IN ('paid','partial')
-    `).bind(fyStartNow, fyEndNow).first() as any
+    const { start: monthStart, endExclusive: monthEnd } = monthDateRange(curYear, curMonth)
+
+    const moneyNow = await db.prepare(`
+      SELECT
+        (SELECT COALESCE(SUM(amount), 0) FROM project_revenues
+          WHERE revenue_date >= ? AND revenue_date <= ? AND payment_status IN ('paid','partial')) as booked_ytd,
+        (SELECT COALESCE(SUM(amount), 0) FROM payment_requests
+          WHERE request_date >= ? AND request_date <= ?) as acceptance_ytd,
+        (SELECT COALESCE(SUM(paid_amount), 0) FROM payment_requests
+          WHERE status IN ('paid','partial') AND COALESCE(paid_date, request_date) >= ? AND COALESCE(paid_date, request_date) <= ?) as cash_ytd
+    `).bind(fyStartNow, fyEndNow, fyStartNow, fyEndNow, fyStartNow, fyEndNow).first() as any
+    const revenueNow = { total: moneyNow?.booked_ytd }
 
     // GTHĐ tổng tất cả dự án đang active
     const contractTotal = await db.prepare(`
       SELECT SUM(contract_value) as total FROM projects WHERE status != 'cancelled'
     `).first() as any
 
-    // Tổng giờ làm tháng hiện tại (regular + overtime)
     const hoursThisMonth = await db.prepare(`
       SELECT SUM(regular_hours) as regular, SUM(IFNULL(overtime_hours,0)) as overtime
       FROM timesheets
-      WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
-    `).bind(curYearStr, curMonthStr).first() as any
+      WHERE work_date >= ? AND work_date < ?
+    `).bind(monthStart, monthEnd).first() as any
 
     // Chi phí lương tháng hiện tại (từ monthly_labor_costs)
     const laborThisMonth = await db.prepare(`
@@ -7687,19 +7827,19 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     // ── NEW Widget 2: Nhân sự hoạt động tháng này + top contributor ──
     const activeUsersMonth = await db.prepare(`
       SELECT COUNT(DISTINCT user_id) as count FROM timesheets
-      WHERE strftime('%Y', work_date) = ? AND strftime('%m', work_date) = ?
-    `).bind(curYearStr, curMonthStr).first() as any
+      WHERE work_date >= ? AND work_date < ?
+    `).bind(monthStart, monthEnd).first() as any
 
     const topContributor = await db.prepare(`
       SELECT u.full_name, SUM(ts.regular_hours + ts.overtime_hours) as total_hours
       FROM timesheets ts JOIN users u ON u.id = ts.user_id
-      WHERE strftime('%Y', ts.work_date) = ? AND strftime('%m', ts.work_date) = ?
+      WHERE ts.work_date >= ? AND ts.work_date < ?
       GROUP BY ts.user_id ORDER BY total_hours DESC LIMIT 1
-    `).bind(curYearStr, curMonthStr).first() as any
+    `).bind(monthStart, monthEnd).first() as any
 
     // ── Sinh nhật tháng này ─────────────────────────────────────────────
     const birthdaysThisMonth = await db.prepare(`
-      SELECT id, full_name, birthday, department, job_title, avatar
+      SELECT id, full_name, birthday, department, job_title
       FROM users
       WHERE is_active = 1
         AND birthday IS NOT NULL
@@ -7707,6 +7847,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         AND strftime('%m', birthday) = ?
       ORDER BY strftime('%d', birthday) ASC
     `).bind(curMonthStr).all()
+    const birthdayRows = (birthdaysThisMonth.results as any[]).map(u => ({ ...u, avatar: avatarApiPath(u.id) }))
 
     // ── NEW Widget 3: Dự án sắp đến hạn (trong 30 ngày tới) & deadline đã qua ──
     const projectsNearDeadline = await db.prepare(`
@@ -7792,6 +7933,9 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         completion_rate: totalTasks?.count > 0 ? Math.round((completedTasks?.count / totalTasks?.count) * 100) : 0,
         // Extra stats for secondary widgets (legacy - kept for compat)
         revenue_ytd:        revenueNow?.total       || 0,
+        booked_revenue_ytd: moneyNow?.booked_ytd    || 0,
+        acceptance_ytd:     moneyNow?.acceptance_ytd || 0,
+        cash_collected_ytd: moneyNow?.cash_ytd      || 0,
         contract_total:     contractTotal?.total    || 0,
         hours_this_month:   (hoursThisMonth?.regular || 0) + (hoursThisMonth?.overtime || 0),
         regular_this_month: hoursThisMonth?.regular  || 0,
@@ -7821,7 +7965,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
       task_status_breakdown: taskStatusBreakdown.results,
       projects_near_deadline: projectsNearDeadline.results,
       my_active_tasks: myActiveTasks.results,
-      birthdays_this_month: birthdaysThisMonth.results,
+      birthdays_this_month: birthdayRows,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -9725,6 +9869,12 @@ app.post('/api/disciplines/reset', authMiddleware, async (c) => {
 // INIT DATABASE (for first run)
 // ===================================================
 app.post('/api/system/init', async (c) => {
+  if (c.env.ALLOW_SYSTEM_INIT !== '1') {
+    return c.json({
+      error: 'POST /api/system/init đã tắt. Schema production chỉ qua wrangler d1 migrations apply.',
+      docs: 'docs/TU-DIEN-SO-LIEU.md',
+    }, 403)
+  }
   try {
     const db = c.env.DB
 
@@ -9885,16 +10035,7 @@ app.post('/api/system/init', async (c) => {
       }
     } catch (_fixErr) { /* ignore */ }
 
-    // ---- CRITICAL: Always dedup timesheets BEFORE seeding new data ----
-    // Unique key is now (user_id, project_id, work_date) — one record per person per project per day
-    try {
-      await db.prepare(`
-        DELETE FROM timesheets
-        WHERE id NOT IN (
-          SELECT MAX(id) FROM timesheets GROUP BY user_id, project_id, work_date
-        )
-      `).run()
-    } catch (_) { /* ignore */ }
+    // Uniqueness is enforced by migrations 0022 / 0044. Do not DELETE timesheets here.
 
     // Insert admin user — use UPSERT so password is always correct hash
     const adminHash = await hashPassword('Admin@123456')
@@ -10136,45 +10277,7 @@ app.post('/api/system/init', async (c) => {
     }
 
     // Sample costs & revenues - for year 2026
-    // GLOBAL DEDUP: Always run after ALL timesheet inserts to clean any existing duplicates
-    try {
-      await db.prepare(`
-        DELETE FROM timesheets
-        WHERE id NOT IN (
-          SELECT MAX(id) FROM timesheets GROUP BY user_id, work_date
-        )
-      `).run()
-    } catch (_) { /* ignore */ }
-
-    // AUTO-DEDUP: Remove existing duplicate project_costs and project_revenues on every init
-    // This permanently fixes any data doubled by previous versions of this init endpoint
-    try {
-      await db.prepare(`
-        DELETE FROM project_costs
-        WHERE id NOT IN (
-          SELECT MAX(id) FROM project_costs
-          GROUP BY project_id, cost_type, cost_date
-        )
-      `).run()
-    } catch (_) { /* ignore */ }
-    try {
-      await db.prepare(`
-        DELETE FROM project_revenues
-        WHERE id NOT IN (
-          SELECT MAX(id) FROM project_revenues
-          GROUP BY project_id, revenue_date, description
-        )
-      `).run()
-    } catch (_) { /* ignore */ }
-    try {
-      await db.prepare(`
-        DELETE FROM project_labor_costs
-        WHERE id NOT IN (
-          SELECT MAX(id) FROM project_labor_costs
-          GROUP BY project_id, month, year
-        )
-      `).run()
-    } catch (_) { /* ignore */ }
+    // Do not DELETE/dedup production-like rows on init. Unique keys + INSERT OR IGNORE only.
 
     // ============================================================
     // Sample costs & revenues — PREVENT DUPLICATES on every re-init
@@ -10587,9 +10690,10 @@ app.get('/api/analytics/project-performance', authMiddleware, adminOnly, async (
     const user = c.get('user') as any
     const { year } = c.req.query()
     const y = year || new Date().getFullYear().toString()
+    const { start: yStart, endExclusive: yEnd } = yearDateRange(parseInt(y, 10))
 
     let projectFilter = ''
-    let binds: any[] = [y, y]
+    let binds: any[] = [yStart, yEnd, yStart, yEnd]
     if (user.role !== 'system_admin') {
       projectFilter = 'AND p.id IN (SELECT project_id FROM project_members WHERE user_id = ?)'
       binds.push(user.id)
@@ -10598,7 +10702,10 @@ app.get('/api/analytics/project-performance', authMiddleware, adminOnly, async (
     const projects = await db.prepare(`
       SELECT
         p.id, p.code, p.name, p.status, p.start_date, p.end_date,
-        p.budget, p.contract_value, p.progress,
+        p.budget, p.contract_value, p.progress as pm_progress,
+        CASE WHEN COALESCE(t_stats.total_tasks, 0) > 0
+          THEN CAST(ROUND(100.0 * COALESCE(t_stats.completed_tasks, 0) / t_stats.total_tasks) AS INTEGER)
+          ELSE 0 END as computed_progress,
         COALESCE(t_stats.total_tasks, 0)     as total_tasks,
         COALESCE(t_stats.completed_tasks, 0) as completed_tasks,
         COALESCE(t_stats.overdue_tasks, 0)   as overdue_tasks,
@@ -10611,17 +10718,17 @@ app.get('/api/analytics/project-performance', authMiddleware, adminOnly, async (
       FROM projects p
       LEFT JOIN (
         SELECT project_id,
-          COUNT(*) as total_tasks,
-          SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed_tasks,
-          SUM(CASE WHEN is_overdue=1 AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks,
-          SUM(CASE WHEN priority='urgent' AND status!='completed' THEN 1 ELSE 0 END) as urgent_tasks
+          SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END) as total_tasks,
+          SUM(CASE WHEN status IN ('completed','review') THEN 1 ELSE 0 END) as completed_tasks,
+          SUM(CASE WHEN due_date IS NOT NULL AND due_date < date('now') AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks,
+          SUM(CASE WHEN priority='urgent' AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as urgent_tasks
         FROM tasks GROUP BY project_id
       ) t_stats ON t_stats.project_id = p.id
       LEFT JOIN (
         SELECT project_id,
           SUM(regular_hours + overtime_hours) as total_hours,
           SUM(CASE WHEN status='approved' THEN regular_hours + overtime_hours ELSE 0 END) as approved_hours
-        FROM timesheets WHERE strftime('%Y', work_date) = ?
+        FROM timesheets WHERE work_date >= ? AND work_date < ?
         GROUP BY project_id
       ) ts_stats ON ts_stats.project_id = p.id
       LEFT JOIN (
@@ -10630,7 +10737,7 @@ app.get('/api/analytics/project-performance', authMiddleware, adminOnly, async (
       ) mem_stats ON mem_stats.project_id = p.id
       LEFT JOIN (
         SELECT project_id, SUM(amount) as total_cost
-        FROM project_costs WHERE strftime('%Y', cost_date) = ?
+        FROM project_costs WHERE cost_date >= ? AND cost_date < ?
         GROUP BY project_id
       ) cost_stats ON cost_stats.project_id = p.id
       LEFT JOIN (
@@ -10641,7 +10748,10 @@ app.get('/api/analytics/project-performance', authMiddleware, adminOnly, async (
       ORDER BY p.created_at DESC
     `).bind(...binds).all()
 
-    return c.json({ projects: projects.results })
+    return c.json({ projects: (projects.results as any[]).map(p => ({
+      ...p,
+      progress: p.computed_progress,
+    })) })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -10684,7 +10794,7 @@ app.get('/api/analytics/team-productivity', authMiddleware, adminOnly, async (c)
           assigned_to,
           COUNT(DISTINCT id) as assigned_tasks,
           COUNT(DISTINCT CASE WHEN status IN ('completed','review') ${taskDoneFilter} THEN id END) as completed_tasks,
-          COUNT(DISTINCT CASE WHEN is_overdue=1 AND status NOT IN ('completed','review','cancelled') THEN id END) as overdue_tasks
+          COUNT(DISTINCT CASE WHEN due_date IS NOT NULL AND due_date < date('now') AND status NOT IN ('completed','review','cancelled') THEN id END) as overdue_tasks
         FROM tasks t
         WHERE assigned_to IS NOT NULL ${taskYearFilter}
         GROUP BY assigned_to
@@ -10748,7 +10858,7 @@ app.get('/api/analytics/task-analytics', authMiddleware, adminOnly, async (c) =>
     const byDiscipline = await db.prepare(`
       SELECT discipline_code, COUNT(*) as count,
         SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN is_overdue=1 AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue
+        SUM(CASE WHEN due_date IS NOT NULL AND due_date < date('now') AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue
       FROM tasks t WHERE discipline_code IS NOT NULL AND discipline_code != '' ${projectFilter}
       GROUP BY discipline_code ORDER BY count DESC
     `).bind(...binds).all()
@@ -11076,7 +11186,10 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
 
     // ── 1. Tất cả dự án (kể cả chưa có doanh thu/chi phí)
     const projects = await db.prepare(`
-      SELECT id, code, name, status, project_type, contract_value, management_fee_pct, start_date, end_date, progress
+      SELECT id, code, name, status, project_type, contract_value, management_fee_pct, start_date, end_date,
+        progress as pm_progress,
+        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = projects.id AND t.status != 'cancelled') as total_tasks,
+        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = projects.id AND t.status IN ('completed','review')) as done_tasks
       FROM projects WHERE status != 'cancelled'
       ORDER BY name ASC
     `).all()
@@ -11177,7 +11290,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
 
       const contractValue    = p.contract_value || 0
       const feePct           = p.management_fee_pct || 0
-      const projectBudget    = contractValue > 0 ? Math.round(contractValue * (1 - feePct / 100)) : 0
+      const projectBudget    = computeProjectBudget(contractValue, feePct)
       const revenueCollected = rev.revenue_collected || 0
       const revenueCollectedOriginal = revOrigMap[p.id] || revenueCollected  // nghiệm thu gốc
       const paidAmountTotal  = paidAmtMap[p.id] || 0                         // dòng tiền thực thu
@@ -11209,7 +11322,9 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
         name: p.name,
         status: p.status,
         project_type: p.project_type,
-        progress: p.progress || 0,
+        computed_progress: taskComputedProgress(p.total_tasks, p.done_tasks),
+        pm_progress: p.pm_progress || p.progress || 0,
+        progress: taskComputedProgress(p.total_tasks, p.done_tasks),
         contract_value: contractValue,
         management_fee_pct: feePct,
         project_budget: projectBudget,
@@ -11294,7 +11409,10 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
 
     // ── 1. Tất cả dự án (kể cả chưa có doanh thu/chi phí)
     const projects = await db.prepare(`
-      SELECT id, code, name, status, project_type, contract_value, management_fee_pct, start_date, end_date, progress
+      SELECT id, code, name, status, project_type, contract_value, management_fee_pct, start_date, end_date,
+        progress as pm_progress,
+        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = projects.id AND t.status != 'cancelled') as total_tasks,
+        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = projects.id AND t.status IN ('completed','review')) as done_tasks
       FROM projects WHERE status != 'cancelled'
       ORDER BY name ASC
     `).all()
@@ -11423,7 +11541,9 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
         name: p.name,
         status: p.status,
         project_type: p.project_type,
-        progress: p.progress || 0,
+        computed_progress: taskComputedProgress(p.total_tasks, p.done_tasks),
+        pm_progress: p.pm_progress || p.progress || 0,
+        progress: taskComputedProgress(p.total_tasks, p.done_tasks),
         start_date: startDate,
         end_date: endDate,
         contract_value: contractValue,
@@ -11685,8 +11805,8 @@ app.get('/api/analytics/project-health', authMiddleware, adminOnly, async (c) =>
 
     const projects = await db.prepare(`
       SELECT
-        p.id, p.code, p.name, p.status, p.progress,
-        p.start_date, p.end_date, p.budget, p.contract_value,
+        p.id, p.code, p.name, p.status, p.progress as pm_progress,
+        p.start_date, p.end_date, p.contract_value, p.management_fee_pct,
         COALESCE(t_stats.total_tasks, 0)    as total_tasks,
         COALESCE(t_stats.done_tasks, 0)     as done_tasks,
         COALESCE(t_stats.overdue_tasks, 0)  as overdue_tasks,
@@ -11697,10 +11817,10 @@ app.get('/api/analytics/project-health', authMiddleware, adminOnly, async (c) =>
       FROM projects p
       LEFT JOIN (
         SELECT project_id,
-          COUNT(*) as total_tasks,
-          SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as done_tasks,
-          SUM(CASE WHEN is_overdue=1 AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks,
-          SUM(CASE WHEN priority='urgent' AND status!='completed' THEN 1 ELSE 0 END) as urgent_pending
+          SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END) as total_tasks,
+          SUM(CASE WHEN status IN ('completed','review') THEN 1 ELSE 0 END) as done_tasks,
+          SUM(CASE WHEN due_date IS NOT NULL AND due_date < date('now') AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as overdue_tasks,
+          SUM(CASE WHEN priority='urgent' AND status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) as urgent_pending
         FROM tasks GROUP BY project_id
       ) t_stats ON t_stats.project_id = p.id
       LEFT JOIN (
@@ -11735,8 +11855,9 @@ app.get('/api/analytics/project-health', authMiddleware, adminOnly, async (c) =>
       if (p.overdue_tasks > 0) issues.push(`${p.overdue_tasks} task trễ hạn`)
 
       // Budget health (20 pts)
-      if (p.budget > 0) {
-        const budgetUsage = p.total_cost / p.budget
+      const projectBudget = computeProjectBudget(p.contract_value, p.management_fee_pct)
+      if (projectBudget > 0) {
+        const budgetUsage = p.total_cost / projectBudget
         if (budgetUsage > 1.2) { score -= 20; issues.push('Vượt ngân sách >20%') }
         else if (budgetUsage > 1.0) { score -= 10; issues.push('Vượt ngân sách') }
         else if (budgetUsage > 0.9) score -= 5
@@ -11760,7 +11881,17 @@ app.get('/api/analytics/project-health', authMiddleware, adminOnly, async (c) =>
       else if (score < 75) health = 'fair'
       else if (score < 90) health = 'good'
 
-      return { ...p, health_score: score, health_status: health, issues, completion_rate: Math.round(completionRate * 100) }
+      return {
+        ...p,
+        computed_score: score,
+        pm_score: null,
+        health_score: score,
+        computed_progress: taskComputedProgress(p.total_tasks, p.done_tasks),
+        pm_progress: p.pm_progress || 0,
+        health_status: health,
+        issues,
+        completion_rate: Math.round(completionRate * 100),
+      }
     })
 
     return c.json({ projects: scored })
@@ -12362,9 +12493,12 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
       packages: packagesWithStages,
       stages: allStagesFlat,  // backward-compat
       letters: letters.results,
-      documents: docs.results,
+      documents: (docs.results as any[]).map(publicLegalDocument),
       config,
-      payments: payments.results,
+      payments: (payments.results as any[]).map(pr => ({
+        ...pr,
+        ...enrichPaymentMetrics(pr, (projectInfo as any)?.management_fee_pct || 0),
+      })),
       minutes: minutes.results,
       project: projectInfo   // thêm project info để frontend tính % phí QL
     })
@@ -12597,7 +12731,7 @@ app.get('/api/legal/:projectId/documents', authMiddleware, async (c) => {
        LEFT JOIN users u ON u.id = ld.created_by
        WHERE ld.project_id = ? ORDER BY ld.created_at DESC`
     ).bind(projectId).all()
-    return c.json({ documents: rows.results })
+    return c.json({ documents: (rows.results as any[]).map(publicLegalDocument) })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -12608,27 +12742,88 @@ app.post('/api/legal/:projectId/documents', authMiddleware, async (c) => {
   const projectId = parseInt(c.req.param('projectId'))
   const body = await c.req.json()
   try {
+    const stored = await storeMaybeDataUri(
+      c.env,
+      `legal/${projectId}/${Date.now()}`,
+      body.file_url || null
+    )
     const result = await c.env.DB.prepare(
       `INSERT INTO legal_documents (project_id, legal_item_id, doc_type, title, file_name, file_url, signed_date, notes, created_by)
        VALUES (?,?,?,?,?,?,?,?,?)`
     ).bind(
       projectId, body.legal_item_id || null, body.doc_type || 'other',
-      body.title, body.file_name || null, body.file_url || null,
+      body.title, body.file_name || null, stored.storedValue,
       body.signed_date || null, body.notes || null, user.id
     ).run()
-    return c.json({ id: result.meta.last_row_id, success: true })
+    const newId = result.meta.last_row_id as number
+    if (stored.r2Key && newId) {
+      try {
+        await c.env.DB.prepare(
+          `UPDATE legal_documents SET r2_key = ?, content_type = ?, byte_length = ? WHERE id = ?`
+        ).bind(stored.r2Key, stored.contentType, stored.byteLength, newId).run()
+      } catch { /* columns from migration 0046 */ }
+    }
+    return c.json({ id: newId, success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
+})
+
+app.get('/api/legal/documents/:id/file', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const row = await c.env.DB.prepare(
+    'SELECT * FROM legal_documents WHERE id = ?'
+  ).bind(id).first() as any
+  if (!row) return c.body(null, 404)
+  const key = row.r2_key || (isR2Ref(row.file_url) ? r2KeyFromRef(row.file_url) : null)
+  if (key) {
+    const obj = await getR2(c.env, key)
+    if (obj) {
+      return new Response(obj.body, {
+        headers: {
+          'Content-Type': row.content_type || obj.httpMetadata?.contentType || 'application/octet-stream',
+          'Content-Disposition': `inline; filename="${row.file_name || 'document'}"`,
+        }
+      })
+    }
+  }
+  if (typeof row.file_url === 'string' && row.file_url.startsWith('data:')) {
+    const parsed = parseDataUri(row.file_url)
+    if (!parsed) return c.body(null, 404)
+    return new Response(parsed.bytes, {
+      headers: {
+        'Content-Type': parsed.contentType,
+        'Content-Disposition': `inline; filename="${row.file_name || 'document'}"`,
+      }
+    })
+  }
+  if (typeof row.file_url === 'string' && /^https?:/i.test(row.file_url)) {
+    return c.redirect(row.file_url)
+  }
+  return c.body(null, 404)
 })
 
 app.put('/api/legal/documents/:id', authMiddleware, async (c) => {
   const id = parseInt(c.req.param('id'))
   const body = await c.req.json()
   try {
+    const current = await c.env.DB.prepare('SELECT project_id FROM legal_documents WHERE id = ?').bind(id).first() as any
+    const stored = body.file_url !== undefined
+      ? await storeMaybeDataUri(c.env, `legal/${current?.project_id || 0}/${id}`, body.file_url)
+      : null
     await c.env.DB.prepare(
       `UPDATE legal_documents SET title=?, doc_type=?, legal_item_id=?, signed_date=?, notes=?, file_name=?, file_url=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
-    ).bind(body.title, body.doc_type, body.legal_item_id || null, body.signed_date || null, body.notes || null, body.file_name || null, body.file_url || null, id).run()
+    ).bind(
+      body.title, body.doc_type, body.legal_item_id || null, body.signed_date || null, body.notes || null,
+      body.file_name || null, stored ? stored.storedValue : body.file_url || null, id
+    ).run()
+    if (stored?.r2Key) {
+      try {
+        await c.env.DB.prepare(
+          `UPDATE legal_documents SET r2_key = ?, content_type = ?, byte_length = ? WHERE id = ?`
+        ).bind(stored.r2Key, stored.contentType, stored.byteLength, id).run()
+      } catch { /* columns from migration 0046 */ }
+    }
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -12790,111 +12985,7 @@ app.get('/api/legal/:projectId/letters/preview-number', authMiddleware, async (c
 // Auto-sync với project_revenues khi status = paid | partial
 // ===================================================
 
-// ── Helper: map payment status → revenue payment_status ──────────────────────
-function paymentStatusToRevenue(status: string): string {
-  if (status === 'paid') return 'paid'
-  if (status === 'partial') return 'partial'
-  return 'pending'
-}
-
-// ── Helper: tạo hoặc cập nhật revenue từ payment request ─────────────────────
-// Quy tắc:
-//   - `amount`      = Giá trị nghiệm thu  → dùng để tính DOANH THU vào sổ
-//   - `paid_amount` = Số tiền đã thanh toán (Dòng tiền) → KHÔNG dùng tính doanh thu
-async function syncPaymentToRevenue(
-  db: D1Database,
-  payment: {
-    id: number, project_id: number, description: string,
-    amount: number,      // Giá trị nghiệm thu → làm căn cứ doanh thu
-    paid_amount: number, // Dòng tiền thực thu (lưu nhưng không tính doanh thu)
-    currency: string,
-    paid_date: string | null, invoice_number: string | null,
-    payment_phase: string | null, status: string,
-    revenue_id: number | null, notes: string | null,
-    vat_pct?: number | null
-  },
-  userId: number
-): Promise<number | null> {
-  // Sync khi có giá trị nghiệm thu — bất kể status (pending/partial/paid)
-  const rawAmount = payment.amount || 0
-  const shouldSync = rawAmount > 0
-
-  // Lấy % phí quản lý của dự án để tính doanh thu thực
-  const projRow = await db.prepare(
-    'SELECT management_fee_pct FROM projects WHERE id = ?'
-  ).bind(payment.project_id).first() as any
-  const feePct = (projRow?.management_fee_pct || 0) as number
-  const vatPct = (payment.vat_pct != null ? payment.vat_pct : 0) as number
-
-  // BƯỚC 1: Tính doanh thu trước VAT = amount (nghiệm thu) / (1 + vat_pct/100)
-  // Ví dụ: nghiệm thu=1,100,000, VAT=10% → trước VAT = 1,100,000 / 1.10 = 1,000,000
-  const amountBeforeVat = vatPct > 0
-    ? Math.round(rawAmount / (1 + vatPct / 100))
-    : rawAmount
-
-  // BƯỚC 2: Trừ phí quản lý (nếu có) = doanh_thu_trước_vat × (1 − feePct/100)
-  const syncAmount = feePct > 0
-    ? Math.round(amountBeforeVat * (1 - feePct / 100))
-    : amountBeforeVat
-
-  // Nếu không cần sync (amount = 0) → xóa revenue cũ nếu có
-  if (!shouldSync) {
-    if (payment.revenue_id) {
-      await db.prepare('DELETE FROM project_revenues WHERE id = ?').bind(payment.revenue_id).run()
-      await db.prepare('UPDATE payment_requests SET revenue_id = NULL WHERE id = ?').bind(payment.id).run()
-    }
-    return null
-  }
-
-  const revenueDesc = payment.payment_phase
-    ? `[${payment.payment_phase}] ${payment.description}`
-    : payment.description
-  const revenueStatus = paymentStatusToRevenue(payment.status)
-  // Với pending: revenue_date = null (chưa có ngày thanh toán)
-  const revenueDate = payment.status === 'pending' ? null : (payment.paid_date || null)
-
-  // Ghi chú: bổ sung thông tin nguồn gốc + VAT + phí QL
-  let calcNote = ''
-  if (vatPct > 0 && feePct > 0) {
-    calcNote = `\n[NT: ${rawAmount.toLocaleString('vi-VN')} VNĐ ÷ ${(100+vatPct)}% = ${amountBeforeVat.toLocaleString('vi-VN')} VNĐ trước thuế → Phí QL ${feePct}%: × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ doanh thu]`
-  } else if (vatPct > 0) {
-    calcNote = `\n[NT: ${rawAmount.toLocaleString('vi-VN')} VNĐ ÷ ${(100+vatPct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ trước thuế]`
-  } else if (feePct > 0) {
-    calcNote = `\n[NT: ${rawAmount.toLocaleString('vi-VN')} VNĐ × ${(100-feePct)}% = ${syncAmount.toLocaleString('vi-VN')} VNĐ]`
-  }
-  // Ghi thêm dòng tiền thực thu để tham chiếu
-  const paidRef = payment.paid_amount > 0
-    ? `\n[Dòng tiền thực thu: ${payment.paid_amount.toLocaleString('vi-VN')} VNĐ]`
-    : ''
-  const revenueNotes = `[Đồng bộ từ Hồ Sơ Pháp Lý - Giá trị nghiệm thu]${calcNote}${paidRef}${payment.notes ? '\n' + payment.notes : ''}`
-
-  if (payment.revenue_id) {
-    // Cập nhật revenue đã có
-    await db.prepare(`
-      UPDATE project_revenues
-      SET description = ?, amount = ?, amount_original = ?, currency = ?, revenue_date = ?,
-          invoice_number = ?, payment_status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).bind(
-      revenueDesc, syncAmount, rawAmount, payment.currency || 'VND',
-      revenueDate, payment.invoice_number || null,
-      revenueStatus, revenueNotes, payment.revenue_id
-    ).run()
-    return payment.revenue_id
-  } else {
-    // Tạo revenue mới
-    const result = await db.prepare(`
-      INSERT INTO project_revenues
-        (project_id, description, amount, amount_original, currency, revenue_date, invoice_number, payment_status, notes, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?)
-    `).bind(
-      payment.project_id, revenueDesc, syncAmount, rawAmount, payment.currency || 'VND',
-      revenueDate, payment.invoice_number || null,
-      revenueStatus, revenueNotes, userId
-    ).run()
-    return result.meta.last_row_id as number
-  }
-}
+// Payment ↔ revenue sync lives in src/finance.ts (computeBookedRevenue / syncPaymentToRevenue)
 
 // ===================================================
 // PROJECT ESTIMATES — Dự toán dự án
@@ -12999,10 +13090,8 @@ app.get('/api/projects/:id/estimate-vs-actual', authMiddleware, adminOnly, async
   `).bind(projectId).first() as any
 
   // ── 4. Thực tế — Chi phí lương ───────────────────────────────────────────────
-  const laborActual = await db.prepare(`
-    SELECT COALESCE(SUM(total_labor_cost), 0) as total
-    FROM project_labor_costs WHERE project_id = ?
-  `).bind(projectId).first() as any
+  const overtimeFactor = await getOvertimeFactor(db)
+  const laborFromTimesheets = await computeProjectLaborFromTimesheets(db, projectId, overtimeFactor)
 
   // ── 5. Thực tế — Chi phí chung phân bổ ─────────────────────────────────────
   const sharedActual = await db.prepare(`
@@ -13012,10 +13101,10 @@ app.get('/api/projects/:id/estimate-vs-actual', authMiddleware, adminOnly, async
 
   // ── 6. Tổng hợp thực tế ─────────────────────────────────────────────────────
   const actDirectCost = directActual?.total   || 0
-  const actLaborCost  = laborActual?.total    || 0
+  const actLaborCost  = laborFromTimesheets
   const actSharedCost = sharedActual?.total   || 0
   const actTotalCost  = actDirectCost + actLaborCost + actSharedCost
-  const actRevenue    = revActual?.nghiem_thu || 0
+  const actRevenue    = revActual?.doanh_thu_ns || 0
   const actProfit     = actRevenue - actTotalCost
 
   // ── Helper: tính chênh lệch ─────────────────────────────────────────────────
@@ -13061,17 +13150,23 @@ app.get('/api/legal/:projectId/payments', authMiddleware, async (c) => {
       SELECT pr.*, u.full_name as created_by_name,
              li.stt as item_stt, li.title as item_title,
              ls.code as stage_code, lp.name as package_name,
-             rv.id as revenue_synced_id
+             rv.id as revenue_synced_id,
+             p.management_fee_pct as fee_pct
       FROM payment_requests pr
       LEFT JOIN users u ON u.id = pr.created_by
       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
       LEFT JOIN project_revenues rv ON rv.id = pr.revenue_id
+      LEFT JOIN projects p ON p.id = pr.project_id
       WHERE pr.project_id = ?
       ORDER BY pr.created_at DESC
     `).bind(projectId).all()
-    return c.json({ payments: rows.results })
+    const payments = (rows.results as any[]).map(pr => ({
+      ...pr,
+      ...enrichPaymentMetrics(pr, pr.fee_pct || 0),
+    }))
+    return c.json({ payments })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -13342,6 +13437,41 @@ app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) 
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
+})
+
+app.get('/api/finance/revenue-audit', authMiddleware, adminOnly, async (c) => {
+  const db = c.env.DB
+  const brokenLinks = await db.prepare(`
+    SELECT pr.id, pr.project_id, pr.revenue_id, pr.amount, pr.vat_pct
+    FROM payment_requests pr
+    WHERE pr.revenue_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM project_revenues rv WHERE rv.id = pr.revenue_id)
+  `).all()
+  const orphans = await db.prepare(`
+    SELECT rv.id, rv.project_id, rv.amount, rv.description
+    FROM project_revenues rv
+    WHERE NOT EXISTS (SELECT 1 FROM payment_requests pr WHERE pr.revenue_id = rv.id)
+  `).all()
+  const payments = await db.prepare(`
+    SELECT pr.id, pr.project_id, pr.amount, pr.vat_pct, pr.revenue_id, p.management_fee_pct as fee_pct, rv.amount as booked
+    FROM payment_requests pr
+    JOIN projects p ON p.id = pr.project_id
+    LEFT JOIN project_revenues rv ON rv.id = pr.revenue_id
+    WHERE pr.amount > 0
+  `).all()
+  const mismatches = (payments.results as any[]).filter(p => {
+    if (p.booked == null) return false
+    const { bookedRevenue } = computeBookedRevenue(p.amount, p.vat_pct, p.fee_pct)
+    return bookedRevenue !== Number(p.booked)
+  }).map(p => {
+    const { bookedRevenue, amountBeforeVat } = computeBookedRevenue(p.amount, p.vat_pct, p.fee_pct)
+    return { ...p, expected_booked: bookedRevenue, amount_before_vat: amountBeforeVat }
+  })
+  return c.json({
+    broken_links: brokenLinks.results,
+    orphan_revenues: orphans.results,
+    formula_mismatches: mismatches,
+  })
 })
 
 // ===================================================
@@ -14484,7 +14614,8 @@ async function recalcUsedDays(db: D1Database, userId: number, year: number) {
   //   half_day_am/pm        → luôn tính (0.5 ngày)
   //   sick_leave ≤ 3 ngày   → tính
   //   sick_leave > 3 ngày   → miễn trừ
-  const row = await db.prepare(`
+    const { start, endExclusive } = yearDateRange(year)
+    const row = await db.prepare(`
     SELECT COALESCE(SUM(total_days), 0) AS used
     FROM leave_requests
     WHERE user_id = ?
@@ -14495,8 +14626,8 @@ async function recalcUsedDays(db: D1Database, userId: number, year: number) {
         OR (leave_type = 'sick_leave' AND total_days <= 3)
       )
       AND status = 'approved'
-      AND strftime('%Y', start_date) = ?
-  `).bind(userId, String(year)).first() as any
+      AND start_date >= ? AND start_date < ?
+  `).bind(userId, start, endExclusive).first() as any
   const used = row?.used ?? 0
   await db.prepare(`
     UPDATE leave_balances SET used_days = ?, updated_at = CURRENT_TIMESTAMP
@@ -14714,46 +14845,32 @@ app.post('/api/leave-requests/:id/review', authMiddleware, adminOnly, async (c) 
 
       const dates = expandLeaveDates(leave.start_date, leave.end_date, leave.leave_type)
       for (const dateStr of dates) {
-        // Kiểm tra đã có timesheet chưa
-        const existing = await db.prepare(
-          `SELECT id FROM timesheets WHERE user_id = ? AND work_date = ? LIMIT 1`
+        const existingLeave = await db.prepare(
+          `SELECT id FROM timesheets WHERE user_id = ? AND work_date = ? AND project_id IS NULL LIMIT 1`
         ).bind(leave.user_id, dateStr).first()
 
-        if (!existing) {
+        const leaveDesc =
+          `[Tự động] ${leave.leave_type === 'annual_leave' ? 'Nghỉ phép năm' :
+            leave.leave_type === 'sick_leave' ? 'Nghỉ ốm' :
+            leave.leave_type === 'unpaid_leave' ? 'Nghỉ không lương' :
+            leave.leave_type === 'compensatory' ? 'Nghỉ bù' :
+            leave.leave_type === 'holiday' ? 'Nghỉ lễ' :
+            leave.leave_type === 'half_day_am' ? 'Nghỉ nửa ngày (sáng)' :
+            leave.leave_type === 'half_day_pm' ? 'Nghỉ nửa ngày (chiều)' : 'Ngày nghỉ'
+          } — Đã được phê duyệt`
+
+        if (!existingLeave) {
           await db.prepare(`
             INSERT INTO timesheets (user_id, project_id, task_id, work_date, day_type, regular_hours, overtime_hours, description, status)
             VALUES (?, NULL, NULL, ?, ?, 0, 0, ?, 'approved')
-          `).bind(
-            leave.user_id, dateStr, leave.leave_type,
-            `[Tự động] ${leave.leave_type === 'annual_leave' ? 'Nghỉ phép năm' :
-              leave.leave_type === 'sick_leave' ? 'Nghỉ ốm' :
-              leave.leave_type === 'unpaid_leave' ? 'Nghỉ không lương' :
-              leave.leave_type === 'compensatory' ? 'Nghỉ bù' :
-              leave.leave_type === 'holiday' ? 'Nghỉ lễ' :
-              leave.leave_type === 'half_day_am' ? 'Nghỉ nửa ngày (sáng)' :
-              leave.leave_type === 'half_day_pm' ? 'Nghỉ nửa ngày (chiều)' : 'Ngày nghỉ'
-            } — Đã được phê duyệt`
-          ).run()
+          `).bind(leave.user_id, dateStr, leave.leave_type, leaveDesc).run()
           autoCreatedDates.push(dateStr)
         } else {
-          // Nếu đã có → cập nhật thành ngày nghỉ và tự động approve
           await db.prepare(`
-            UPDATE timesheets SET day_type = ?, project_id = NULL, task_id = NULL,
-              regular_hours = 0, overtime_hours = 0, status = 'approved',
+            UPDATE timesheets SET day_type = ?, regular_hours = 0, overtime_hours = 0, status = 'approved',
               description = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ? AND work_date = ?
-          `).bind(
-            leave.leave_type,
-            `[Tự động] ${leave.leave_type === 'annual_leave' ? 'Nghỉ phép năm' :
-              leave.leave_type === 'sick_leave' ? 'Nghỉ ốm' :
-              leave.leave_type === 'unpaid_leave' ? 'Nghỉ không lương' :
-              leave.leave_type === 'compensatory' ? 'Nghỉ bù' :
-              leave.leave_type === 'holiday' ? 'Nghỉ lễ' :
-              leave.leave_type === 'half_day_am' ? 'Nghỉ nửa ngày (sáng)' :
-              leave.leave_type === 'half_day_pm' ? 'Nghỉ nửa ngày (chiều)' : 'Ngày nghỉ'
-            } — Đã được phê duyệt`,
-            leave.user_id, dateStr
-          ).run()
+            WHERE id = ?
+          `).bind(leave.leave_type, leaveDesc, existingLeave.id).run()
           autoCreatedDates.push(dateStr)
         }
       }
@@ -14937,6 +15054,29 @@ app.put('/api/leave-balances-default', authMiddleware, adminOnly, async (c) => {
   }
 })
 
+app.get('/api/leave-balances/audit', authMiddleware, adminOnly, async (c) => {
+  const db = c.env.DB
+  const year = parseInt(c.req.query('year') || String(new Date().getFullYear()))
+  const { start, endExclusive } = yearDateRange(year)
+  const rows = await db.prepare(`
+    SELECT lb.user_id, u.full_name, lb.year, lb.used_days as stored_used,
+      COALESCE((
+        SELECT SUM(lr.total_days) FROM leave_requests lr
+        WHERE lr.user_id = lb.user_id AND lr.status = 'approved'
+          AND lr.start_date >= ? AND lr.start_date < ?
+          AND (
+            lr.leave_type IN ('annual_leave','half_day_am','half_day_pm')
+            OR (lr.leave_type = 'sick_leave' AND lr.total_days <= 3)
+          )
+      ), 0) as computed_used
+    FROM leave_balances lb
+    JOIN users u ON u.id = lb.user_id
+    WHERE lb.year = ?
+  `).bind(start, endExclusive, year).all()
+  const mismatches = (rows.results as any[]).filter(r => Number(r.stored_used) !== Number(r.computed_used))
+  return c.json({ year, checked: rows.results.length, mismatches, rows: rows.results })
+})
+
 // GET /api/leave-balances/:userId — admin xem quota + summary của 1 nhân viên
 app.get('/api/leave-balances/:userId', authMiddleware, adminOnly, async (c) => {
   try {
@@ -14953,7 +15093,7 @@ app.get('/api/leave-balances/:userId', authMiddleware, adminOnly, async (c) => {
     await recalcUsedDays(db, userId, year)
 
     const balance = await db.prepare(`
-      SELECT lb.*, u.full_name, u.username, u.avatar, u.department, u.job_title
+      SELECT lb.*, u.full_name, u.username, u.department, u.job_title
       FROM leave_balances lb
       JOIN users u ON u.id = lb.user_id
       WHERE lb.user_id = ? AND lb.year = ?
@@ -14962,27 +15102,28 @@ app.get('/api/leave-balances/:userId', authMiddleware, adminOnly, async (c) => {
     if (!balance) return c.json({ error: 'Không tìm thấy nhân viên' }, 404)
 
     // Thống kê theo loại nghỉ (đã duyệt)
+    const { start: yStart, endExclusive: yEnd } = yearDateRange(year)
     const summary = await db.prepare(`
       SELECT leave_type, SUM(total_days) as total_days, COUNT(*) as count
       FROM leave_requests
       WHERE user_id = ? AND status = 'approved'
-        AND strftime('%Y', start_date) = ?
+        AND start_date >= ? AND start_date < ?
       GROUP BY leave_type
-    `).bind(userId, String(year)).all()
+    `).bind(userId, yStart, yEnd).all()
 
     // Đếm đơn theo trạng thái
     const statusCount = await db.prepare(`
       SELECT status, COUNT(*) as count
       FROM leave_requests
-      WHERE user_id = ? AND strftime('%Y', start_date) = ?
+      WHERE user_id = ? AND start_date >= ? AND start_date < ?
       GROUP BY status
-    `).bind(userId, String(year)).all()
+    `).bind(userId, yStart, yEnd).all()
 
     return c.json({
       user_id:     balance.user_id,
       full_name:   balance.full_name,
       username:    balance.username,
-      avatar:      balance.avatar,
+      avatar:      avatarApiPath(userId),
       department:  balance.department,
       job_title:   balance.job_title,
       year,
@@ -15103,7 +15244,11 @@ app.get('/api/projects/:projectId/weekly-plans/:planId', authMiddleware, async (
       WHERE wpi.plan_id = ?
       ORDER BY wpi.sort_order, wpi.id
     `).bind(planId).all()
-    return c.json({ ...plan, items: items.results })
+    const resolved = []
+    for (const it of items.results as any[]) {
+      resolved.push({ ...it, assignee_names: await resolveAssigneeNames(db, it.assignee_ids) })
+    }
+    return c.json({ ...plan, items: resolved })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -15596,17 +15741,27 @@ app.get('/api/executive/dashboard', authMiddleware, pmoAccess, async (c) => {
     // 2. Tổng đã thu (từ payment_requests đã paid hoặc partial)
     const revenueKpi = await db.prepare(`
       SELECT
-        COALESCE(SUM(paid_amount), 0) as total_collected,
-        COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) as pending_amount
+        COALESCE(SUM(paid_amount), 0) as cash_collected,
+        COALESCE(SUM(amount), 0) as acceptance_amount,
+        COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) as pending_acceptance
       FROM payment_requests
       WHERE status IN ('paid','partial','pending')
     `).first() as any
+    const bookedKpi = await db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as booked_revenue
+      FROM project_revenues WHERE payment_status IN ('paid','partial')
+    `).first() as any
+    revenueKpi.total_collected = revenueKpi.cash_collected
+    revenueKpi.pending_amount = revenueKpi.pending_acceptance
+    revenueKpi.booked_revenue = bookedKpi?.booked_revenue || 0
 
     // 3. Dự án cần chú ý (health_score < 60 hoặc risk_level = high/critical)
     const alertProjects = await db.prepare(`
-      SELECT p.id, p.code, p.name, p.client, p.status, p.end_date, p.progress,
+      SELECT p.id, p.code, p.name, p.client, p.status, p.end_date, p.progress as pm_progress,
+             (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE CAST(ROUND(100.0 * SUM(CASE WHEN t.status IN ('completed','review') THEN 1 ELSE 0 END) / COUNT(*)) AS INTEGER) END
+              FROM tasks t WHERE t.project_id = p.id AND t.status != 'cancelled') as computed_progress,
              p.contract_value,
-             ph.health_score, ph.risk_level, ph.risk_notes, ph.current_phase,
+             ph.health_score as pm_score, ph.health_score, ph.risk_level, ph.risk_notes, ph.current_phase,
              ph.next_milestone, ph.next_milestone_date,
              ph.pm_name, ph.pm_phone, ph.pm_report, ph.pm_report_date,
              ph.client_contact_name, ph.client_contact_phone, ph.client_contact_title,
@@ -15641,7 +15796,7 @@ app.get('/api/executive/dashboard', authMiddleware, pmoAccess, async (c) => {
     const overdueKpi = await db.prepare(`
       SELECT COUNT(*) as overdue_tasks
       FROM tasks
-      WHERE status NOT IN ('completed','cancelled')
+      WHERE status NOT IN ('completed','review','cancelled')
         AND due_date IS NOT NULL AND due_date < ?
     `).bind(today).first() as any
 
@@ -15697,14 +15852,16 @@ app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
     let orderBy = 'p.contract_value DESC'
     if (sort === 'health_asc') orderBy = 'ph.health_score ASC'
     else if (sort === 'end_date_asc') orderBy = 'p.end_date ASC'
-    else if (sort === 'progress_asc') orderBy = 'p.progress ASC'
+    else if (sort === 'progress_asc') orderBy = 'computed_progress ASC'
 
     const projects = await db.prepare(`
       SELECT
         p.id, p.code, p.name, p.client, p.project_type, p.status,
-        p.start_date, p.end_date, p.contract_value, p.progress, p.location,
+        p.start_date, p.end_date, p.contract_value, p.progress as pm_progress, p.location,
         p.description,
-        ph.health_score, ph.risk_level, ph.current_phase,
+        (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE CAST(ROUND(100.0 * SUM(CASE WHEN t.status IN ('completed','review') THEN 1 ELSE 0 END) / COUNT(*)) AS INTEGER) END
+         FROM tasks t WHERE t.project_id = p.id AND t.status != 'cancelled') as computed_progress,
+        ph.health_score as pm_score, ph.health_score, ph.risk_level, ph.current_phase,
         ph.next_milestone, ph.next_milestone_date,
         ph.pm_report, ph.pm_report_date,
         ph.risk_notes,
@@ -15713,8 +15870,10 @@ app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
         ph.next_payment_phase, ph.next_payment_amount, ph.next_payment_note,
         -- Tổng đã thu từ payment_requests
         COALESCE((SELECT SUM(paid_amount) FROM payment_requests WHERE project_id = p.id AND status IN ('paid','partial')), 0) as collected_amount,
+        COALESCE((SELECT SUM(amount) FROM project_revenues WHERE project_id = p.id AND payment_status IN ('paid','partial')), 0) as booked_revenue,
+        COALESCE((SELECT SUM(amount) FROM payment_requests WHERE project_id = p.id), 0) as acceptance_amount,
         -- Số tasks overdue
-        (SELECT COUNT(*) FROM tasks WHERE project_id = p.id AND status NOT IN ('completed','cancelled')
+        (SELECT COUNT(*) FROM tasks WHERE project_id = p.id AND status NOT IN ('completed','review','cancelled')
           AND due_date IS NOT NULL AND due_date < ?) as overdue_tasks,
         -- Số tasks đang chạy
         (SELECT COUNT(*) FROM tasks WHERE project_id = p.id AND status = 'in_progress') as active_tasks,
@@ -15731,7 +15890,10 @@ app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
       ORDER BY ${orderBy}
     `).bind(today, ...params).all()
 
-    return c.json(projects.results)
+    return c.json((projects.results as any[]).map(p => ({
+      ...p,
+      progress: p.computed_progress,
+    })))
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -15743,14 +15905,14 @@ app.get('/api/executive/projects/:id', authMiddleware, pmoAccess, async (c) => {
     const today = new Date().toISOString().split('T')[0]
 
     const project = await db.prepare(`
-      SELECT p.*, ph.health_score, ph.risk_level, ph.current_phase,
+      SELECT p.*, p.progress as pm_progress, ph.health_score as pm_score, ph.health_score, ph.risk_level, ph.current_phase,
         ph.next_milestone, ph.next_milestone_date, ph.pm_report, ph.pm_report_date,
         ph.risk_notes, ph.client_contact_name, ph.client_contact_title, ph.client_contact_phone,
         ph.pm_name, ph.pm_title, ph.pm_phone,
         ph.next_payment_phase, ph.next_payment_amount, ph.next_payment_note
       FROM projects p LEFT JOIN project_health ph ON p.id = ph.project_id
       WHERE p.id = ?
-    `).bind(id).first()
+    `).bind(id).first() as any
 
     if (!project) return c.json({ error: 'Not found' }, 404)
 
@@ -15759,7 +15921,7 @@ app.get('/api/executive/projects/:id', authMiddleware, pmoAccess, async (c) => {
       db.prepare(`SELECT bd.*, u.full_name as created_by_name FROM boss_directives bd LEFT JOIN users u ON bd.created_by = u.id WHERE bd.project_id = ? ORDER BY bd.created_at DESC`).bind(id).all(),
       db.prepare(`
         SELECT
-          COUNT(*) as total,
+          SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END) as total,
           SUM(CASE WHEN status IN ('completed','review') THEN 1 ELSE 0 END) as done,
           SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) as in_progress,
           SUM(CASE WHEN status NOT IN ('completed','review','cancelled') AND due_date < ? THEN 1 ELSE 0 END) as overdue
@@ -15767,9 +15929,15 @@ app.get('/api/executive/projects/:id', authMiddleware, pmoAccess, async (c) => {
       `).bind(today, id).first(),
     ])
 
+    const ts = tasks_summary as any
     return c.json({
       ...project,
-      payments: payments.results,
+      computed_progress: taskComputedProgress(ts?.total, ts?.done),
+      pm_progress: project.progress || 0,
+      payments: (payments.results as any[]).map(pr => ({
+        ...pr,
+        ...enrichPaymentMetrics(pr, project.management_fee_pct || 0),
+      })),
       directives: directives.results,
       tasks_summary,
     })
@@ -16012,7 +16180,7 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
     // Ngân sách dự án = contract_value * (1 - management_fee_pct/100) — theo đúng công thức chuẩn
     // dùng thống nhất toàn hệ thống (cột projects.budget không được nhập trực tiếp, luôn = 0)
     const feePctExec = project.management_fee_pct || 0
-    const budgetValue = contractValue > 0 ? Math.round(contractValue * (1 - feePctExec / 100)) : 0
+    const budgetValue = computeProjectBudget(contractValue, feePctExec)
     const costSummary = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total_cost FROM project_costs WHERE project_id = ?
     `).bind(id).first() as any

@@ -10,5 +10,11 @@
       "database_name": "bim-management-production",
       "database_id": "1ecd2aa0-3156-4c30-866b-21dc5545d6d5"
     }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "bim-management-files"
+    }
   ]
 }

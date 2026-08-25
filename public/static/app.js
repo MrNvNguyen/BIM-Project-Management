@@ -125,6 +125,18 @@ function api(endpoint, options = {}) {
   }).then(r => r.data)
 }
 
+function authedFileUrl(path) {
+  if (!path) return ''
+  if (path.startsWith('data:')) return path
+  const base = path.startsWith('http') ? path : `${API_BASE}${path.startsWith('/') ? '' : '/'}${path}`
+  const sep = base.includes('?') ? '&' : '?'
+  return authToken ? `${base}${sep}token=${encodeURIComponent(authToken)}` : base
+}
+
+function isAvatarSrc(v) {
+  return !!v && (String(v).startsWith('data:image/') || String(v).includes('/api/users/'))
+}
+
 function toast(message, type = 'success', duration = 3000) {
   const colors = { success: '#00A651', error: '#EF4444', warning: '#FF6B00', info: '#0066CC' }
   const icons = { success: 'check-circle', error: 'times-circle', warning: 'exclamation-triangle', info: 'info-circle' }
@@ -825,8 +837,8 @@ async function initApp() {
   if (avatarMini) avatarMini.textContent = initials
 
   // Hiển thị avatar ảnh nếu có
-  if (currentUser.avatar && currentUser.avatar.startsWith('data:image/')) {
-    _applyAvatarToTopbar(currentUser.avatar)
+  if (isAvatarSrc(currentUser.avatar)) {
+    _applyAvatarToTopbar(authedFileUrl(currentUser.avatar))
   }
 
   // Khôi phục trạng thái sidebar đã lưu
@@ -1023,7 +1035,7 @@ function renderBirthdayWidget(birthdays) {
         <div class="w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
           style="${avatarBg}">
           ${u.avatar
-            ? `<img src="${u.avatar}" class="w-9 h-9 rounded-full object-cover" alt="${u.full_name}">`
+            ? `<img src="${authedFileUrl(u.avatar)}" class="w-9 h-9 rounded-full object-cover" alt="${u.full_name}">`
             : initials}
         </div>
         <div class="flex-1 min-w-0">
@@ -4691,10 +4703,11 @@ function renderChatContent(text, mentions) {
 }
 
 function renderAttachment(a) {
+  const src = authedFileUrl(a.data || a.url || (a.id ? `/api/messages/attachments/${a.id}` : ''))
   const isImage = a.file_type?.startsWith('image/')
   if (isImage) {
     return `<div class="chat-att-thumb">
-      <img src="${a.data}" alt="${a.file_name}" onclick="openImageViewer('${a.data}','${a.file_name}')" title="${a.file_name}">
+      <img src="${src}" alt="${a.file_name}" onclick="openImageViewer('${src}','${a.file_name}')" title="${a.file_name}">
     </div>`
   }
   const icon = a.file_type?.includes('pdf') ? 'fa-file-pdf text-red-500' :
@@ -4702,7 +4715,7 @@ function renderAttachment(a) {
                a.file_type?.includes('sheet') || a.file_type?.includes('excel') ? 'fa-file-excel text-green-500' :
                'fa-file text-gray-500'
   const size = a.file_size > 1024*1024 ? (a.file_size/1024/1024).toFixed(1)+'MB' : Math.round(a.file_size/1024)+'KB'
-  return `<a href="${a.data}" download="${a.file_name}" class="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 rounded-lg px-3 py-2 text-sm transition-colors no-underline text-gray-700">
+  return `<a href="${src}" download="${a.file_name}" class="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 rounded-lg px-3 py-2 text-sm transition-colors no-underline text-gray-700">
     <i class="fas ${icon} text-lg flex-shrink-0"></i>
     <div class="min-w-0"><div class="font-medium truncate max-w-xs">${a.file_name}</div><div class="text-xs text-gray-400">${size}</div></div>
     <i class="fas fa-download text-gray-400 ml-auto flex-shrink-0"></i>
@@ -9065,18 +9078,12 @@ function renderCostTable() {
       }
 
       // ── Tính cột "Theo HĐ", "Theo NS" và "Dòng tiền" ─────────────────────────
-      const origAmount = r.paid_amount_original || r.amount || 0   // Nghiệm thu HĐ (chưa trừ VAT/phí QL)
-      const cashAmount = r.paid_amount || 0                        // Dòng tiền thực thu
-      const netAmount  = r.amount || 0                             // Doanh thu NS đã ghi nhận vào DB
+      const origAmount = r.acceptance_amount || r.paid_amount_original || r.amount || 0
+      const cashAmount = r.cash_collected != null ? r.cash_collected : (r.paid_amount || 0)
+      const netAmount  = r.booked_revenue != null ? r.booked_revenue : (r.amount || 0)
       const feePct     = r.fee_pct  || 0
       const vatPct     = r.vat_pct  || 0
-
-      // ── Tính lại để hiển thị từng bước ────────────────────────────────────────
-      // Bước 1: Trước VAT = origAmount / (1 + vat%)
-      const beforeVat  = vatPct > 0 ? Math.round(origAmount / (1 + vatPct / 100)) : origAmount
-      // Bước 2: Trước phí QL = beforeVat × (1 − fee%)
-      const beforeFee  = feePct > 0 ? Math.round(beforeVat * (1 - feePct / 100)) : beforeVat
-      // netAmount là giá trị thực ghi nhận (đã = beforeFee)
+      const beforeVat  = r.amount_before_vat != null ? r.amount_before_vat : netAmount
 
       const hasVat     = vatPct  > 0
       const hasFee     = feePct  > 0
@@ -10733,8 +10740,8 @@ function _renderStaffTableRows() {
     tbody.innerHTML = `<tr><td colspan="22" class="py-12 text-center text-gray-400"><i class="fas fa-search text-3xl mb-2 block"></i>Không tìm thấy nhân viên nào</td></tr>`
   } else {
     tbody.innerHTML = slice.map((u, i) => {
-      const avatar = u.avatar?.startsWith('data:image/')
-        ? `<img src="${u.avatar}" class="w-8 h-8 rounded-full object-cover flex-shrink-0" />`
+      const avatar = isAvatarSrc(u.avatar)
+        ? `<img src="${authedFileUrl(u.avatar)}" class="w-8 h-8 rounded-full object-cover flex-shrink-0" />`
         : `<div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white text-xs font-bold flex-shrink-0">${(u.full_name||'?').split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase()}</div>`
       const fmtDate = s => {
         if (!s) return '<span class="text-gray-300">—</span>'
@@ -10971,8 +10978,8 @@ async function openUserDetail(userId) {
 
   // Render nội dung
   const initials = detail.full_name?.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase() || 'U'
-  const avatarHtml = detail.avatar?.startsWith('data:image/')
-    ? `<img src="${detail.avatar}" class="w-20 h-20 rounded-full object-cover" />`
+  const avatarHtml = isAvatarSrc(detail.avatar)
+    ? `<img src="${authedFileUrl(detail.avatar)}" class="w-20 h-20 rounded-full object-cover" />`
     : `<div class="w-20 h-20 rounded-full bg-primary flex items-center justify-center text-white text-2xl font-bold">${initials}</div>`
 
   const row = (icon, label, val, cls='') => val
@@ -11417,8 +11424,8 @@ async function loadProfile() {
     // --- Avatar ---
     const avatarImg = $('profileAvatarImg')
     const avatarText = $('profileAvatar')
-    if (user.avatar && user.avatar.startsWith('data:image/')) {
-      avatarImg.src = user.avatar
+    if (isAvatarSrc(user.avatar)) {
+      avatarImg.src = authedFileUrl(user.avatar)
       avatarImg.classList.remove('hidden')
       avatarText.classList.add('hidden')
     } else {
@@ -11526,8 +11533,8 @@ function _syncTopbarAvatar() {
   const sidebarAvatarMini = $('sidebarAvatarMini')
   if (sidebarAvatar) sidebarAvatar.textContent = initials
   if (sidebarAvatarMini) sidebarAvatarMini.textContent = initials
-  if (user.avatar && user.avatar.startsWith('data:image/')) {
-    _applyAvatarToTopbar(user.avatar)
+  if (isAvatarSrc(user.avatar)) {
+    _applyAvatarToTopbar(authedFileUrl(user.avatar))
   }
 }
 
@@ -11565,7 +11572,7 @@ async function handleAvatarUpload(event) {
       avatarImg.src = base64
       avatarImg.classList.remove('hidden')
       avatarText.classList.add('hidden')
-      currentUser.avatar = base64
+      currentUser.avatar = res.avatar || base64
       toast('Cập nhật ảnh đại diện thành công!', 'success')
     }
   } catch (e) {
@@ -21525,7 +21532,7 @@ async function _renderLeaveEmployeeStats(userId) {
     const avatarEl = $('leaveEmpAvatar')
     if (avatarEl) {
       if (data.avatar) {
-        avatarEl.innerHTML = `<img src="${data.avatar}" class="w-12 h-12 rounded-2xl object-cover" alt="${data.full_name}">`
+        avatarEl.innerHTML = `<img src="${authedFileUrl(data.avatar)}" class="w-12 h-12 rounded-2xl object-cover" alt="${data.full_name}">`
         avatarEl.style.background = 'transparent'
       } else {
         avatarEl.textContent = initials

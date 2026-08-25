@@ -10,7 +10,8 @@
     "deploy": "npm run build && wrangler pages deploy dist --project-name bim-management",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "db:migrate:local": "wrangler d1 migrations apply bim-management-production --local",
-    "db:seed": "wrangler d1 execute bim-management-production --local --file=./migrations/0002_seed_data.sql"
+    "db:seed": "wrangler d1 execute bim-management-production --local --file=./migrations/0002_seed_data.sql",
+    "test": "vitest run"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -20,6 +21,7 @@
     "@hono/vite-build": "^1.2.0",
     "@hono/vite-dev-server": "^0.18.2",
     "vite": "^6.3.5",
+    "vitest": "^3.2.4",
     "wrangler": "^4.4.0"
   }
 }
