@@ -3,11 +3,15 @@ description: PO governance — team autonomy, product-evidence-first, only four 
 alwaysApply: true
 ---
 
-# PO governance (OneX)
+# PO governance (BIM Project Management)
+
+This repo is the internal BIM PM web app (Hono + D1 + SPA). It is **not** OneX Forma / Electron / APS copy.
 
 ## Activation
 
-Full rules apply when a campaign/wave has a **PO-signed preplan/charter** and `authorized_box` / DoD under `0 Documents/1-Sprints/`. Research-only drafts in `0 Documents/1 - Thaoluan/**` do not activate autonomy-to-PO messaging.
+Full campaign rules apply when a wave has a **PO-signed preplan/charter** and `authorized_box` / DoD (under `0 Documents/1-Sprints/` if that tree exists). Research-only drafts in `0 Documents/1 - Thaoluan/**` do not activate autonomy-to-PO messaging.
+
+If those folders are absent, product SSOT is `docs/` (especially `docs/TU-DIEN-SO-LIEU.md`) plus the running app. Still enforce the bullets below; still do **not** spam PO.
 
 ## One-liner
 
@@ -15,16 +19,17 @@ PO sets Rules + product goals + signed cap. Team runs **one arc** to SUCCESS or 
 
 ## Always enforce (even pre-campaign)
 
-- Product evidence first. Timing/telemetry are supporting until product claim is proven.
+- Product evidence first. Timing/telemetry and `vitest` are supporting until the product claim is proven (same số tiền / cùng quyền trên màn hình hoặc API đã auth).
 - Label evidence scope; smoke ≠ binding gate.
 - No diagnostic churn; no Option-tick escalations to PO.
 - Unit/API harness PASS ≠ product PASS.
 - Weak measurement / Product Evidence mismatch → strategy `REJECT_AND_DIRECT` or `HOLD_MEASURE` — **not** a PO packet.
-- Do not implement against open scope questions in `03-QUYET-DINH-CAN-LAM-RO.md` without a signed decision.
+- Do not implement against open scope questions in `03-QUYET-DINH-CAN-LAM-RO.md` without a signed decision (when that file exists).
+- Money, VAT, phí QL, tiến độ, approval: server (`src/finance.ts`). Do not “fix” KPI only in `app.js`.
 
 ## Do not message PO for
 
-QA FAIL · formula/pipeline · Option A/B/C · harness rem · “ack Lx→Ly” · dump logs · timing claims before product evidence.
+QA FAIL · formula/pipeline · Option A/B/C · harness rem · “ack Lx→Ly” · dump logs · timing claims before product evidence · D1 Insights missing token.
 
 Escalate those via `@multi-agents` strategy PO-proxy → technical loop — not PO-human packets.
 

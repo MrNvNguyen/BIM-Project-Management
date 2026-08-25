@@ -1,28 +1,29 @@
 ---
-description: Conventions for research memos and evidence under 0 Documents — observation only, redact secrets, cite manifests.
-globs: "0 Documents/**/*"
+description: Conventions for research memos and evidence — observation until PO signs; redact secrets; no large binaries.
+globs: docs/**/*,0 Documents/**/*
 alwaysApply: false
 ---
 
 # Research & evidence docs
 
-Applies when editing `0 Documents/**`.
+Applies when editing `docs/**`, `docs/evidence/**`, or `0 Documents/**`.
 
 ## Observation only
 
-- Thaoluan / V0 = **observation**. Không mở `authorized_box` hay claim FINAL SLA từ memo.
-- Implementation authorize sống ở `0 Documents/1-Sprints/**` sau PO quyết định.
+- Draft / Thaoluan / V0 = **observation**. Không mở `authorized_box` hay claim SUCCESS từ memo.
+- Implementation authorize: signed sprint path if present; otherwise PO-signed plan + `docs/TU-DIEN-SO-LIEU.md` for số liệu.
 
 ## Evidence hygiene
 
-- Mỗi run: `run-manifest.json` + `analyst-notes.md` (hoặc tương đương).
+- Mỗi run: ghi rõ SHA git, endpoint, môi trường (local D1 vs production).
 - Screenshot / HAR: đường dẫn trong index — **không** nhúng base64 lớn vào markdown.
-- Redact tokens, cookies, signed URLs trước khi commit.
-- Phân biệt rõ: measured · inferred · hypothesis.
-- Không commit file >100 MiB hoặc binary lớn vào evidence.
+- Redact Bearer token, cookie, signed URL trước khi commit.
+- Phân biệt rõ: measured · inferred · hypothesis · `NOT_MEASURED`.
+- Không commit file >100 MiB hoặc binary lớn vào evidence. Ghi byte length + SHA-256 + lệnh regenerate.
 
 ## Writing
 
 - Tiêu đề có ngày ISO (`YYYY-MM-DD`) khi là snapshot session.
-- Link tương đối tới evidence folder, không copy nguyên HAR.
-- Khi so sánh APS / UI ACC: ghi region, hub/project, cold/warm auth, filter điều kiện.
+- Link tương đối tới evidence folder.
+- Claim tiền: cùng `acceptance_amount` / `booked_revenue` / `cash_collected` trên ≥2 bề mặt, hoặc ghi `NOT_MEASURED` nếu thiếu seed/token.
+- Claim D1: `EXPLAIN QUERY PLAN` local và/hoặc Insights `avgRowsRead` — không suy từ số câu SQL.

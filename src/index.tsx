@@ -14224,12 +14224,49 @@ app.delete('/api/push/unsubscribe', authMiddleware, async (c) => {
 // Health check
 app.get('/health', (c) => c.json({ status: 'ok', version: '1.0.0' }))
 
+function isPreviewHost(c: { req: { url: string } }) {
+  const host = new URL(c.req.url).hostname
+  return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0'
+}
+
+function previewAllowed(c: { req: { url: string }; env: { ALLOW_PREVIEW?: string } }) {
+  return c.env.ALLOW_PREVIEW === '1' || isPreviewHost(c)
+}
+
+// GET /api/preview/status — fingerprint for local pre-deploy page (not production)
+app.get('/api/preview/status', async (c) => {
+  if (!previewAllowed(c)) return c.json({ error: 'Not found' }, 404)
+  let d1Ok = false
+  try {
+    await c.env.DB.prepare('SELECT 1 AS ok').first()
+    d1Ok = true
+  } catch { /* unbound or empty */ }
+  return c.json({
+    preview: true,
+    d1_bound: !!c.env.DB,
+    d1_ok: d1Ok,
+    r2_bound: !!c.env.FILES,
+    timestamp: new Date().toISOString(),
+    host: new URL(c.req.url).hostname,
+  })
+})
+
 // Service Worker — must be served from root scope with correct MIME type
 app.get('/sw.js', serveStatic({ path: './sw.js' }))
 
 // Push notification icons
 app.get('/icon-192.png',  serveStatic({ path: './icon-192.png' }))
 app.get('/badge-72.png',  serveStatic({ path: './badge-72.png' }))
+
+// Pre-deploy preview page — localhost only (see public/preview.html)
+app.get('/preview', async (c, next) => {
+  if (!previewAllowed(c)) return c.text('Not found', 404)
+  return serveStatic({ path: './preview.html' })(c, next)
+})
+app.get('/preview.html', async (c, next) => {
+  if (!previewAllowed(c)) return c.text('Not found', 404)
+  return serveStatic({ path: './preview.html' })(c, next)
+})
 
 // SPA - serve index.html as static asset via Cloudflare Pages
 // The _routes.json excludes /index.html and /static/* from the worker
@@ -15966,15 +16003,29 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
     // 5b. Ngân sách / Doanh thu / Chi phí thực tế
     // Ngân sách dự án = contract_value * (1 - management_fee_pct/100) — theo đúng công thức chuẩn
     // dùng thống nhất toàn hệ thống (cột projects.budget không được nhập trực tiếp, luôn = 0)
+    // Tổng chi phí (SSOT TU-DIEN): trực tiếp (project_costs ≠ salary) + lương timesheet + shared phân bổ
     const feePctExec = project.management_fee_pct || 0
     const budgetValue = computeProjectBudget(contractValue, feePctExec)
-    const costSummary = await db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total_cost FROM project_costs WHERE project_id = ?
-    `).bind(id).first() as any
-    const revenueSummary = await db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total_revenue FROM project_revenues WHERE project_id = ?
-    `).bind(id).first() as any
-    const totalCost    = costSummary?.total_cost    || 0
+    const OVERTIME_FACTOR_EXEC = await getOvertimeFactor(db)
+    const [directCostRow, revenueSummary, sharedCostRow, laborCost] = await Promise.all([
+      db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM project_costs WHERE project_id = ? AND cost_type != 'salary'
+      `).bind(id).first() as Promise<any>,
+      db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total_revenue FROM project_revenues WHERE project_id = ?
+      `).bind(id).first() as Promise<any>,
+      db.prepare(`
+        SELECT COALESCE(SUM(sca.allocated_amount), 0) as total
+        FROM shared_cost_allocations sca
+        JOIN shared_costs sc ON sc.id = sca.shared_cost_id
+        WHERE sca.project_id = ? AND sc.status != 'deleted'
+      `).bind(id).first() as Promise<any>,
+      computeProjectLaborFromTimesheets(db, id, OVERTIME_FACTOR_EXEC),
+    ])
+    const directCost  = directCostRow?.total || 0
+    const sharedCost  = sharedCostRow?.total || 0
+    const totalCost   = directCost + laborCost + sharedCost
     const totalRevenue = revenueSummary?.total_revenue || 0
     const budgetDebt   = budgetValue - totalCost   // Công nợ ngân sách (ngân sách còn lại chưa chi)
 
@@ -16018,9 +16069,12 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
         collected_pct:   contractValue > 0 ? Math.round(totalPaid / contractValue * 100) : 0,
         invoiced_pct:    contractValue > 0 ? Math.round(totalInvoiced / contractValue * 100) : 0,
         recent_payments: recentPayments.results,
-        // Ngân sách / Doanh thu / Chi phí
+        // Ngân sách / Doanh thu / Chi phí (tổng = trực tiếp + lương + chung phân bổ)
         budget:          budgetValue,
         total_revenue:   totalRevenue,
+        direct_cost:     directCost,
+        labor_cost:      laborCost,
+        shared_cost:     sharedCost,
         total_cost:      totalCost,
         budget_debt:     budgetDebt,
         cost_pct:        budgetValue > 0 ? Math.round(totalCost / budgetValue * 100) : 0,
