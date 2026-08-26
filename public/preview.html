@@ -66,12 +66,12 @@
         <li><code>npm install</code></li>
         <li><code>npm run db:migrate:local</code> — áp migration D1 local</li>
         <li><code>npm run db:seed</code> — dữ liệu mẫu (tùy chọn)</li>
-        <li><code>npm run preview:local</code> — build + Worker + D1 local</li>
-        <li>Nếu login fail lần đầu: <code>ALLOW_SYSTEM_INIT=1</code> rồi <code>POST /api/system/init</code> (chỉ local)</li>
+        <li><code>npm run preview:watch</code> — build + D1 local + <strong>auto reload</strong> khi đổi code</li>
+        <li>Nếu login fail: <code>npm run db:seed:test</code></li>
         <li>Mở trang này: <code id="preview-url">/preview</code></li>
       </ol>
       <p class="text-xs text-amber-700 mt-3">
-        Hoặc dev nhanh: <code>npm run dev</code> (Vite, cần D1 qua wrangler nếu test API).
+        Một lần (không watch): <code>npm run preview:local</code>. Dev HMR: <code>npm run dev</code>.
       </p>
     </section>
 

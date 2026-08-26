@@ -16,16 +16,20 @@ Trang **Kiểm thử trước deploy** chạy smoke test trên **D1 local** — 
 npm run db:migrate:local   # lần đầu hoặc khi có migration mới
 npm run db:seed            # dữ liệu mẫu (tùy chọn)
 npm run db:seed:test       # tài khoản test — hash mật khẩu đúng
-npm run preview:local      # build + Worker + D1 local, port 8788
+npm run preview:watch      # khuyến nghị: auto rebuild + live-reload, D1 local, port 8788
+# hoặc một lần (không watch):
+npm run preview:local
 ```
 
 Mở trình duyệt: **http://localhost:8788/preview**
 
+- `preview:watch` — sửa `src/` hoặc `public/` → rebuild + trình duyệt tự reload.
 - Nhấn **Chạy smoke test** — kiểm `/health`, login, `/api/projects`, finance spot.
 - Mở **App chính** để kiểm UI thủ công.
 - Trang `/preview` **chỉ hiện trên localhost** — không có trên production.
+- Chỉ dùng **D1 local** (không `--remote`).
 
-## Dev nhanh (Vite)
+## Dev nhanh (Vite HMR)
 
 ```bash
 npm run dev
