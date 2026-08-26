@@ -892,6 +892,21 @@ app.use('/api/*', cors({
   allowHeaders: ['Content-Type', 'Authorization'],
 }))
 
+// #region agent log
+app.post('/api/_debug/client-log', async (c) => {
+  try {
+    const body = await c.req.json()
+    console.log('[DEBUG_AGENT]', JSON.stringify(body))
+    await fetch('http://127.0.0.1:7713/ingest/6f559b40-1998-4d4b-a4dc-49984b6e31e8', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '18dfab' },
+      body: JSON.stringify({ sessionId: '18dfab', ...body, timestamp: body.timestamp || Date.now() }),
+    }).catch(() => {})
+  } catch (_) {}
+  return c.json({ ok: true })
+})
+// #endregion
+
 // Auth middleware
 const authMiddleware = async (c: any, next: any) => {
   const authHeader = c.req.header('Authorization')
@@ -1487,55 +1502,65 @@ app.post('/api/projects', authMiddleware, async (c) => {
 
     const projectId = result.meta.last_row_id
 
-    // ── Email: project_created → thông báo cho tất cả system_admin + project_admin ──
+    // #region agent log
+    console.log('[DEBUG_AGENT]', JSON.stringify({ sessionId: '18dfab', hypothesisId: 'A', location: 'index.tsx:POST /api/projects', message: 'insert ok before email', data: { projectId, code: codeNorm }, timestamp: Date.now() }))
+    fetch('http://127.0.0.1:7713/ingest/6f559b40-1998-4d4b-a4dc-49984b6e31e8', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '18dfab' }, body: JSON.stringify({ sessionId: '18dfab', runId: 'pre-fix', hypothesisId: 'A', location: 'index.tsx:POST /api/projects', message: 'insert ok before email', data: { projectId, code: codeNorm }, timestamp: Date.now() }) }).catch(() => {})
+    // #endregion
+
+    // ── Email (background): không chặn response — tránh popup kẹt khi Resend/DB chậm ──
+    const emailTask = (async () => {
+      try {
+        const projectTypeLabels: Record<string, string> = {
+          building: 'Tòa nhà', infrastructure: 'Hạ tầng', transportation: 'Giao thông',
+          energy: 'Năng lượng', landscape: 'Cảnh quan', other: 'Khác'
+        }
+        const emailData = {
+          projectName: name, projectCode: codeNorm, description: description || null,
+          client: client || null, status: status || 'planning',
+          projectType: projectTypeLabels[project_type || 'building'] || project_type || 'building',
+          startDate: start_date || null, endDate: end_date || null,
+          location: location || null, createdBy: user.full_name
+        }
+        const admins = await db.prepare(
+          `SELECT id, email, full_name FROM users WHERE role = 'system_admin' AND is_active = 1`
+        ).all()
+        const jobs: Promise<unknown>[] = []
+        for (const admin of admins.results as any[]) {
+          if (admin.id !== user.id && admin.email) {
+            jobs.push(sendEmail(c.env, {
+              to: admin.email, toName: admin.full_name,
+              eventType: 'project_created', data: emailData,
+              db, userId: admin.id, relatedType: 'project', relatedId: projectId as number
+            }))
+          }
+        }
+        if (admin_id && admin_id !== user.id) {
+          const adminUser = await getUserEmailInfo(db, admin_id)
+          if (adminUser) {
+            jobs.push(sendEmail(c.env, {
+              to: adminUser.email, toName: adminUser.full_name,
+              eventType: 'project_created', data: emailData,
+              db, userId: admin_id, relatedType: 'project', relatedId: projectId as number
+            }))
+          }
+        }
+        if (leader_id && leader_id !== user.id && leader_id !== admin_id) {
+          const leaderUser = await getUserEmailInfo(db, leader_id)
+          if (leaderUser) {
+            jobs.push(sendEmail(c.env, {
+              to: leaderUser.email, toName: leaderUser.full_name,
+              eventType: 'project_created', data: emailData,
+              db, userId: leader_id, relatedType: 'project', relatedId: projectId as number
+            }))
+          }
+        }
+        await Promise.allSettled(jobs)
+      } catch (_) { /* ignore email errors */ }
+    })()
     try {
-      const projectTypeLabels: Record<string, string> = {
-        building: 'Tòa nhà', infrastructure: 'Hạ tầng', transportation: 'Giao thông',
-        energy: 'Năng lượng', landscape: 'Cảnh quan', other: 'Khác'
-      }
-      const emailData = {
-        projectName: name, projectCode: codeNorm, description: description || null,
-        client: client || null, status: status || 'planning',
-        projectType: projectTypeLabels[project_type || 'building'] || project_type || 'building',
-        startDate: start_date || null, endDate: end_date || null,
-        location: location || null, createdBy: user.full_name
-      }
-      // Gửi cho các system_admin (không phải người tạo)
-      const admins = await db.prepare(
-        `SELECT id, email, full_name FROM users WHERE role = 'system_admin' AND is_active = 1`
-      ).all()
-      for (const admin of admins.results as any[]) {
-        if (admin.id !== user.id && admin.email) {
-          sendEmail(c.env, {
-            to: admin.email, toName: admin.full_name,
-            eventType: 'project_created', data: emailData,
-            db, userId: admin.id, relatedType: 'project', relatedId: projectId as number
-          })
-        }
-      }
-      // Nếu project_admin được chỉ định và khác người tạo
-      if (admin_id && admin_id !== user.id) {
-        const adminUser = await getUserEmailInfo(db, admin_id)
-        if (adminUser) {
-          sendEmail(c.env, {
-            to: adminUser.email, toName: adminUser.full_name,
-            eventType: 'project_created', data: emailData,
-            db, userId: admin_id, relatedType: 'project', relatedId: projectId as number
-          })
-        }
-      }
-      // Nếu project_leader được chỉ định
-      if (leader_id && leader_id !== user.id && leader_id !== admin_id) {
-        const leaderUser = await getUserEmailInfo(db, leader_id)
-        if (leaderUser) {
-          sendEmail(c.env, {
-            to: leaderUser.email, toName: leaderUser.full_name,
-            eventType: 'project_created', data: emailData,
-            db, userId: leader_id, relatedType: 'project', relatedId: projectId as number
-          })
-        }
-      }
-    } catch (_) { /* ignore email errors */ }
+      const ctx = (c as any).executionCtx
+      if (ctx?.waitUntil) ctx.waitUntil(emailTask)
+    } catch (_) { /* local / no executionCtx */ }
 
     return c.json({ success: true, id: projectId }, 201)
   } catch (e: any) {

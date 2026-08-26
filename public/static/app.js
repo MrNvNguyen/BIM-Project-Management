@@ -7,6 +7,13 @@ function getXLSXForWrite() { return window.XLSXStyle || window.XLSX }
 function getXLSXCore()     { return window._XLSXCore   || window.XLSX }
 
 const API_BASE = ''
+// #region agent log
+function _agentLog(payload) {
+  const body = JSON.stringify({ sessionId: '18dfab', timestamp: Date.now(), ...payload })
+  try { fetch('/api/_debug/client-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).catch(() => {}) } catch (_) {}
+  try { fetch('http://127.0.0.1:7713/ingest/6f559b40-1998-4d4b-a4dc-49984b6e31e8', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '18dfab' }, body }).catch(() => {}) } catch (_) {}
+}
+// #endregion
 let currentUser = null
 let authToken = null
 let allProjects = []
@@ -384,6 +391,11 @@ function startSmartNotifPoll() {
 // ================================================================
 
 function closeModal(id) {
+  // #region agent log
+  if (id === 'projectModal') {
+    _agentLog({ runId: 'pre-fix', hypothesisId: 'B,C', location: 'app.js:closeModal', message: 'closeModal called', data: { id, elExists: !!$(id), beforeDisplay: $(id) ? $(id).style.display : null } })
+  }
+  // #endregion
   $(id).style.display = 'none'
   // Close & return any teleported combobox panels to their wraps
   Object.keys(_cbState).forEach(cbId => {
@@ -409,7 +421,14 @@ function closeModal(id) {
     }
   }
 }
-function openModal(id) { $(id).style.display = 'flex' }
+function openModal(id) {
+  // #region agent log
+  if (id === 'projectModal') {
+    _agentLog({ runId: 'pre-fix', hypothesisId: 'C', location: 'app.js:openModal', message: 'openModal projectModal', data: { stack: (new Error()).stack?.split('\n').slice(0, 5) } })
+  }
+  // #endregion
+  $(id).style.display = 'flex'
+}
 
 function getRoleBadge(role) {
   const map = {
@@ -2300,6 +2319,10 @@ function openProjectModal(project = null) {
 
 $('projectForm').addEventListener('submit', async (e) => {
   e.preventDefault()
+  if (window._projectFormSaving) return
+  window._projectFormSaving = true
+  const submitBtn = e.submitter || $('projectForm')?.querySelector('button[type="submit"]')
+  if (submitBtn) submitBtn.disabled = true
   const id = $('projectId').value
   const data = {
     code: $('projectCode').value, name: $('projectName').value,
@@ -2313,17 +2336,40 @@ $('projectForm').addEventListener('submit', async (e) => {
     admin_id: parseInt($('projectAdmin').value) || null,
     leader_id: parseInt($('projectLeader').value) || null
   }
+  // #region agent log
+  _agentLog({ runId: 'post-fix', hypothesisId: 'A,D', location: 'app.js:projectForm.submit', message: 'submit start', data: { isEdit: !!id, code: data.code || null } })
+  // #endregion
   try {
-    if (id) await api(`/projects/${id}`, { method: 'put', data })
-    else await api('/projects', { method: 'post', data })
+    let apiRes = null
+    if (id) apiRes = await api(`/projects/${id}`, { method: 'put', data })
+    else apiRes = await api('/projects', { method: 'post', data })
+    // #region agent log
+    _agentLog({ runId: 'post-fix', hypothesisId: 'A,D', location: 'app.js:projectForm.afterApi', message: 'api success', data: { isEdit: !!id, apiRes: apiRes || null } })
+    // #endregion
     closeModal('projectModal')
+    const modalEl = $('projectModal')
+    // #region agent log
+    _agentLog({ runId: 'post-fix', hypothesisId: 'B,C', location: 'app.js:projectForm.afterClose', message: 'after closeModal', data: { display: modalEl ? modalEl.style.display : null, computed: modalEl ? getComputedStyle(modalEl).display : null } })
+    // #endregion
     toast(id ? 'Cập nhật dự án thành công' : 'Tạo dự án thành công')
-    loadProjects()
+    await loadProjects()
     // Nếu đang xem chi tiết dự án vừa sửa → refresh lại để hiện thông tin mới
     if (id && $('page-project-detail')?.classList.contains('active')) {
       openProjectDetail(parseInt(id))
     }
-  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+  } catch (e) {
+    // #region agent log
+    _agentLog({ runId: 'post-fix', hypothesisId: 'A', location: 'app.js:projectForm.catch', message: 'api/handler error', data: { err: e?.response?.data?.error || e?.message || String(e), status: e?.response?.status || null, modalDisplay: $('projectModal') ? $('projectModal').style.display : null } })
+    // #endregion
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+    // Refresh list so a race-created project is visible after user closes modal
+    if (!id) {
+      try { await loadProjects() } catch (_) {}
+    }
+  } finally {
+    window._projectFormSaving = false
+    if (submitBtn) submitBtn.disabled = false
+  }
 })
 
 // Members
