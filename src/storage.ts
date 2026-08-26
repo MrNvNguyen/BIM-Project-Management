@@ -79,11 +79,15 @@ export async function storeMaybeDataUri(
 export function publicLegalDocument(d: any) {
   if (!d) return d
   const raw = d.file_url
-  const stored = (typeof raw === 'string' && (raw.startsWith('data:') || isR2Ref(raw))) || !!d.r2_key
-  const { r2_key, ...rest } = d
+  const hasFlag = d.has_file_flag === 1 || d.has_file_flag === true
+  const stored =
+    !!d.r2_key ||
+    (typeof raw === 'string' && (raw.startsWith('data:') || isR2Ref(raw))) ||
+    (hasFlag && !raw)
+  const { r2_key, has_file_flag, ...rest } = d
   return {
     ...rest,
-    has_file: !!(raw || r2_key),
+    has_file: hasFlag || !!(raw || r2_key),
     file_url: stored ? `/api/legal/documents/${d.id}/file` : (raw || null),
   }
 }

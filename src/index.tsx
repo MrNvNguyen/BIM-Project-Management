@@ -1467,13 +1467,23 @@ app.post('/api/projects', authMiddleware, async (c) => {
 
     if (!code || !name) return c.json({ error: 'Code and name required' }, 400)
 
+    const codeNorm = String(code).trim()
+    const existing = await db.prepare(
+      `SELECT id, name FROM projects WHERE code = ? LIMIT 1`
+    ).bind(codeNorm).first() as { id: number; name: string } | null
+    if (existing) {
+      return c.json({
+        error: `Mã dự án "${codeNorm}" đã tồn tại (dự án: ${existing.name}). Vui lòng dùng mã khác.`,
+      }, 409)
+    }
+
     const feePct = Math.min(100, Math.max(0, parseFloat(management_fee_pct) || 0))
     const result = await db.prepare(
       `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, location, admin_id, leader_id, project_code_letter, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(code, name, description || null, client || null, project_type || 'building', status || 'planning',
+    ).bind(codeNorm, name, description || null, client || null, project_type || 'building', status || 'planning',
       start_date || null, end_date || null, budget || 0, contract_value || 0, feePct, location || null,
-      admin_id || user.id, leader_id || null, project_code_letter || code, user.id).run()
+      admin_id || user.id, leader_id || null, project_code_letter || codeNorm, user.id).run()
 
     const projectId = result.meta.last_row_id
 
@@ -1484,7 +1494,7 @@ app.post('/api/projects', authMiddleware, async (c) => {
         energy: 'Năng lượng', landscape: 'Cảnh quan', other: 'Khác'
       }
       const emailData = {
-        projectName: name, projectCode: code, description: description || null,
+        projectName: name, projectCode: codeNorm, description: description || null,
         client: client || null, status: status || 'planning',
         projectType: projectTypeLabels[project_type || 'building'] || project_type || 'building',
         startDate: start_date || null, endDate: end_date || null,
@@ -1529,7 +1539,11 @@ app.post('/api/projects', authMiddleware, async (c) => {
 
     return c.json({ success: true, id: projectId }, 201)
   } catch (e: any) {
-    return c.json({ error: e.message }, 500)
+    const msg = String(e?.message || e)
+    if (msg.includes('UNIQUE') && msg.includes('projects.code')) {
+      return c.json({ error: 'Mã dự án đã tồn tại. Vui lòng dùng mã khác.' }, 409)
+    }
+    return c.json({ error: msg }, 500)
   }
 })
 
@@ -1547,12 +1561,32 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     const allowedFields = user.role === 'system_admin'
       ? ['code','name','description','client','project_type','status','start_date','end_date','contract_value','management_fee_pct','location','admin_id','leader_id','progress','project_code_letter']
       : ['name','description','client','project_type','status','start_date','end_date','location','leader_id','progress','project_code_letter']
+    if (data.code !== undefined && user.role === 'system_admin') {
+      const codeNorm = String(data.code).trim()
+      const clash = await db.prepare(
+        `SELECT id, name FROM projects WHERE code = ? AND id != ? LIMIT 1`
+      ).bind(codeNorm, id).first() as { id: number; name: string } | null
+      if (clash) {
+        return c.json({
+          error: `Mã dự án "${codeNorm}" đã tồn tại (dự án: ${clash.name}). Vui lòng dùng mã khác.`,
+        }, 409)
+      }
+      data.code = codeNorm
+    }
     const updates = allowedFields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = allowedFields.filter(f => data[f] !== undefined).map(f => data[f])
     if (!updates.length) return c.json({ error: 'Nothing to update' }, 400)
     updates.push('updated_at = CURRENT_TIMESTAMP')
     values.push(id)
-    await db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+    try {
+      await db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
+    } catch (ue: any) {
+      const umsg = String(ue?.message || ue)
+      if (umsg.includes('UNIQUE') && umsg.includes('projects.code')) {
+        return c.json({ error: 'Mã dự án đã tồn tại. Vui lòng dùng mã khác.' }, 409)
+      }
+      throw ue
+    }
 
     // ── Nếu đổi project_code_letter → cập nhật lại tất cả letter_number trong project ──
     if (data.project_code_letter !== undefined && data.project_code_letter.trim() !== proj.project_code_letter) {
@@ -12179,10 +12213,23 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
        WHERE ol.project_id = ? ORDER BY ol.letter_year DESC, ol.letter_seq DESC`
     ).bind(projectId).all()
 
-    // Documents summary — không SELECT ld.* (tránh file_url/blob)
+    // Documents summary — cột đúng schema; không trả base64 file_url
     const docs = await db.prepare(
-      `SELECT ld.id, ld.project_id, ld.legal_item_id, ld.file_name, ld.file_type,
-              ld.byte_length, ld.r2_key, ld.uploaded_by, ld.created_at,
+      `SELECT ld.id, ld.project_id, ld.legal_item_id, ld.doc_type, ld.title,
+              ld.file_name, ld.signed_date, ld.notes,
+              ld.created_by, ld.created_at, ld.updated_at,
+              ld.byte_length, ld.content_type, ld.r2_key,
+              CASE
+                WHEN ld.file_url IS NULL OR ld.file_url = '' THEN NULL
+                WHEN ld.file_url LIKE 'data:%' THEN NULL
+                WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN NULL
+                ELSE ld.file_url
+              END AS file_url,
+              CASE
+                WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN 1
+                WHEN ld.file_url IS NOT NULL AND ld.file_url != '' THEN 1
+                ELSE 0
+              END AS has_file_flag,
               li.title as item_title, li.stt as item_stt,
               ls.code as stage_code, ls.name as stage_name,
               lp.name as package_name
@@ -12463,8 +12510,21 @@ app.get('/api/legal/:projectId/documents', authMiddleware, async (c) => {
   const projectId = parseInt(c.req.param('projectId'))
   try {
     const rows = await c.env.DB.prepare(
-      `SELECT ld.id, ld.project_id, ld.legal_item_id, ld.file_name, ld.file_type,
-              ld.byte_length, ld.r2_key, ld.uploaded_by, ld.created_by, ld.created_at,
+      `SELECT ld.id, ld.project_id, ld.legal_item_id, ld.doc_type, ld.title,
+              ld.file_name, ld.signed_date, ld.notes,
+              ld.created_by, ld.created_at, ld.updated_at,
+              ld.byte_length, ld.content_type, ld.r2_key,
+              CASE
+                WHEN ld.file_url IS NULL OR ld.file_url = '' THEN NULL
+                WHEN ld.file_url LIKE 'data:%' THEN NULL
+                WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN NULL
+                ELSE ld.file_url
+              END AS file_url,
+              CASE
+                WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN 1
+                WHEN ld.file_url IS NOT NULL AND ld.file_url != '' THEN 1
+                ELSE 0
+              END AS has_file_flag,
               li.title as item_title, li.stt as item_stt,
               ls.code as stage_code, ls.name as stage_name,
               lp.name as package_name, u.full_name as created_by_name
