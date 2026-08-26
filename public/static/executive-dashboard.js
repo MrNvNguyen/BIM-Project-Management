@@ -204,9 +204,9 @@ function exec_renderLayout() {
   const el = document.getElementById('exec-main-layout')
   if (!el) return
   el.innerHTML = `
-  <div style="display:flex;gap:12px;align-items:flex-start">
-    <!-- CỘT TRÁI: danh sách dự án (cố định 280px) -->
-    <div style="flex-shrink:0;width:280px">
+  <div class="exec-layout-row" style="display:flex;gap:12px;align-items:flex-start">
+    <!-- CỘT TRÁI: danh sách dự án (cố định 280px desktop) -->
+    <div class="exec-left-col" style="flex-shrink:0;width:280px">
       <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-3 mb-3">
         <input id="exec-search" type="text" placeholder="🔍 Tìm dự án..."
           value="${execState.search}" oninput="execOnSearch(this.value)"
@@ -223,7 +223,7 @@ function exec_renderLayout() {
     </div>
 
     <!-- CỘT PHẢI: detail panel -->
-    <div style="flex:1;min-width:0">
+    <div class="exec-right-col" style="flex:1;min-width:0">
       <div id="exec-right-panel"></div>
     </div>
   </div>`

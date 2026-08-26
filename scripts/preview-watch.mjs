@@ -18,7 +18,9 @@ const copies = [
   ['public/index.html', 'dist/index.html'],
   ['public/preview.html', 'dist/preview.html'],
   ['public/sw.js', 'dist/sw.js'],
+  ['public/manifest.webmanifest', 'dist/manifest.webmanifest'],
   ['public/icon-192.png', 'dist/icon-192.png'],
+  ['public/icon-512.png', 'dist/icon-512.png'],
   ['public/badge-72.png', 'dist/badge-72.png'],
 ]
 

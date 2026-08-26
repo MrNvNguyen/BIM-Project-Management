@@ -14339,8 +14339,13 @@ app.get('/api/preview/status', async (c) => {
 // Service Worker — must be served from root scope with correct MIME type
 app.get('/sw.js', serveStatic({ path: './sw.js' }))
 
-// Push notification icons
+// PWA manifest + icons
+app.get('/manifest.webmanifest', async (c, next) => {
+  c.header('Content-Type', 'application/manifest+json')
+  return serveStatic({ path: './manifest.webmanifest' })(c, next)
+})
 app.get('/icon-192.png',  serveStatic({ path: './icon-192.png' }))
+app.get('/icon-512.png',  serveStatic({ path: './icon-512.png' }))
 app.get('/badge-72.png',  serveStatic({ path: './badge-72.png' }))
 
 // Pre-deploy preview page — localhost only (see public/preview.html)

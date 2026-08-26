@@ -727,6 +727,8 @@ function navigate(page, opts = {}) {
   else if (page === 'leave') loadLeaveRequests()
 
   closeAllDropdowns()
+  closeMobileDrawer()
+  syncMobileBottomNav(page)
 }
 
 // Handle browser back/forward button via hash changes
@@ -737,6 +739,14 @@ window.addEventListener('hashchange', () => {
 })
 
 function toggleSidebar() {
+  // Phone: open/close drawer via mobile-open (do not reuse desktop .collapsed)
+  if (window.innerWidth < 768) {
+    const sidebar = $('sidebar')
+    if (!sidebar) return
+    if (sidebar.classList.contains('mobile-open')) closeMobileDrawer()
+    else openMobileDrawer()
+    return
+  }
   const sidebar = $('sidebar')
   const mainContent = $('mainContent')
   // Nếu đang mini → mở full trước
@@ -749,6 +759,94 @@ function toggleSidebar() {
   sidebar.classList.toggle('collapsed')
   mainContent.classList.toggle('expanded')
   localStorage.setItem('sidebar_state', sidebar.classList.contains('collapsed') ? 'collapsed' : 'full')
+}
+
+function openMobileDrawer() {
+  const sidebar = $('sidebar')
+  const scrim = $('mobileNavScrim')
+  if (!sidebar) return
+  sidebar.classList.add('mobile-open')
+  if (scrim) scrim.classList.add('mobile-open')
+  document.body.style.overflow = 'hidden'
+}
+
+function closeMobileDrawer() {
+  const sidebar = $('sidebar')
+  const scrim = $('mobileNavScrim')
+  if (sidebar) sidebar.classList.remove('mobile-open')
+  if (scrim) scrim.classList.remove('mobile-open')
+  document.body.style.overflow = ''
+}
+
+function getMobileBottomTabs() {
+  const role = currentUser?.role || 'member'
+  const base = [
+    { page: 'dashboard', icon: 'fa-tachometer-alt', label: 'Home' },
+    { page: 'tasks', icon: 'fa-tasks', label: 'Việc' },
+    { page: 'timesheet', icon: 'fa-clock', label: 'Công' },
+  ]
+  if (role === 'system_admin') {
+    base.push({ page: 'finance-project', icon: 'fa-chart-line', label: 'Tài chính' })
+  } else if (role === 'project_admin') {
+    base.push({ page: 'executive-dashboard', icon: 'fa-crown', label: 'PMO' })
+  } else {
+    base.push({ page: 'leave', icon: 'fa-umbrella-beach', label: 'Phép' })
+  }
+  base.push({ page: '__more__', icon: 'fa-bars', label: 'Thêm' })
+  return base
+}
+
+function renderMobileBottomNav() {
+  const nav = $('mobileBottomNav')
+  if (!nav) return
+  const tabs = getMobileBottomTabs()
+  nav.innerHTML = tabs.map(t => `
+    <button type="button" class="mobile-tab" data-mobile-page="${t.page}" onclick="onMobileTab('${t.page}')">
+      <i class="fas ${t.icon}"></i>
+      <span>${t.label}</span>
+    </button>
+  `).join('')
+  const active = document.querySelector('.page.active')?.id?.replace('page-', '') || 'dashboard'
+  syncMobileBottomNav(active)
+}
+
+function syncMobileBottomNav(page) {
+  const nav = $('mobileBottomNav')
+  if (!nav) return
+  nav.querySelectorAll('.mobile-tab').forEach(btn => {
+    const p = btn.getAttribute('data-mobile-page')
+    btn.classList.toggle('active', p === page)
+  })
+}
+
+function onMobileTab(page) {
+  if (page === '__more__') {
+    openMobileDrawer()
+    return
+  }
+  if (!canAccessPage(page)) {
+    toast('Không có quyền truy cập mục này', 'warning')
+    return
+  }
+  closeMobileDrawer()
+  navigate(page)
+}
+
+function registerServiceWorkerShell() {
+  if (!('serviceWorker' in navigator)) return
+  navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {})
+}
+
+function setupMobileViewportGuards() {
+  if (!window.visualViewport) return
+  const sync = () => {
+    const nav = $('mobileBottomNav')
+    if (!nav || window.innerWidth >= 768) return
+    const shrunk = window.visualViewport.height < window.innerHeight * 0.75
+    nav.classList.toggle('keyboard-hidden', shrunk)
+  }
+  window.visualViewport.addEventListener('resize', sync)
+  window.visualViewport.addEventListener('scroll', sync)
 }
 
 function toggleSidebarMini() {
@@ -800,9 +898,12 @@ window.addEventListener('resize', () => {
   const sidebar = $('sidebar')
   const mainContent = $('mainContent')
   if (!sidebar || !mainContent) return
+  if (window.innerWidth >= 768) {
+    closeMobileDrawer()
+  }
   if (window.innerWidth >= 768 && window.innerWidth < 1024) {
     // Tablet: CSS media query đã handle, bỏ JS-added classes để tránh conflict
-    sidebar.classList.remove('mini', 'collapsed')
+    sidebar.classList.remove('mini', 'collapsed', 'mobile-open')
     mainContent.classList.remove('mini-sidebar', 'expanded')
   }
 })
@@ -913,7 +1014,69 @@ async function initApp() {
   restorePageFromHash()
   loadNotifications()
   startSmartNotifPoll()          // Smart polling: 5s when active, pause when hidden
-  initPushNotifications()        // Register SW + subscribe if permission already granted
+  registerServiceWorkerShell()   // PWA SW (independent of Notification permission)
+  initPushNotifications()        // Subscribe push if permission already granted
+  renderMobileBottomNav()
+  setupMobileViewportGuards()
+  closeMobileDrawer()
+  setupPwaInstallBanner()
+  // Wave 1: mini-sidebar tooltips need focus on tap (coarse pointer)
+  document.querySelectorAll('.sidebar .nav-item[data-tooltip]').forEach((el) => {
+    if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0')
+  })
+}
+
+let _pwaDeferredPrompt = null
+
+function setupPwaInstallBanner() {
+  const banner = $('pwaInstallBanner')
+  if (!banner) return
+  if (window.innerWidth >= 768) return
+  if (localStorage.getItem('bim_pwa_install_dismissed') === '1') return
+  if (window.matchMedia('(display-mode: standalone)').matches) return
+  if (window.navigator.standalone === true) return
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault()
+    _pwaDeferredPrompt = e
+    showPwaInstallBanner('android')
+  })
+
+  const ua = navigator.userAgent || ''
+  const isIOS = /iphone|ipad|ipod/i.test(ua)
+  if (isIOS) showPwaInstallBanner('ios')
+}
+
+function showPwaInstallBanner(kind) {
+  const banner = $('pwaInstallBanner')
+  const text = $('pwaInstallText')
+  const installBtn = $('pwaInstallBtn')
+  if (!banner || !text) return
+  if (kind === 'ios') {
+    text.textContent = 'Cài OneCad BIM: nhấn Chia sẻ → Thêm vào Màn hình chính'
+    if (installBtn) installBtn.style.display = 'none'
+  } else {
+    text.textContent = 'Cài OneCad BIM lên màn hình chính để mở nhanh'
+    if (installBtn) installBtn.style.display = ''
+  }
+  banner.classList.add('pwa-banner-visible')
+}
+
+function dismissPwaInstallBanner() {
+  const banner = $('pwaInstallBanner')
+  if (banner) banner.classList.remove('pwa-banner-visible')
+  localStorage.setItem('bim_pwa_install_dismissed', '1')
+}
+
+async function acceptPwaInstall() {
+  if (!_pwaDeferredPrompt) {
+    dismissPwaInstallBanner()
+    return
+  }
+  _pwaDeferredPrompt.prompt()
+  try { await _pwaDeferredPrompt.userChoice } catch (_) {}
+  _pwaDeferredPrompt = null
+  dismissPwaInstallBanner()
 }
 
 // ================================================================
@@ -1389,6 +1552,20 @@ async function renderRecentTasksTable(projectData) {
         </td>
       </tr>`
     }).join('') || '<tr><td colspan="6" class="text-center py-6 text-gray-400">Không có task trễ hạn</td></tr>'
+    setMobileCardList('recentTasksCardList', displayTasks.length
+      ? displayTasks.map(t => {
+          const overdue = isOverdue(t)
+          return `<div class="mobile-list-card ${overdue ? 'border-red-200' : ''}">
+            <div class="mlc-title">${t.title}</div>
+            <div class="mlc-meta">${t.project_code || '—'} · ${t.assigned_to_name || 'Chưa giao'} · ${fmtDate(t.due_date)}</div>
+            <div class="mlc-row">
+              ${getStatusBadge(t.status)}
+              <span class="text-xs text-gray-500">${t.progress || 0}%</span>
+              ${overdue ? '<span class="badge badge-overdue text-xs">Trễ hạn</span>' : ''}
+            </div>
+          </div>`
+        }).join('')
+      : '<div class="text-center py-6 text-gray-400 text-sm">Không có task trễ hạn</div>')
   } catch (e) { console.error(e) }
 }
 
@@ -2134,7 +2311,7 @@ async function openProjectDetail(id, openChatTab = false) {
       <!-- Project Tabs: Tasks / Weekly Plan / Chat -->
       <div class="card p-0 overflow-hidden">
         <!-- Tab bar -->
-        <div class="flex border-b bg-gray-50 px-4 pt-2 overflow-x-auto">
+        <div class="flex border-b bg-gray-50 px-4 pt-2 overflow-x-auto tabs-scroll-row">
           <button id="projTab-tasks" onclick="switchProjectTab('tasks',${project.id})"
             class="tab-btn active text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-tasks mr-1"></i>Danh sách Task (${tasks.length})
@@ -2191,7 +2368,7 @@ async function openProjectDetail(id, openChatTab = false) {
         </div>
 
         <!-- Chat panel (lazy-loaded) -->
-        <div id="projPanel-chat" class="hidden" style="height:520px">
+        <div id="projPanel-chat" class="hidden chat-project-panel">
           <div id="projectChatPanel_${project.id}" style="height:100%"></div>
         </div>
 
@@ -3577,6 +3754,7 @@ function renderTaskRows() {
 
   if (_taskAllData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="13" class="text-center py-8 text-gray-400">Không có task nào</td></tr>'
+    setMobileCardList('tasksCardList', '<div class="text-center py-8 text-gray-400 text-sm">Không có task nào</div>')
     return
   }
 
@@ -3671,6 +3849,42 @@ function renderTaskRows() {
       </td>
     </tr>`
   }).join('')
+  renderTasksMobileCards(tasks)
+}
+
+function setMobileCardList(id, html) {
+  const el = $(id)
+  if (el) el.innerHTML = html
+}
+
+function renderTasksMobileCards(tasks) {
+  if (!tasks || !tasks.length) {
+    setMobileCardList('tasksCardList', '<div class="text-center py-8 text-gray-400 text-sm">Không có task nào</div>')
+    return
+  }
+  setMobileCardList('tasksCardList', tasks.map(t => {
+    const isAssigned = t.assigned_to === currentUser?.id
+    const isCreatedByMe = t.assigned_by === currentUser?.id
+    const effForTask = getEffectiveRoleForProject(t.project_id)
+    const isAdminOrLeader = ['system_admin','project_admin','project_leader'].includes(effForTask)
+    const canEditThisTask = isAdminOrLeader || isAssigned || isCreatedByMe
+    const canDeleteThisTask = ['system_admin','project_admin'].includes(currentUser?.role) || effForTask === 'project_admin'
+    const overdue = isOverdue(t)
+    return `<div class="mobile-list-card ${overdue ? 'border-red-200' : ''}">
+      <div class="mlc-title cursor-pointer" onclick="openTaskDetail(${t.id})">${t.title}</div>
+      <div class="mlc-meta">${t.project_code || '—'} · ${t.assigned_to_name || 'Chưa giao'} · Hạn ${fmtDate(t.due_date)}</div>
+      <div class="mlc-row">
+        ${getPriorityBadge(t.priority)}
+        ${getStatusBadge(t.status)}
+        <span class="text-xs text-gray-500">${t.progress || 0}%</span>
+        ${overdue ? '<span class="badge badge-overdue text-xs">Trễ hạn</span>' : ''}
+      </div>
+      <div class="mlc-actions">
+        ${canEditThisTask ? `<button onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-edit mr-1"></i>Sửa</button>` : ''}
+        ${canDeleteThisTask ? `<button onclick="confirmDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}' )" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-trash mr-1"></i>Xóa</button>` : ''}
+      </div>
+    </div>`
+  }).join(''))
 }
 
 // ── Expand / collapse subtasks inline ─────────────────────────────────────
@@ -4575,12 +4789,13 @@ let _chatMembersCache = {}  // projectId → members list for @mention
 async function initChatPanel(container, contextType, contextId, heightPx = 500) {
   container.style.display = 'flex'
   container.style.flexDirection = 'column'
-  // For task chat: use flex:1 to fill the modal; for project: use fixed height
+  const isPhone = window.innerWidth < 768
+  // For task chat: use flex:1 to fill the modal; for project: use fixed height (dvh on phone)
   if (contextType === 'task') {
     container.style.flex = '1'
-    container.style.minHeight = '420px'
+    container.style.minHeight = isPhone ? 'min(55dvh, 420px)' : '420px'
   } else {
-    container.style.height = heightPx + 'px'
+    container.style.height = isPhone ? 'min(70dvh, 560px)' : (heightPx + 'px')
   }
 
   container.innerHTML = `
@@ -6653,6 +6868,7 @@ function renderTsRows() {
       <i class="fas fa-clock text-3xl mb-2 block"></i>
       ${canSeeAll ? 'Không có timesheet nào trong khoảng thời gian này' : 'Bạn chưa có timesheet nào. Nhấn "+ Thêm timesheet" để bắt đầu.'}
     </td></tr>`
+    setMobileCardList('tsCardList', `<div class="text-center py-8 text-gray-400 text-sm">${canSeeAll ? 'Không có timesheet nào trong khoảng thời gian này' : 'Bạn chưa có timesheet nào.'}</div>`)
     return
   }
 
@@ -6757,6 +6973,50 @@ function renderTsRows() {
       </td>
     </tr>`
   }).join('')
+  renderTsMobileCards(pageData, { canSeeAll, canApprove, isAdmin })
+}
+
+function renderTsMobileCards(pageData, opts = {}) {
+  const canSeeAll = opts.canSeeAll
+  const canApprove = opts.canApprove
+  const isAdmin = opts.isAdmin
+  const statusColors  = { draft: 'badge-todo', submitted: 'badge-review', approved: 'badge-completed', rejected: 'badge-overdue' }
+  const statusLabels  = { draft: 'Nháp', submitted: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Từ chối' }
+  if (!pageData.length) {
+    setMobileCardList('tsCardList', '<div class="text-center py-8 text-gray-400 text-sm">Không có timesheet nào</div>')
+    return
+  }
+  setMobileCardList('tsCardList', pageData.map(t => {
+    const isOwner   = t.user_id === currentUser.id
+    const isDraft   = t.status === 'draft'
+    const isRejected = t.status === 'rejected'
+    const isSubmitted = t.status === 'submitted'
+    const effForThisTs = getEffectiveRoleForProject(t.project_id)
+    const isProjAdminForThisTs = isAdmin || effForThisTs === 'project_admin'
+    const canEdit      = isProjAdminForThisTs || (isOwner && (isDraft || isRejected))
+    const canDelete    = isProjAdminForThisTs || (isOwner && (isDraft || isRejected))
+    const canSubmit    = isOwner && (isDraft || isRejected)
+    const canApproveBt = canApprove && isSubmitted
+    const canRejectBt  = canApprove && isSubmitted
+    const isFullLeaveRow = !['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
+    const hours = isFullLeaveRow ? '0h' : `${(t.regular_hours || 0) + (t.overtime_hours || 0)}h`
+    const hoursDetail = isFullLeaveRow ? 'Nghỉ' : `HC ${t.regular_hours || 0}h · OT ${t.overtime_hours || 0}h`
+    return `<div class="mobile-list-card">
+      <div class="mlc-title">${fmtDate(t.work_date)}${canSeeAll ? ` · ${t.user_name || ''}` : ''}</div>
+      <div class="mlc-meta">${isFullLeaveRow ? '—' : (t.project_code || '—')} · ${hoursDetail}</div>
+      <div class="mlc-row">
+        <span class="font-bold text-primary text-sm">${hours}</span>
+        <span class="badge ${statusColors[t.status] || 'badge-todo'}">${statusLabels[t.status] || t.status}</span>
+      </div>
+      <div class="mlc-actions">
+        ${canSubmit ? `<button onclick="submitTimesheet(${t.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-paper-plane mr-1"></i>Gửi</button>` : ''}
+        ${canEdit ? `<button onclick="openTimesheetModal(${t.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-edit mr-1"></i>Sửa</button>` : ''}
+        ${canApproveBt ? `<button onclick="approveTimesheet(${t.id})" class="btn-primary text-xs px-3 py-2"><i class="fas fa-check mr-1"></i>Duyệt</button>` : ''}
+        ${canRejectBt ? `<button onclick="rejectTimesheet(${t.id})" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-times mr-1"></i>Từ chối</button>` : ''}
+        ${canDelete ? `<button onclick="deleteTimesheet(${t.id})" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-trash"></i></button>` : ''}
+      </div>
+    </div>`
+  }).join(''))
 }
 
 // ── Biến lưu trạng thái locked hiện tại của modal ────────────────────────────
@@ -8170,8 +8430,8 @@ async function renderGantt() {
       const overdue = isOverdue(t)
       const barColor = (t.status === 'completed') ? '#00A651' : (t.status === 'review') ? '#10B981' : overdue ? '#EF4444' : t.status === 'in_progress' ? '#0066CC' : '#9CA3AF'
 
-      return `<div class="flex items-center gap-3 py-1.5 border-b border-gray-100 hover:bg-gray-50">
-        <div class="w-56 flex-shrink-0 text-xs truncate">
+      return `<div class="gantt-row flex items-center gap-3 py-1.5 border-b border-gray-100 hover:bg-gray-50">
+        <div class="gantt-label text-xs truncate pr-2">
           <span class="font-medium text-gray-800">${t.title}</span>
           <div class="text-gray-400">${t.discipline_code||''} • ${t.assigned_to_name||''}</div>
         </div>
@@ -8184,27 +8444,28 @@ async function renderGantt() {
             <span class="text-white text-xs font-bold px-1 truncate relative z-10">${t.progress||0}%</span>
           </div>
         </div>
-        <div class="w-16 text-right text-xs ${overdue?'text-red-500 font-bold':'text-gray-400'}">${fmtDate(t.due_date)}</div>
-        <div class="w-20">${getStatusBadge(t.status)}</div>
+        <div class="w-16 text-right text-xs flex-shrink-0 ${overdue?'text-red-500 font-bold':'text-gray-400'}">${fmtDate(t.due_date)}</div>
+        <div class="w-20 flex-shrink-0">${getStatusBadge(t.status)}</div>
       </div>`
     }).join('')
 
     container.innerHTML = `
-      <div class="overflow-x-auto">
-        <div class="flex items-center gap-3 mb-4 pb-2 border-b">
-          <div class="w-56 flex-shrink-0 text-xs font-bold text-gray-500 uppercase">Task</div>
-          <div class="flex-1 relative">
+      <div class="gantt-hint"><i class="fas fa-hand-point-right mr-1"></i>Vuốt ngang để xem timeline — tên task cố định bên trái</div>
+      <div class="gantt-scroll overflow-x-auto">
+        <div class="gantt-row flex items-center gap-3 mb-4 pb-2 border-b">
+          <div class="gantt-label text-xs font-bold text-gray-500 uppercase">Task</div>
+          <div class="flex-1 relative" style="min-width:200px">
             <div class="flex justify-between text-xs text-gray-400">
               <span>${fmtDate(project?.start_date)}</span>
               <span class="text-red-500 font-bold">Hôm nay: ${fmtDate(now.toISOString().split('T')[0])}</span>
               <span>${fmtDate(project?.end_date)}</span>
             </div>
           </div>
-          <div class="w-16"></div>
-          <div class="w-20"></div>
+          <div class="w-16 flex-shrink-0"></div>
+          <div class="w-20 flex-shrink-0"></div>
         </div>
         <div>${taskRows}</div>
-        <div class="mt-4 flex gap-4 text-xs">
+        <div class="mt-4 flex gap-4 text-xs flex-wrap">
           <span><span class="inline-block w-4 h-3 rounded mr-1" style="background:#00A651"></span>Hoàn thành</span>
           <span><span class="inline-block w-4 h-3 rounded mr-1" style="background:#0066CC"></span>Đang làm</span>
           <span><span class="inline-block w-4 h-3 rounded mr-1" style="background:#EF4444"></span>Trễ hạn</span>
@@ -10623,10 +10884,12 @@ function renderUserRows() {
 
   if (_userAllData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-400">Không có nhân sự</td></tr>'
+    setMobileCardList('usersCardList', '<div class="text-center py-8 text-gray-400 text-sm">Không có nhân sự</div>')
     return
   }
 
-  tbody.innerHTML = userPaginatedData().map(u => `
+  const pageUsers = userPaginatedData()
+  tbody.innerHTML = pageUsers.map(u => `
     <tr class="table-row cursor-pointer hover:bg-primary/5 transition-colors" onclick="openUserDetail(${u.id})">
       <td class="py-2 pr-3">
         <div class="flex items-center gap-2">
@@ -10662,6 +10925,24 @@ function renderUserRows() {
       </td>
     </tr>
   `).join('')
+  renderUsersMobileCards(pageUsers)
+}
+
+function renderUsersMobileCards(users) {
+  if (!users || !users.length) {
+    setMobileCardList('usersCardList', '<div class="text-center py-8 text-gray-400 text-sm">Không có nhân sự</div>')
+    return
+  }
+  setMobileCardList('usersCardList', users.map(u => `
+    <div class="mobile-list-card cursor-pointer" onclick="openUserDetail(${u.id})">
+      <div class="mlc-title">${u.full_name}</div>
+      <div class="mlc-meta">${u.department || '—'} · ${u.username || ''}</div>
+      <div class="mlc-row">
+        ${getRoleBadge(u.role)}
+        <span class="badge ${u.is_active ? 'badge-completed' : 'badge-cancelled'}">${u.is_active ? 'Hoạt động' : 'Vô hiệu'}</span>
+      </div>
+    </div>
+  `).join(''))
 }
 
 function filterUsers() {
@@ -12636,6 +12917,12 @@ async function loadFinanceProjectPage() {
 }
 
 // Period-type toggle for Finance Project page
+function toggleFinFilterSheet() {
+  const sheet = $('finFilterSheet')
+  if (!sheet) return
+  sheet.classList.toggle('fin-sheet-collapsed')
+}
+
 function onFinPeriodTypeChange() {
   const pt = $('finPeriodType')?.value || 'all_time'
   const ntcYearCtrl = $('finNtcYearCtrl')
@@ -12932,7 +13219,7 @@ async function loadFinanceProject() {
       <!-- Revenue detail -->
       <div class="card mb-4">
         <h3 class="font-bold text-sm mb-3"><i class="fas fa-money-bill-wave text-green-600 mr-2"></i>Thông tin doanh thu</h3>
-        <div class="grid ${project.project_budget > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-4 text-center">
+        <div class="grid ${project.project_budget > 0 ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-2 md:grid-cols-3'} gap-4 text-center">
           <div class="${summary.total_revenue > 0 ? 'bg-green-50' : (pendingRevenue > 0 ? 'bg-amber-50' : 'bg-orange-50')} rounded-lg p-3">
             <p class="text-xs text-gray-500">Doanh thu đã TT</p>
             ${summary.total_revenue > 0
@@ -21833,6 +22120,7 @@ function renderLeaveTable(data) {
       </div>
     </td></tr>`
     $('leavePagination').innerHTML = ''
+    setMobileCardList('leaveCardList', '<div class="text-center py-10 text-gray-400 text-sm">Chưa có đơn xin nghỉ nào</div>')
     return
   }
 
@@ -21983,8 +22271,45 @@ function renderLeaveTable(data) {
     </tr>`
   }).join('')
 
+  renderLeaveMobileCards(pageData, { isAdmin, myId })
+
   // ── Pagination bar ──────────────────────────────────────────────────────────
   renderLeavePagination(totalItems, totalPages)
+}
+
+function renderLeaveMobileCards(pageData, opts = {}) {
+  const isAdmin = opts.isAdmin
+  const myId = opts.myId
+  if (!pageData.length) {
+    setMobileCardList('leaveCardList', '<div class="text-center py-10 text-gray-400 text-sm">Chưa có đơn xin nghỉ nào</div>')
+    return
+  }
+  setMobileCardList('leaveCardList', pageData.map(r => {
+    const typeCfg   = LEAVE_TYPE_CONFIG[r.leave_type]   || { label: r.leave_type, icon: '📋', cls: 'bg-gray-100 text-gray-700' }
+    const statusCfg = LEAVE_STATUS_CONFIG[r.status] || { label: r.status, cls: 'bg-gray-100 text-gray-700', icon: '' }
+    const isSelf    = myId && Number(r.user_id) === myId
+    const isPending = r.status === 'pending'
+    const canEdit   = isPending && (isSelf || isAdmin)
+    const canDel    = isPending && (isSelf || isAdmin)
+    const canReview = isAdmin && isPending
+    const empName = r.employee_name || r.employee_username || ''
+    let actions = ''
+    if (canReview) {
+      actions += `<button onclick="openLeaveReviewModal(${r.id})" class="btn-primary text-xs px-3 py-2"><i class="fas fa-check mr-1"></i>Duyệt</button>
+        <button onclick="quickRejectLeave(${r.id})" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-times mr-1"></i>Từ chối</button>`
+    }
+    if (canEdit) actions += `<button onclick="openLeaveModal(${r.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-pen mr-1"></i>Sửa</button>`
+    if (canDel) actions += `<button onclick="deleteLeaveRequest(${r.id})" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-trash"></i></button>`
+    return `<div class="mobile-list-card">
+      <div class="mlc-title">${typeCfg.icon} ${typeCfg.label}${isAdmin && empName ? ` · ${empName}` : ''}</div>
+      <div class="mlc-meta">${formatDateVN(r.start_date)} → ${formatDateVN(r.end_date)} · ${r.total_days} ngày</div>
+      <div class="mlc-row">
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${statusCfg.cls}">${statusCfg.label}</span>
+      </div>
+      ${r.reason ? `<div class="mlc-meta mt-1 truncate">${r.reason}</div>` : ''}
+      ${actions ? `<div class="mlc-actions">${actions}</div>` : ''}
+    </div>`
+  }).join(''))
 }
 
 function renderLeavePagination(totalItems, totalPages) {
