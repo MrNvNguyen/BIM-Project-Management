@@ -16027,7 +16027,7 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
     const sharedCost  = sharedCostRow?.total || 0
     const totalCost   = directCost + laborCost + sharedCost
     const totalRevenue = revenueSummary?.total_revenue || 0
-    const budgetDebt   = budgetValue - totalCost   // Công nợ ngân sách (ngân sách còn lại chưa chi)
+    const budgetDebt   = budgetValue - totalRevenue   // Công nợ NS = ngân sách − doanh thu
 
     // 6. Tasks tóm tắt
     const tasksSummary = await db.prepare(`

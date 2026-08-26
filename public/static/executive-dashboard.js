@@ -358,7 +358,7 @@ function exec_renderRightPanel() {
       ${(() => {
         const f = ov.finance
         const budgetOk   = f.budget > 0
-        const budgetDebt = f.budget_debt ?? (f.budget - f.total_cost)
+        const budgetDebt = f.budget_debt ?? (f.budget - (f.total_revenue || 0))
         const budgetDebtPct = budgetOk ? Math.round(budgetDebt / f.budget * 100) : 0
         const budgetPositive = budgetDebt >= 0
         return `
