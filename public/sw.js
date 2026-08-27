@@ -1,7 +1,7 @@
 // ============================================================
 // OneCad BIM — Service Worker (Push + optional shell icon cache)
 // ============================================================
-const CACHE_NAME = 'bim-sw-v3'
+const CACHE_NAME = 'bim-sw-v4'
 const APP_ORIGIN = self.location.origin
 
 // Shell-only assets (NOT HTML/JS SPA — avoid stale finance UI)
