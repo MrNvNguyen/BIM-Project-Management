@@ -3608,7 +3608,7 @@
                 <th class="pb-3 pr-3 text-center" title="Số task đã hoàn thành">Đã xong</th>
                 <th class="pb-3 pr-3 text-center" title="% Hoàn Thành = Đã xong / Task giao × 100">% Hoàn Thành</th>
                 <th class="pb-3 pr-3 text-center" title="Task hoàn thành đúng hạn (actual_end_date ≤ due_date)">Đúng hạn</th>
-                <th class="pb-3 pr-3 text-center" title="Task hoàn thành trễ hạn (actual_end_date > due_date)">Trễ hạn</th>
+                <th class="pb-3 pr-3 text-center" title="Task hoàn thành trễ hạn (actual_end_date &gt; due_date)">Trễ hạn</th>
                 <th class="pb-3 pr-3 text-center" title="Chính xác = Đúng hạn / Đã xong × 100  (đo mức độ đúng deadline)">Chính xác</th>
                 <th class="pb-3 pr-3 text-center" title="Năng suất = (% Hoàn Thành + Chính xác) / 2">Năng suất</th>
                 <th class="pb-3 text-center" title="Điểm = (Năng suất + Chính xác) / 2 — Xanh ≥75 | Vàng 50-74 | Đỏ &lt;50">Điểm</th>
@@ -4367,7 +4367,8 @@
             <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
           </div>
         </div>
-      </div>= -->
+      </div>
+      <!-- ========== END HỒ SƠ PHÁP LÝ PAGE ========== -->
 
       </div><!-- End Pages -->
       </div><!-- End max-width wrapper -->
@@ -7598,32 +7599,6 @@ document.addEventListener('keydown', function(e) {
           <span id="impPreviewCount" class="badge-blue ml-1">0 dòng</span>
         </span>
         <button onclick="clearImpPreview()" class="text-xs text-red-400 hover:text-red-600">
-          <i class="fas fa-trash mr-1"></i>Xóa
-        </button>
-      </div>
-      <div class="overflow-x-auto rounded-lg border border-gray-200 max-h-52">
-        <table class="w-full text-xs" id="impPreviewTable">
-          <thead class="bg-gray-50 sticky top-0">
-            <tr id="impPreviewHead"></tr>
-          </thead>
-          <tbody id="impPreviewBody"></tbody>
-        </table>
-      </div>
-      <div id="impValidationMsg" class="mt-2 text-xs"></div>
-    </div>
-
-    <div class="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-4">
-      <button type="button" onclick="closeModal('importTaskModal')" class="btn-secondary">Hủy</button>
-      <button type="button" onclick="submitImportTask()" id="impSubmitBtn" class="btn-primary" style="display:none">
-        <i class="fas fa-file-import mr-1.5"></i>Import <span id="impSubmitCount"></span> task
-      </button>
-    </div>
-  </div>
-</div>
-
-</body>
-</html>
-lass="text-xs text-red-400 hover:text-red-600">
           <i class="fas fa-trash mr-1"></i>Xóa
         </button>
       </div>
