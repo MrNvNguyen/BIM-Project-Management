@@ -14347,6 +14347,9 @@ app.get('/manifest.webmanifest', async (c, next) => {
 app.get('/icon-192.png',  serveStatic({ path: './icon-192.png' }))
 app.get('/icon-512.png',  serveStatic({ path: './icon-512.png' }))
 app.get('/badge-72.png',  serveStatic({ path: './badge-72.png' }))
+app.get('/brand/onecad-icon.png', serveStatic({ path: './brand/onecad-icon.png' }))
+app.get('/brand/onecad-mark-mono.png', serveStatic({ path: './brand/onecad-mark-mono.png' }))
+app.get('/brand/onecad-mark.png', serveStatic({ path: './brand/onecad-mark.png' }))
 
 // Pre-deploy preview page — localhost only (see public/preview.html)
 app.get('/preview', async (c, next) => {

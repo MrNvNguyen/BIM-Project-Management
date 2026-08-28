@@ -7,6 +7,19 @@ function getXLSXForWrite() { return window.XLSXStyle || window.XLSX }
 function getXLSXCore()     { return window._XLSXCore   || window.XLSX }
 
 const API_BASE = ''
+
+/** Đổi màu logo mono (sidebar, v.v.) — ví dụ applyBrandLogoTheme({ color: '#00A651' }) */
+function applyBrandLogoTheme({ color, colorLight, usePrimary } = {}) {
+  const root = document.documentElement
+  if (usePrimary) {
+    const primary = getComputedStyle(root).getPropertyValue('--primary').trim() || '#00A651'
+    root.style.setProperty('--brand-logo-color', primary)
+    return
+  }
+  if (color) root.style.setProperty('--brand-logo-color', color)
+  if (colorLight) root.style.setProperty('--brand-logo-color-light', colorLight)
+}
+window.applyBrandLogoTheme = applyBrandLogoTheme
 // #region agent log
 function _agentLog(payload) {
   const body = JSON.stringify({ sessionId: '18dfab', timestamp: Date.now(), ...payload })
