@@ -53,41 +53,7 @@
       -ms-text-size-adjust: 100%;
       text-size-adjust: 100%;
     }
-    :root {
-      --primary: #00A651;
-      --accent: #0066CC;
-      --warning: #FF6B00;
-      /* Brand mark — đổi màu tại sidebar/login hoặc override toàn cục */
-      --brand-logo-color: #1a6fd4;
-      --brand-logo-color-light: #5ec4ff;
-      --brand-logo-full: url('/brand/onecad-icon.png');
-      --brand-logo-mono: url('/brand/onecad-mark-mono.png');
-    }
-    .brand-mark {
-      display: inline-block;
-      flex-shrink: 0;
-      background-repeat: no-repeat;
-      background-position: center;
-      background-size: contain;
-    }
-    .brand-mark--color { background-image: var(--brand-logo-full); }
-    .brand-mark--tint {
-      background-color: var(--brand-logo-color);
-      background-image: none;
-      -webkit-mask-image: var(--brand-logo-mono);
-      mask-image: var(--brand-logo-mono);
-      -webkit-mask-repeat: no-repeat;
-      mask-repeat: no-repeat;
-      -webkit-mask-position: center;
-      mask-position: center;
-      -webkit-mask-size: contain;
-      mask-size: contain;
-    }
-    .brand-mark--sm { width: 32px; height: 32px; }
-    .brand-mark--md { width: 40px; height: 40px; }
-    .brand-mark--lg { width: 64px; height: 64px; }
-    .brand-mark--xl { width: 80px; height: 80px; }
-    .sidebar { --brand-logo-color: #fff; }
+    :root { --primary: #00A651; --accent: #0066CC; --warning: #FF6B00; }
     * { font-family: 'Segoe UI', sans-serif; box-sizing: border-box; }
     body { background: #f0f4f8; margin: 0; padding: 0; }
 
@@ -715,7 +681,8 @@
 <div id="loginPage" class="min-h-screen login-bg flex items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8">
     <div class="text-center mb-8">
-      <div class="brand-mark brand-mark--color brand-mark--xl mx-auto mb-4" role="img" aria-label="OneCad"></div>
+      <img src="https://onecadvn.com/Upload/images/logo/logo.png" alt="OneCad Logo" class="h-16 mx-auto mb-4" onerror="this.style.display='none'; document.getElementById('logoText').style.display='block'">
+      <div id="logoText" style="display:none" class="text-3xl font-bold text-primary">🏗️ OneCad BIM</div>
       <h2 class="text-2xl font-bold text-gray-800 mt-2">Hệ Thống Quản Lý Dự Án BIM</h2>
       <p class="text-gray-500 mt-1 text-sm">Đăng nhập để tiếp tục</p>
     </div>
@@ -762,7 +729,7 @@
     <!-- Header -->
     <div class="p-4 border-b border-green-700" style="min-height:72px">
       <div class="sidebar-logo-full">
-        <div class="brand-mark brand-mark--tint brand-mark--md" role="img" aria-label="OneCad"></div>
+        <img src="https://onecadvn.com/Upload/images/logo/logo.png" alt="OneCad" class="h-10 filter brightness-0 invert flex-shrink-0" onerror="this.style.display='none'">
         <div class="logo-text">
           <div class="text-white font-bold text-lg leading-tight">OneCad BIM</div>
           <div class="text-green-200 text-xs">Project Management</div>
@@ -6519,7 +6486,7 @@
 <nav id="mobileBottomNav" aria-label="Điều hướng chính"></nav>
 <div id="pwaInstallBanner" role="dialog" aria-label="Cài đặt ứng dụng">
   <div class="pwa-banner-inner">
-    <img src="/brand/onecad-icon.png" alt="" width="40" height="40" class="pwa-banner-icon">
+    <img src="/icon-192.png" alt="" width="40" height="40" class="pwa-banner-icon">
     <p id="pwaInstallText" class="pwa-banner-text">Cài OneCad BIM lên màn hình chính</p>
     <button type="button" id="pwaInstallBtn" class="pwa-banner-install" onclick="acceptPwaInstall()">Cài</button>
     <button type="button" class="pwa-banner-dismiss" onclick="dismissPwaInstallBanner()" aria-label="Đóng">×</button>

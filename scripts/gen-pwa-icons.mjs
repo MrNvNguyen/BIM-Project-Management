@@ -1,10 +1,8 @@
 /**
- * Generate OneCAD/BIM PWA icons + mono mask from brand mark art.
+ * Generate PWA install icons only (mobile Add to Home Screen / favicon).
+ * UI sidebar/login logo is unchanged — uses onecadvn.com wordmark in index.html.
  *
- * Source priority:
- *   1. public/brand/onecad-icon-source.png  (square app icon — drop file here)
- *   2. auto-crop from public/brand/onecad-mark.png (wordmark fallback)
- *
+ * Source: public/brand/onecad-icon-source.jpg (preferred) or .png; fallback crop from onecad-mark.png
  * Usage: node scripts/gen-pwa-icons.mjs
  */
 import sharp from 'sharp'
@@ -17,23 +15,22 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const brandDir = join(root, 'public', 'brand')
 mkdirSync(brandDir, { recursive: true })
 
-const sourceIcon = join(brandDir, 'onecad-icon-source.png')
+const sourceCandidates = [
+  join(brandDir, 'onecad-icon-source.jpg'),
+  join(brandDir, 'onecad-icon-source.png'),
+]
 const wordmarkPath = join(brandDir, 'onecad-mark.png')
 const markOut = join(brandDir, 'onecad-icon.png')
 
 async function loadSquareMark() {
-  if (existsSync(sourceIcon)) {
-    console.log('Using square source:', sourceIcon)
+  const sourceIcon = sourceCandidates.find((p) => existsSync(p))
+  if (sourceIcon) {
+    console.log('Using icon source:', sourceIcon)
     return sharp(readFileSync(sourceIcon)).ensureAlpha().png().toBuffer()
   }
 
-  if (existsSync(markOut)) {
-    console.log('Using existing mark:', markOut)
-    return readFileSync(markOut)
-  }
-
   if (!existsSync(wordmarkPath)) {
-    throw new Error('Missing brand art. Add public/brand/onecad-icon-source.png (square icon) or onecad-mark.png')
+    throw new Error('Missing brand art. Add public/brand/onecad-icon-source.jpg or onecad-mark.png')
   }
 
   console.log('Cropping mark from wordmark:', wordmarkPath)
@@ -53,18 +50,16 @@ const markBuf = await loadSquareMark()
 writeFileSync(markOut, markBuf)
 console.log('Wrote', markOut, 'bytes=', markBuf.length)
 
-async function composeIcon(size, { badge = false, pad = 0.12 } = {}) {
+async function composeIcon(size, { pad = 0.14 } = {}) {
   const inset = Math.round(size * pad)
   const inner = size - inset * 2
-  const logoMax = badge ? inner : Math.round(inner * (badge ? 1 : 0.78))
   const logo = await sharp(markBuf)
-    .resize(logoMax, logoMax, { fit: 'inside', withoutEnlargement: false })
+    .resize(inner, inner, { fit: 'inside', withoutEnlargement: false })
     .png()
     .toBuffer()
   const logoMeta = await sharp(logo).metadata()
   const lx = Math.round((size - logoMeta.width) / 2)
-  const logoArea = badge ? inner : Math.round(inner * 0.78)
-  const ly = Math.round(inset + (logoArea - logoMeta.height) / 2)
+  const ly = Math.round((size - logoMeta.height) / 2)
 
   const radius = Math.round(size * 0.2)
   const bg = Buffer.from(
@@ -73,45 +68,13 @@ async function composeIcon(size, { badge = false, pad = 0.12 } = {}) {
     </svg>`
   )
 
-  let layers = [{ input: logo, left: lx, top: ly }]
-  if (!badge) {
-    layers.push({
-      input: Buffer.from(
-        `<svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
-          <text x="50%" y="${size - inset * 0.42}" text-anchor="middle"
-            font-family="Segoe UI, system-ui, sans-serif" font-size="${Math.round(size * 0.08)}"
-            font-weight="700" fill="#006e36">BIM</text>
-        </svg>`
-      ),
-      left: 0,
-      top: 0,
-    })
-  }
-
-  return sharp(bg).composite(layers).png().toBuffer()
-}
-
-async function composeMonoMask(size = 512) {
-  const logo = await sharp(markBuf)
-    .resize(size, size, { fit: 'inside', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .ensureAlpha()
-    .png()
-    .toBuffer()
-
-  return sharp(logo)
-    .greyscale()
-    .linear(1.15, -15)
-    .threshold(40)
-    .negate()
-    .png()
-    .toBuffer()
+  return sharp(bg).composite([{ input: logo, left: lx, top: ly }]).png().toBuffer()
 }
 
 const jobs = [
   ['public/icon-192.png', () => composeIcon(192)],
   ['public/icon-512.png', () => composeIcon(512)],
-  ['public/badge-72.png', () => composeIcon(72, { badge: true, pad: 0.1 })],
-  ['public/brand/onecad-mark-mono.png', () => composeMonoMask(512)],
+  ['public/badge-72.png', () => composeIcon(72, { pad: 0.1 })],
 ]
 
 for (const [rel, fn] of jobs) {
