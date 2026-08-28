@@ -55,6 +55,21 @@ Migration: `migrations/0047_timesheets_work_date_indexes.sql`
 
 Labor sync `all_months`: **defer** — chưa đo Insights sau Wave 2–3.
 
+## Wave 6 — P1 hot paths (2026-08-28 tiếp)
+
+| Route / thay đổi | Chi tiết |
+|-------------------|----------|
+| `GET /api/dashboard/stats` | Gộp ~20 prepare tuần tự → `Promise.all` (1 batch song song) |
+| `GET /api/dashboard/cost-summary` | `poolTotalLabor` từ `monthlyLaborSummary` (bỏ loop 12 tháng) |
+| `POST /api/projects/:id/labor-costs/sync` `all_months` | `fetchProjectHoursByMonth` + `fetchCompanyEffHoursByMonth` + `db.batch` writes |
+| `GET /api/analytics/team-productivity` | `yearDateRange` / `monthDateRange` |
+| `GET /api/leave-requests/summary` | `yearDateRange` trên `start_date` |
+| `GET /api/analytics/task-analytics` | `completionTrend` dùng `created_at` range |
+| `GET /api/data-audit/consistency-check` | 5 aggregate GROUP BY thay N+1 strftime/project |
+| `POST /api/data-audit/fix-inconsistency` `fix_labor` | 1 GROUP BY timesheets + `db.batch` upsert |
+
+**Ước lượng:** dashboard/stats load ≈ wall-time 1 round-trip thay ~18 tuần tự; data-audit tháng ≈ 5 query + loop logic thay ~4×N project queries.
+
 ## Kiểm tra
 
 ```bash
@@ -62,12 +77,11 @@ npm test   # finance.test.ts 20/20 PASS
 node scripts/copy-public.mjs
 ```
 
-## Còn lại (P1, theo Insights)
+## Còn lại (P2 / theo Insights)
 
-- `GET /api/dashboard/stats` (~20 prepares/load)
-- Data-audit / labor sync `all_months`
-- `GET /api/analytics/team-productivity`, leave summary year filter
 - Index notifications chỉ nếu EXPLAIN vẫn SCAN sau Wave 1
+- Các `strftime` còn lại trên `birthday` (không hot path timesheet)
+- `GET /api/financial-summary/*` — đã có hybrid; đo Insights nếu vẫn cao
 
 ## Free target
 
