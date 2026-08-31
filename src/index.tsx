@@ -16318,9 +16318,12 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
     const recentPayments = await db.prepare(`
       SELECT pr.id, pr.request_number, pr.description, pr.payment_phase,
              pr.amount, pr.paid_amount, pr.status, pr.request_date, pr.paid_date,
-             li.stt as item_stt, li.title as item_title
+             li.stt as item_stt, li.title as item_title,
+             lp.name as package_name, lp.package_type as package_type
       FROM payment_requests pr
       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+      LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+      LEFT JOIN legal_packages lp ON lp.id = ls.package_id
       WHERE pr.project_id = ?
       ORDER BY pr.request_date DESC, pr.created_at DESC
       LIMIT 10
