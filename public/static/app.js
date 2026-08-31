@@ -3169,14 +3169,23 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   }
 })
+async function fetchTasksForList(projectId = '') {
+  let url = `/tasks?limit=${TASK_LIST_LIMIT}&offset=0`
+  if (projectId) url += `&project_id=${encodeURIComponent(projectId)}`
+  const resp = await api(url)
+  return Array.isArray(resp) ? resp : (resp?.data || [])
+}
+
 async function loadTasks() {
   try {
     if (!allProjects.length) await fetchProjectsCached(false, 'slim')
     if (!allUsers.length) allUsers = await api('/users')
-    // Phân trang server: mặc định 500; có thể tăng limit khi cần
-    const pageLimit = 500
-    allTasks = await api(`/tasks?limit=${pageLimit}&offset=0`)
-    if (!Array.isArray(allTasks)) allTasks = allTasks?.data || []
+
+    // Lưu lại giá trị filter đang chọn trước khi rebuild combobox
+    const prevProjectFilter = _cbGetValue('taskProjectCombobox') || ''
+
+    // Khi đã chọn dự án: fetch theo project_id (cùng RBAC + phạm vi như Chi tiết dự án)
+    allTasks = await fetchTasksForList(prevProjectFilter)
 
     // Populate project role cache for current user
     refreshProjectRoleCache()
@@ -3188,9 +3197,6 @@ async function loadTasks() {
       btnNewTask.innerHTML = '<i class="fas fa-plus"></i>Tạo task mới'
       btnNewTask.title = ''
     }
-
-    // Lưu lại giá trị filter đang chọn trước khi rebuild combobox
-    const prevProjectFilter = _cbGetValue('taskProjectCombobox') || ''
 
     // Build project combobox (restore giá trị cũ để không mất filter)
     createCombobox('taskProjectCombobox', {
@@ -3219,8 +3225,8 @@ async function loadTasks() {
       }
     }
 
-    // Build category combobox (all categories from loaded tasks)
-    updateTaskCategoryFilter()
+    // Build category combobox (categories của dự án đang lọc)
+    await updateTaskCategoryFilter(prevProjectFilter)
 
     // Áp lại filter hiện tại thay vì render toàn bộ
     filterTasks()
@@ -3541,16 +3547,21 @@ document.addEventListener('click', function(e) {
 // TASK FILTERS - combobox-powered
 // ================================================================
 
-// Called when project combobox selection changes
-function onTaskProjectFilterChange(projectId) {
-  updateTaskCategoryFilter(projectId)
-  filterTasks()
+// Called when project combobox selection changes — refetch từ server (không chỉ lọc client)
+async function onTaskProjectFilterChange(projectId) {
+  try {
+    allTasks = await fetchTasksForList(projectId || '')
+    await updateTaskCategoryFilter(projectId || '')
+    filterTasks()
+  } catch (e) {
+    toast('Lỗi tải task: ' + e.message, 'error')
+  }
 }
 
 // Rebuild category combobox items based on selected project.
 // - No project selected → hide the category combobox entirely
-// - Project selected    → show combobox with only that project's categories
-function updateTaskCategoryFilter(selectedProjectId = '') {
+// - Project selected    → show combobox with categories from API (đồng bộ với Chi tiết dự án)
+async function updateTaskCategoryFilter(selectedProjectId = '') {
   const wrapper = $('taskCategoryCombobox')
   if (!wrapper) return
 
@@ -3566,13 +3577,19 @@ function updateTaskCategoryFilter(selectedProjectId = '') {
     return
   }
 
-  // ── Project selected: collect its categories ────────────────
-  const tasksForProject = allTasks.filter(t => String(t.project_id) === String(selectedProjectId))
-  const catMap = {}
-  tasksForProject.forEach(t => {
-    if (t.category_id && t.category_name) catMap[t.category_id] = t.category_name
-  })
-  const items = Object.entries(catMap).map(([id, name]) => ({ value: id, label: name }))
+  // ── Project selected: load categories từ API (không suy từ allTasks đã tải) ──
+  let items = []
+  try {
+    const cats = await api(`/projects/${selectedProjectId}/categories`)
+    items = (Array.isArray(cats) ? cats : []).map(c => ({ value: String(c.id), label: c.name }))
+  } catch (_) {
+    const tasksForProject = allTasks.filter(t => String(t.project_id) === String(selectedProjectId))
+    const catMap = {}
+    tasksForProject.forEach(t => {
+      if (t.category_id && t.category_name) catMap[t.category_id] = t.category_name
+    })
+    items = Object.entries(catMap).map(([id, name]) => ({ value: id, label: name }))
+  }
 
   // Keep previous category only if it still belongs to this project
   const prevVal = _cbGetValue('taskCategoryCombobox')
