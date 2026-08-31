@@ -3593,7 +3593,7 @@ async function updateTaskCategoryFilter(selectedProjectId = '') {
 
   // Keep previous category only if it still belongs to this project
   const prevVal = _cbGetValue('taskCategoryCombobox')
-  const keepValue = !!catMap[prevVal]
+  const keepValue = items.some(i => String(i.value) === String(prevVal))
 
   if (wrapper.querySelector('[id$="_wrap"]')) {
     // Combobox already rendered – just refresh items
