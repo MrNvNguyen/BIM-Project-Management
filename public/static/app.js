@@ -21888,20 +21888,36 @@ let _leaveCurrentPage = 1
 const _leavePageSize  = 10
 let _leaveFilterUserId = null   // null = tất cả nhân sự; số = filter theo user cụ thể
 
-// ── Khởi tạo employee combobox filter (admin only) ───────────────────────────
+function _leaveViewerDept() {
+  const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
+  return String(cu?.department || '').trim()
+}
+
+function _canSeeDeptLeaveList() {
+  const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
+  return cu?.role === 'system_admin' || !!_leaveViewerDept()
+}
+
+// ── Khởi tạo employee combobox filter ───────────────────────────────────────
 async function _initLeaveEmployeeFilter() {
   const wrap = $('leaveFilterEmployeeWrap')
   if (!wrap) return
   if (!allUsers.length) {
     try { allUsers = await api('/users') } catch(e) {}
   }
-  const activeUsers = (allUsers || []).filter(u => u.is_active !== 0)
-  // Không thêm placeholder vào items — _cbRenderOptions tự prepend placeholder từ options.placeholder
+  const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
+  const isAdmin = cu?.role === 'system_admin'
+  const dept = _leaveViewerDept()
+  const activeUsers = (allUsers || []).filter(u => {
+    if (u.is_active === 0) return false
+    if (isAdmin) return true
+    return String(u.department || '').trim() === dept
+  })
   const items = activeUsers.map(u => ({ value: String(u.id), label: u.full_name }))
 
   if (_cbState['leaveEmployeeCombobox']) delete _cbState['leaveEmployeeCombobox']
   createCombobox('leaveEmployeeCombobox', {
-    placeholder: '👥 Tất cả nhân sự',
+    placeholder: isAdmin ? '👥 Tất cả nhân sự' : '👥 Nhân sự trong phòng',
     items,
     fullWidth: true,
     teleport: true,          // teleport panel ra body để thoát overflow:hidden của header card
@@ -22045,6 +22061,7 @@ async function _renderLeaveEmployeeStats(userId) {
 async function loadLeaveRequests() {
   const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
   const isAdmin = cu?.role === 'system_admin'
+  const canSeeList = _canSeeDeptLeaveList()
 
   // Show/hide admin-only UI elements
   const kpiRow = $('leaveKpiRow')
@@ -22052,25 +22069,24 @@ async function loadLeaveRequests() {
   const filterStatus = $('leaveFilterStatus')
   const empFilterWrap = $('leaveFilterEmployeeWrap')
 
-  if (isAdmin) {
+  if (canSeeList) {
     kpiRow?.classList.remove('hidden')
     colEmp?.classList.remove('hidden')
-    document.getElementById('btnManageLeaveQuota')?.classList.remove('hidden')
-    // Hiển thị bộ lọc nhân sự + khởi tạo combobox 1 lần duy nhất
     if (empFilterWrap) {
       empFilterWrap.classList.remove('hidden')
-      if (!empFilterWrap._initialized) {
-        empFilterWrap._initialized = true
-        await _initLeaveEmployeeFilter()
-      }
+      await _initLeaveEmployeeFilter()
     }
   } else {
     kpiRow?.classList.add('hidden')
     colEmp?.classList.add('hidden')
-    document.getElementById('btnManageLeaveQuota')?.classList.add('hidden')
     if (empFilterWrap) empFilterWrap.classList.add('hidden')
-    // Reset filter khi không phải admin
     _leaveFilterUserId = null
+  }
+
+  if (isAdmin) {
+    document.getElementById('btnManageLeaveQuota')?.classList.remove('hidden')
+  } else {
+    document.getElementById('btnManageLeaveQuota')?.classList.add('hidden')
   }
 
   const statusFilter = filterStatus?.value || ''
@@ -22085,7 +22101,7 @@ async function loadLeaveRequests() {
     _leaveData = res.data || []
 
     // KPI — cập nhật tổng theo dữ liệu đang filter
-    if (isAdmin) {
+    if (canSeeList) {
       $('leaveKpiTotal').textContent    = _leaveData.length
       $('leaveKpiPending').textContent  = _leaveData.filter(r => r.status === 'pending').length
       $('leaveKpiApproved').textContent = _leaveData.filter(r => r.status === 'approved').length
@@ -22187,6 +22203,7 @@ function renderLeaveTable(data) {
   if (!tbody) return
   const cu = currentUser || JSON.parse(localStorage.getItem('bim_user') || 'null')
   const isAdmin = cu?.role === 'system_admin'
+  const showEmployeeCol = _canSeeDeptLeaveList()
   const myId    = Number(cu?.id)
 
   const totalItems = data.length
@@ -22294,7 +22311,7 @@ function renderLeaveTable(data) {
       ? (nameParts[nameParts.length-2][0] + nameParts[nameParts.length-1][0]).toUpperCase()
       : empName.substring(0,2).toUpperCase()
     const avatarColor = avatarColors[r.user_id % avatarColors.length]
-    const empCell = isAdmin ? `
+    const empCell = showEmployeeCol ? `
       <td class="py-3.5 px-4">
         <div class="flex items-center gap-2.5">
           <div class="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold text-white flex-shrink-0 shadow-sm"
@@ -22357,7 +22374,7 @@ function renderLeaveTable(data) {
     </tr>`
   }).join('')
 
-  renderLeaveMobileCards(pageData, { isAdmin, myId })
+  renderLeaveMobileCards(pageData, { isAdmin, myId, showEmployeeCol })
 
   // ── Pagination bar ──────────────────────────────────────────────────────────
   renderLeavePagination(totalItems, totalPages)
@@ -22366,6 +22383,7 @@ function renderLeaveTable(data) {
 function renderLeaveMobileCards(pageData, opts = {}) {
   const isAdmin = opts.isAdmin
   const myId = opts.myId
+  const showEmployeeCol = opts.showEmployeeCol
   if (!pageData.length) {
     setMobileCardList('leaveCardList', '<div class="text-center py-10 text-gray-400 text-sm">Chưa có đơn xin nghỉ nào</div>')
     return
@@ -22387,7 +22405,7 @@ function renderLeaveMobileCards(pageData, opts = {}) {
     if (canEdit) actions += `<button onclick="openLeaveModal(${r.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-pen mr-1"></i>Sửa</button>`
     if (canDel) actions += `<button onclick="deleteLeaveRequest(${r.id})" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-trash"></i></button>`
     return `<div class="mobile-list-card">
-      <div class="mlc-title">${typeCfg.icon} ${typeCfg.label}${isAdmin && empName ? ` · ${empName}` : ''}</div>
+      <div class="mlc-title">${typeCfg.icon} ${typeCfg.label}${showEmployeeCol && empName ? ` · ${empName}` : ''}</div>
       <div class="mlc-meta">${formatDateVN(r.start_date)} → ${formatDateVN(r.end_date)} · ${r.total_days} ngày</div>
       <div class="mlc-row">
         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${statusCfg.cls}">${statusCfg.label}</span>

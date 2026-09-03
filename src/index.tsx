@@ -14635,12 +14635,13 @@ function expandLeaveDates(startDate: string, endDate: string, leaveType: string)
   return dates
 }
 
-// GET /api/leave-requests — danh sách (admin thấy tất cả, member thấy của mình)
+// GET /api/leave-requests — system_admin: tất cả; còn lại: cùng phòng (không có phòng → chỉ của mình)
 app.get('/api/leave-requests', authMiddleware, async (c) => {
   try {
     const db   = c.env.DB
     const user = c.get('user') as any
     const isAdmin = user.role === 'system_admin'
+    const dept = String(user.department || '').trim()
     const { status, user_id, month, year } = c.req.query() as any
 
     let sql = `
@@ -14648,6 +14649,7 @@ app.get('/api/leave-requests', authMiddleware, async (c) => {
              u.full_name  AS employee_name,
              u.username   AS employee_username,
              u.email      AS employee_email,
+             u.department AS employee_department,
              rv.full_name AS reviewer_name
       FROM leave_requests lr
       JOIN users u ON u.id = lr.user_id
@@ -14655,10 +14657,15 @@ app.get('/api/leave-requests', authMiddleware, async (c) => {
       WHERE 1=1`
     const params: any[] = []
 
-    if (!isAdmin) {
-      sql += ' AND lr.user_id = ?'; params.push(user.id)
-    } else if (user_id) {
-      sql += ' AND lr.user_id = ?'; params.push(parseInt(user_id))
+    if (isAdmin) {
+      if (user_id) { sql += ' AND lr.user_id = ?'; params.push(parseInt(user_id)) }
+    } else if (dept) {
+      sql += ` AND TRIM(COALESCE(u.department, '')) = ?`
+      params.push(dept)
+      if (user_id) { sql += ' AND lr.user_id = ?'; params.push(parseInt(user_id)) }
+    } else {
+      sql += ' AND lr.user_id = ?'
+      params.push(user.id)
     }
     if (status)  { sql += ' AND lr.status = ?';  params.push(status) }
     if (year)    { sql += ' AND strftime(\'%Y\', lr.start_date) = ?'; params.push(year) }
