@@ -3169,16 +3169,38 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   }
 })
-async function fetchTasksForList(projectId = '', overdueOnly = false) {
+async function fetchTasksForList(projectId = '', overdueOnly = false, search = '') {
   let url = `/tasks?limit=${TASK_LIST_LIMIT}&offset=0`
   if (projectId) url += `&project_id=${encodeURIComponent(projectId)}`
   if (overdueOnly) url += `&overdue=1`
+  const q = String(search || '').trim()
+  if (q) url += `&search=${encodeURIComponent(q)}`
   const resp = await api(url)
   return Array.isArray(resp) ? resp : (resp?.data || [])
 }
 
 function _taskListOverdueOnly() {
   return !!$('taskOverdueFilter')?.checked
+}
+
+function _taskListSearch() {
+  return ($('taskSearch')?.value || '').trim()
+}
+
+let _taskSearchTimer = null
+function onTaskSearchInput() {
+  clearTimeout(_taskSearchTimer)
+  _taskSearchTimer = setTimeout(() => { onTaskSearchCommit() }, 300)
+}
+
+async function onTaskSearchCommit() {
+  const projectId = _cbGetValue('taskProjectCombobox') || ''
+  try {
+    allTasks = await fetchTasksForList(projectId, _taskListOverdueOnly(), _taskListSearch())
+    filterTasks()
+  } catch (e) {
+    toast('Lỗi tải task: ' + e.message, 'error')
+  }
 }
 
 async function loadTasks() {
@@ -3190,7 +3212,7 @@ async function loadTasks() {
     const prevProjectFilter = _cbGetValue('taskProjectCombobox') || ''
 
     // Khi đã chọn dự án: fetch theo project_id (cùng RBAC + phạm vi như Chi tiết dự án)
-    allTasks = await fetchTasksForList(prevProjectFilter, _taskListOverdueOnly())
+    allTasks = await fetchTasksForList(prevProjectFilter, _taskListOverdueOnly(), _taskListSearch())
 
     // Populate project role cache for current user
     refreshProjectRoleCache()
@@ -3555,7 +3577,7 @@ document.addEventListener('click', function(e) {
 // Called when project combobox selection changes — refetch từ server (không chỉ lọc client)
 async function onTaskProjectFilterChange(projectId) {
   try {
-    allTasks = await fetchTasksForList(projectId || '', _taskListOverdueOnly())
+    allTasks = await fetchTasksForList(projectId || '', _taskListOverdueOnly(), _taskListSearch())
     await updateTaskCategoryFilter(projectId || '')
     filterTasks()
   } catch (e) {
@@ -3566,7 +3588,7 @@ async function onTaskProjectFilterChange(projectId) {
 async function onTaskOverdueFilterChange() {
   const projectId = _cbGetValue('taskProjectCombobox') || ''
   try {
-    allTasks = await fetchTasksForList(projectId, _taskListOverdueOnly())
+    allTasks = await fetchTasksForList(projectId, _taskListOverdueOnly(), _taskListSearch())
     filterTasks()
   } catch (e) {
     toast('Lỗi tải task: ' + e.message, 'error')

@@ -2222,9 +2222,10 @@ app.get('/api/tasks', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    const { project_id, status, assigned_to, overdue, limit: limitQ, offset: offsetQ } = c.req.query()
+    const { project_id, status, assigned_to, overdue, search, limit: limitQ, offset: offsetQ } = c.req.query()
     const limit = Math.min(Math.max(parseInt(limitQ || '500', 10) || 500, 1), 1000)
     const offset = Math.max(parseInt(offsetQ || '0', 10) || 0, 0)
+    const searchQ = String(search || '').trim().slice(0, 80).replace(/[%_]/g, '')
 
     // Explicit columns — không SELECT attachments; không phụ thuộc cột chỉ có qua /system/init
     // (task_type/model_filename/cde_report/work_notes/hstk_date có thể chưa có trên D1)
@@ -2303,6 +2304,17 @@ app.get('/api/tasks', authMiddleware, async (c) => {
     if (status) { query += ` AND t.status = ?`; params.push(status) }
     if (assigned_to) { query += ` AND t.assigned_to = ?`; params.push(parseInt(assigned_to)) }
     if (overdue === '1') { query += ` AND t.due_date IS NOT NULL AND t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled')` }
+    if (searchQ) {
+      const like = `%${searchQ}%`
+      query += ` AND (
+        t.title LIKE ? COLLATE NOCASE
+        OR u1.full_name LIKE ? COLLATE NOCASE
+        OR cat.name LIKE ? COLLATE NOCASE
+        OR p.code LIKE ? COLLATE NOCASE
+        OR p.name LIKE ? COLLATE NOCASE
+      )`
+      params.push(like, like, like, like, like)
+    }
 
     query += ` ORDER BY t.due_date ASC, t.priority DESC LIMIT ? OFFSET ?`
     params.push(limit, offset)
