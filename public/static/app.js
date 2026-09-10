@@ -87,6 +87,10 @@ let _lastAnalysisKey = ''              // cache key: projId+periodType+month+yea
 const $ = id => document.getElementById(id)
 const fmt = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(n || 0))
 const fmtMoney = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', notation: 'compact', minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(n || 0)
+/** Định dạng đồng đầy đủ (không compact) — tránh nhầm "2,778 Tr" = 2.778 triệu */
+function fmtDong(n) {
+  return new Intl.NumberFormat('vi-VN').format(Math.round(Number(n) || 0)) + ' ₫'
+}
 
 // ── Money Input Helpers ──────────────────────────────────────────────────────
 // Format khi user gõ: 5240400000 → 5.240.400.000
@@ -14785,7 +14789,8 @@ function toggleAllocationPanel() {
 }
 
 async function openSharedCostModal(id = null) {
-  if (!allProjects.length) allProjects = await api('/projects')
+  // Cần GTHĐ đầy đủ để phân bổ theo % — không dùng cache slim (thiếu contract_value)
+  await fetchProjectsCached(true)
 
   // Đảm bảo danh sách loại chi phí đã được load
   if (!allCostTypes.length) {
@@ -14825,7 +14830,7 @@ async function openSharedCostModal(id = null) {
         <span class="font-medium text-sm text-gray-800">${p.code}</span>
         <span class="text-xs text-gray-500 ml-2 truncate">${p.name}</span>
       </div>
-      <span class="text-xs text-gray-400">${fmtMoney(p.contract_value || 0)}</span>
+      <span class="text-xs text-gray-400">${(p.contract_value || 0) > 0 ? fmtDong(p.contract_value) : 'Chưa có GTHĐ'}</span>
       <span class="scManualPctWrap hidden ml-2">
         <input type="number" class="scManualPct border rounded px-1 py-0.5 w-16 text-xs text-right"
           placeholder="%" min="0" max="100" step="0.1"
@@ -14951,13 +14956,21 @@ function updateSharedCostPreview() {
   }))
 
   let rows = []
+  let basisNote = ''
   if (basis === 'contract_value') {
     const totalContract = projects.reduce((s, p) => s + p.contract, 0)
-    rows = projects.map(p => {
-      const pct = totalContract > 0 ? (p.contract / totalContract * 100) : (100 / projects.length)
-      const allocated = Math.round(amount * pct / 100)
-      return { label: p.label, pct: pct.toFixed(1), allocated }
-    })
+    if (totalContract <= 0) {
+      basisNote = `<div class="p-2 bg-amber-50 text-amber-800 text-xs border-b border-amber-100">⚠️ Các dự án chọn chưa có GTHĐ — tạm chia đều. Nhập GTHĐ trên dự án hoặc chọn cơ sở khác.</div>`
+      const pct = 100 / projects.length
+      const allocated = Math.round(amount / projects.length)
+      rows = projects.map(p => ({ label: p.label, pct: pct.toFixed(1), allocated }))
+    } else {
+      rows = projects.map(p => {
+        const pct = p.contract / totalContract * 100
+        const allocated = Math.round(amount * pct / 100)
+        return { label: p.label, pct: pct.toFixed(1), allocated }
+      })
+    }
   } else if (basis === 'equal') {
     const pct = 100 / projects.length
     const allocated = Math.round(amount / projects.length)
@@ -14977,6 +14990,7 @@ function updateSharedCostPreview() {
   }
 
   $('scPreviewTable').innerHTML = `
+    ${basisNote}
     <table class="w-full">
       <thead><tr class="bg-gray-100">
         <th class="text-left px-3 py-1 font-medium">Dự án</th>
@@ -14987,12 +15001,12 @@ function updateSharedCostPreview() {
         ${rows.map(r => `<tr class="border-t">
           <td class="px-3 py-1">${r.label}</td>
           <td class="px-3 py-1 text-right text-gray-600">${r.pct}%</td>
-          <td class="px-3 py-1 text-right font-semibold text-indigo-700">${fmtMoney(r.allocated)}</td>
+          <td class="px-3 py-1 text-right font-semibold text-indigo-700">${fmtDong(r.allocated)}</td>
         </tr>`).join('')}
         <tr class="border-t bg-yellow-50 font-semibold">
           <td class="px-3 py-1">Tổng</td>
           <td class="px-3 py-1 text-right">100%</td>
-          <td class="px-3 py-1 text-right text-yellow-700">${fmtMoney(amount)}</td>
+          <td class="px-3 py-1 text-right text-yellow-700">${fmtDong(amount)}</td>
         </tr>
       </tbody>
     </table>
@@ -16795,7 +16809,9 @@ async function renderProjectFinancialTab(force = false) {
                       <span class="font-semibold text-blue-600">${p.paid_amount_total > 0 ? fmtM(p.paid_amount_total) : '<span class="text-gray-300">—</span>'}</span>
                       ${p.paid_amount_total > 0 && pctBaseRow > 0 ? `<div class="text-xs text-gray-400" title="% trên ${pctLabel}">${pct(p.paid_amount_total, pctBaseRow)}%</div>` : ''}
                     </td>
-                    ${(() => { const debt = Math.max(0, (p.contract_value||0) - (p.paid_amount_total||0)); return `<td class="py-2 px-3 text-right whitespace-nowrap" style="background:${debt>0?'#fff5f5':''}"><span class="font-semibold ${debt>0?'text-red-500':'text-gray-300'}">${debt>0?fmtM(debt):'—'}</span>${debt>0&&pctBaseRow>0?`<div class="text-xs text-gray-400">${pct(debt,pctBaseRow)}%</div>`:''}</td>`; })()}
+                    ${(() => { const debt = Math.max(0, (p.contract_value||0) - (p.paid_amount_total||0)); return debt > 0
+                      ? `<td class="py-2 px-3 text-right whitespace-nowrap" style="background:#fff5f5"><span class="font-semibold text-red-500">${fmtM(debt)}</span>${pctBaseRow>0?`<div class="text-xs text-gray-400">${pct(debt,pctBaseRow)}%</div>`:''}</td>`
+                      : `<td class="py-2 px-3 text-right whitespace-nowrap"><span class="font-semibold text-green-600" title="GTTT ≥ GTHĐ — không còn công nợ theo HĐ">0</span></td>`; })()}
                     ${hasBudgetCol ? `
                     <td class="py-2 px-3 text-right whitespace-nowrap" style="background:${p.project_budget>0?'#f0fdf4':''}">
                       ${p.project_budget > 0
@@ -16855,7 +16871,9 @@ async function renderProjectFinancialTab(force = false) {
                 <td class="py-3 px-3 text-right text-indigo-700 whitespace-nowrap">${fmtM(totals.contract_value)}</td>
                 <td class="py-3 px-3 text-right text-cyan-700 whitespace-nowrap font-bold" style="background:#f0f9ff">${fmtM(totals.revenue_collected_original || totals.revenue_collected)}</td>
                 <td class="py-3 px-3 text-right text-blue-600 whitespace-nowrap font-bold" style="background:#eff6ff">${totals.paid_amount_total > 0 ? fmtM(totals.paid_amount_total) : '—'}</td>
-                ${(() => { const tDebt = Math.max(0, (totals.contract_value||0) - (totals.paid_amount_total||0)); return `<td class="py-3 px-3 text-right whitespace-nowrap font-bold ${tDebt>0?'text-red-500':'text-gray-300'}" style="background:${tDebt>0?'#fff5f5':''}"> ${tDebt>0?fmtM(tDebt):'—'}</td>`; })()}
+                ${(() => { const tDebt = Math.max(0, (totals.contract_value||0) - (totals.paid_amount_total||0)); return tDebt > 0
+                  ? `<td class="py-3 px-3 text-right whitespace-nowrap font-bold text-red-500" style="background:#fff5f5">${fmtM(tDebt)}</td>`
+                  : `<td class="py-3 px-3 text-right whitespace-nowrap font-bold text-green-600" title="Tổng GTTT ≥ tổng GTHĐ">0</td>`; })()}
                 ${hasBudgetCol ? `<td class="py-3 px-3 text-right text-emerald-700 whitespace-nowrap font-bold">${totals.project_budget > 0 ? fmtM(totals.project_budget) : '—'}</td>` : ''}
                 <td class="py-3 px-3 text-right text-emerald-600 whitespace-nowrap">${fmtM(totals.revenue_collected)}</td>
                 <td class="py-3 px-3 text-right text-blue-600 whitespace-nowrap">${fmtM(totals.direct_cost)}</td>
@@ -19825,7 +19843,15 @@ function renderPaymentStatus(payments) {
         </td>
         <td class="py-2 px-3 text-right font-mono text-gray-700">
           <div>${fmtMoney(p.amount || 0)}</div>
-          ${p.vat_pct > 0 || (proj?.management_fee_pct > 0) ? `<div class="text-xs text-emerald-600" title="Doanh thu sau VAT/phí QL">DT: ${fmtMoney(calcRevenueNet(p.amount||0, p.vat_pct||0, proj?.management_fee_pct||0))}</div>` : ''}
+          ${(() => {
+            const feePct = proj?.management_fee_pct || 0
+            const dt = (p.booked_revenue != null)
+              ? Number(p.booked_revenue)
+              : calcRevenueNet(p.amount||0, p.vat_pct||0, feePct)
+            return (p.vat_pct > 0 || feePct > 0)
+              ? `<div class="text-xs text-emerald-600" title="Doanh thu vào sổ (sau VAT/phí QL)">DT: ${fmtMoney(dt)}</div>`
+              : ''
+          })()}
         </td>
         <td class="py-2 px-3 text-right">
           <div class="font-mono text-blue-600">${fmtMoney(p.paid_amount || 0)}</div>
@@ -19847,11 +19873,15 @@ function renderPaymentStatus(payments) {
         </td>
         <td class="py-2 px-3 text-right">
           ${(() => {
-            const nghiemThu = p.amount || 0              // Giá trị nghiệm thu → căn cứ tính doanh thu
+            const nghiemThu = p.amount || 0
             const vatPct    = p.vat_pct || 0
             const feePct    = _legalOverviewData?.project?.management_fee_pct || 0
-            const noVat     = vatPct > 0 ? Math.round(nghiemThu / (1 + vatPct / 100)) : nghiemThu
-            const netRev    = feePct > 0 ? Math.round(noVat * (1 - feePct / 100)) : noVat
+            const noVat     = p.amount_before_vat != null
+              ? Number(p.amount_before_vat)
+              : (vatPct > 0 ? Math.round(nghiemThu / (1 + vatPct / 100)) : nghiemThu)
+            const netRev    = p.booked_revenue != null
+              ? Number(p.booked_revenue)
+              : (feePct > 0 ? Math.round(noVat * (1 - feePct / 100)) : noVat)
             const isSynced  = p.revenue_synced || p.revenue_synced_id
             const isActive  = ['paid','partial'].includes(p.status) && nghiemThu > 0
             if (!isActive) return `<span class="text-xs text-gray-300">—</span>`
