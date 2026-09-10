@@ -131,12 +131,14 @@ export function enrichRevenueRow(row: {
   const acceptance = Number(row.paid_amount_original ?? (isPendingPayment ? row.amount : row.paid_amount_original)) || 0
   const fallbackAcceptance = acceptance || Number(row.amount) || 0
   const { amountBeforeVat, bookedRevenue } = computeBookedRevenue(fallbackAcceptance, vatPct, feePct)
+  const cashGross = Number(row.paid_amount) || 0
   return {
     ...row,
     acceptance_amount: fallbackAcceptance,
     amount_before_vat: amountBeforeVat,
     booked_revenue: isPendingPayment ? bookedRevenue : (Number(row.amount) || bookedRevenue),
-    cash_collected: Number(row.paid_amount) || 0,
+    cash_collected: cashGross,
+    cash_before_vat: amountExcludingVat(cashGross, vatPct),
   }
 }
 

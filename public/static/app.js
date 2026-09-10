@@ -9454,13 +9454,13 @@ function renderCostTable() {
       <th class="pb-3 pr-3">Ngày</th>
       <th class="pb-3 pr-3">Trạng thái</th>
       <th class="pb-3 pr-3 text-right">
-        <span title="Nghiệm thu HĐ — giá trị nghiệm thu theo hợp đồng (chưa trừ VAT và phí quản lý)">Nghiệm thu HĐ<br><span class="normal-case font-normal text-gray-400">Theo HĐ</span> <i class="fas fa-info-circle text-gray-300 ml-0.5"></i></span>
+        <span title="Nghiệm thu HĐ — giá trị trước VAT (= gross ÷ (1+VAT%))">Nghiệm thu HĐ<br><span class="normal-case font-normal text-amber-500">Trước VAT</span> <i class="fas fa-info-circle text-gray-300 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-right">
-        <span title="Doanh thu Ngân Sách — doanh thu thực ghi nhận: đã loại VAT và trừ % phí quản lý (giá trị trước thuế)">Doanh thu NS<br><span class="normal-case font-normal text-gray-400">Theo NS</span> <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
+        <span title="Dòng tiền — số đã thanh toán trước VAT">Dòng tiền<br><span class="normal-case font-normal text-blue-400">Trước VAT</span> <i class="fas fa-info-circle text-blue-200 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-right">
-        <span title="Dòng tiền thực tế — số tiền khách hàng đã thực sự chuyển khoản/thanh toán">Dòng tiền<br><span class="normal-case font-normal text-blue-400">Thực thu</span> <i class="fas fa-info-circle text-blue-200 ml-0.5"></i></span>
+        <span title="Doanh thu Ngân Sách — sau VAT và trừ % phí quản lý">Doanh thu NS<br><span class="normal-case font-normal text-gray-400">Theo NS</span> <i class="fas fa-info-circle text-blue-300 ml-0.5"></i></span>
       </th>
       <th class="pb-3 pr-3 text-center">Nguồn</th>
     </tr>`
@@ -9470,19 +9470,25 @@ function renderCostTable() {
     // Hiển thị tất cả trạng thái — pending (chờ TT) cũng được hiển thị với màu amber
     const displayRevenues = allRevenues
 
-    // Tính tổng theo trạng thái
+    // Tính tổng theo trạng thái — NT & dòng tiền = trước VAT; DT NS = booked
     const revPending            = displayRevenues.filter(r => r.payment_status === 'pending')
     const revCollected          = displayRevenues.filter(r => ['paid','partial'].includes(r.payment_status))
-    const revTotalCollected    = revCollected.reduce((s, r) => s + (r.amount || 0), 0)
-    const revTotalAll          = displayRevenues.reduce((s, r) => s + (r.amount || 0), 0)
-    const revTotalPending      = revPending.reduce((s, r) => s + (r.amount || 0), 0)
-    // Tổng "Theo HĐ" = paid_amount_original = giá trị nghiệm thu
-    const revTotalOrigCollected = revCollected.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
-    const revTotalOrigPending   = revPending.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
-    const revTotalOrigAll       = displayRevenues.reduce((s, r) => s + (r.paid_amount_original || r.amount || 0), 0)
-    // Tổng "Dòng tiền" = paid_amount thực thu
-    const revTotalCashCollected = revCollected.reduce((s, r) => s + (r.paid_amount || 0), 0)
-    const revTotalCashAll       = displayRevenues.reduce((s, r) => s + (r.paid_amount || 0), 0)
+    const revNt = (r) => r.amount_before_vat != null
+      ? Number(r.amount_before_vat)
+      : calcRevenueNet(r.acceptance_amount || r.paid_amount_original || r.amount || 0, r.vat_pct || 0, 0)
+    const revCash = (r) => r.cash_before_vat != null
+      ? Number(r.cash_before_vat)
+      : calcRevenueNet(r.cash_collected != null ? r.cash_collected : (r.paid_amount || 0), r.vat_pct || 0, 0)
+    const revNs = (r) => r.booked_revenue != null ? Number(r.booked_revenue) : (r.amount || 0)
+
+    const revTotalCollected    = revCollected.reduce((s, r) => s + revNs(r), 0)
+    const revTotalAll          = displayRevenues.reduce((s, r) => s + revNs(r), 0)
+    const revTotalPending      = revPending.reduce((s, r) => s + revNs(r), 0)
+    const revTotalOrigCollected = revCollected.reduce((s, r) => s + revNt(r), 0)
+    const revTotalOrigPending   = revPending.reduce((s, r) => s + revNt(r), 0)
+    const revTotalOrigAll       = displayRevenues.reduce((s, r) => s + revNt(r), 0)
+    const revTotalCashCollected = revCollected.reduce((s, r) => s + revCash(r), 0)
+    const revTotalCashAll       = displayRevenues.reduce((s, r) => s + revCash(r), 0)
 
     tbody.innerHTML = displayRevenues.map(r => {
       // Hiển thị ngày thông minh:
@@ -9497,42 +9503,38 @@ function renderCostTable() {
         dateCell = fmtDate(r.revenue_date)
       }
 
-      // ── Tính cột "Theo HĐ", "Theo NS" và "Dòng tiền" ─────────────────────────
-      const origAmount = r.acceptance_amount || r.paid_amount_original || r.amount || 0
-      const cashAmount = r.cash_collected != null ? r.cash_collected : (r.paid_amount || 0)
-      const netAmount  = r.booked_revenue != null ? r.booked_revenue : (r.amount || 0)
+      const grossNt    = r.acceptance_amount || r.paid_amount_original || r.amount || 0
+      const ntBefore   = revNt(r)
+      const cashBefore = revCash(r)
+      const cashGross  = r.cash_collected != null ? r.cash_collected : (r.paid_amount || 0)
+      const netAmount  = revNs(r)
       const feePct     = r.fee_pct  || 0
       const vatPct     = r.vat_pct  || 0
-      const beforeVat  = r.amount_before_vat != null ? r.amount_before_vat : netAmount
 
       const hasVat     = vatPct  > 0
       const hasFee     = feePct  > 0
       const hasAdjust  = hasVat  || hasFee
 
-      // ── Xây tooltip chi tiết ──────────────────────────────────────────────────
       let tooltipParts = []
       if (hasVat && hasFee) {
-        tooltipParts.push(`Nghiệm thu HĐ: ${fmt(origAmount)}`)
-        tooltipParts.push(`−VAT ${vatPct}%:  ${fmt(origAmount)} ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(beforeVat)} (trước thuế)`)
-        tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(beforeVat)} × ${(100-feePct)}% = ${fmt(netAmount)} (doanh thu NS)`)
+        tooltipParts.push(`Gross: ${fmt(grossNt)}`)
+        tooltipParts.push(`−VAT ${vatPct}%: ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(ntBefore)} (NT trước VAT)`)
+        tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(ntBefore)} × ${(100-feePct)}% = ${fmt(netAmount)} (doanh thu NS)`)
       } else if (hasVat) {
-        tooltipParts.push(`Nghiệm thu HĐ: ${fmt(origAmount)}`)
-        tooltipParts.push(`−VAT ${vatPct}%: ${fmt(origAmount)} ÷ ${(1+vatPct/100).toFixed(2)} = ${fmt(netAmount)} (trước thuế)`)
+        tooltipParts.push(`Gross: ${fmt(grossNt)}`)
+        tooltipParts.push(`−VAT ${vatPct}%: = ${fmt(ntBefore)} (NT trước VAT)`)
       } else if (hasFee) {
-        tooltipParts.push(`Nghiệm thu HĐ: ${fmt(origAmount)}`)
-        tooltipParts.push(`−Phí QL ${feePct}%: ${fmt(origAmount)} × ${(100-feePct)}% = ${fmt(netAmount)}`)
+        tooltipParts.push(`Nghiệm thu: ${fmt(ntBefore)}`)
+        tooltipParts.push(`−Phí QL ${feePct}%: × ${(100-feePct)}% = ${fmt(netAmount)}`)
       }
       const tooltip = tooltipParts.length ? `title="${tooltipParts.join(' | ')}"` : ''
 
-      // ── Badge ghi chú nhỏ hiển thị dưới số ───────────────────────────────────
       let badges = []
       if (hasVat)  badges.push(`<div class="text-xs font-normal text-amber-500 mt-0.5">−VAT ${vatPct}%</div>`)
       if (hasFee)  badges.push(`<div class="text-xs font-normal text-orange-500 mt-0.5">−${feePct}% phí QL</div>`)
-      if (hasAdjust) badges.push(`<div class="text-xs font-medium text-blue-500 mt-0.5">Giá trị trước thuế</div>`)
 
-      // Badge dòng tiền
-      const cashDiffPct = origAmount > 0 ? Math.round((cashAmount / origAmount) * 100) : 0
-      const cashBadge   = cashAmount > 0 && cashAmount !== origAmount
+      const cashDiffPct = ntBefore > 0 ? Math.round((cashBefore / ntBefore) * 100) : 0
+      const cashBadge   = cashBefore > 0 && cashBefore !== ntBefore
         ? `<div class="text-xs text-gray-400 mt-0.5">${cashDiffPct}% nghiệm thu</div>` : ''
 
       return `
@@ -9542,16 +9544,18 @@ function renderCostTable() {
         <td class="py-2 pr-3 text-sm text-gray-500">${r.invoice_number || '-'}</td>
         <td class="py-2 pr-3 text-sm text-gray-500">${dateCell}</td>
         <td class="py-2 pr-3"><span class="badge ${payColors[r.payment_status] || 'badge-todo'}">${payLabels[r.payment_status] || r.payment_status}</span></td>
-        <td class="py-2 pr-3 text-sm text-right ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-gray-700'} font-semibold">
-          ${fmt(origAmount)}
+        <td class="py-2 pr-3 text-sm text-right ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-gray-700'} font-semibold" title="${hasVat ? 'Gross có VAT: ' + fmt(grossNt) : ''}">
+          ${fmt(ntBefore)}
+          ${hasVat ? `<div class="text-xs font-normal text-gray-400 mt-0.5">có VAT: ${fmt(grossNt)}</div>` : ''}
+        </td>
+        <td class="py-2 pr-3 text-sm text-right font-semibold ${cashBefore > 0 ? 'text-blue-600' : 'text-gray-300'}" title="${hasVat && cashGross > 0 ? 'Gross có VAT: ' + fmt(cashGross) : ''}">
+          ${cashBefore > 0 ? fmt(cashBefore) : '—'}
+          ${hasVat && cashGross > 0 ? `<div class="text-xs font-normal text-gray-400 mt-0.5">có VAT: ${fmt(cashGross)}</div>` : ''}
+          ${cashBadge}
         </td>
         <td class="py-2 pr-3 text-sm text-right font-bold ${r.payment_status === 'pending' ? 'text-amber-500' : 'text-green-600'} cursor-help" ${tooltip}>
           ${fmt(netAmount)}
           ${badges.join('')}
-        </td>
-        <td class="py-2 pr-3 text-sm text-right font-semibold ${cashAmount > 0 ? 'text-blue-600' : 'text-gray-300'}">
-          ${cashAmount > 0 ? fmt(cashAmount) : '—'}
-          ${cashBadge}
         </td>
         <td class="py-2 pr-3 text-center">
           <span class="text-xs ${r.source === 'payment_request' ? 'text-amber-600 bg-amber-50' : 'text-blue-500 bg-blue-50'} rounded px-2 py-0.5 whitespace-nowrap">
@@ -9561,7 +9565,7 @@ function renderCostTable() {
       </tr>`
     }).join('') || '<tr><td colspan="9" class="text-center py-6 text-gray-400"><i class="fas fa-info-circle mr-1"></i>Doanh thu được đồng bộ tự động từ <strong>Tình trạng thanh toán</strong></td></tr>'
 
-    // ── Tổng cộng footer ──────────────────────────────────────────
+    // ── Tổng cộng footer — cột: NT | Dòng tiền | DT NS ──────────────
     const revTfoot = document.getElementById('revTfoot')
     if (revTfoot) {
       const countCollected = revCollected.length
@@ -9574,8 +9578,8 @@ function renderCostTable() {
             Chờ thanh toán — ${countPending} khoản
           </td>
           <td class="py-2 pr-3 text-right font-bold text-amber-600 text-sm whitespace-nowrap">${fmt(revTotalOrigPending)}</td>
-          <td class="py-2 pr-3 text-right font-bold text-amber-600 text-sm whitespace-nowrap">${fmt(revTotalPending)}</td>
           <td class="py-2 pr-3 text-right font-bold text-gray-300 text-sm whitespace-nowrap">—</td>
+          <td class="py-2 pr-3 text-right font-bold text-amber-600 text-sm whitespace-nowrap">${fmt(revTotalPending)}</td>
           <td></td>
         </tr>` : ''}
         <tr class="border-t-2 border-green-200 bg-green-50/60">
@@ -9584,8 +9588,8 @@ function renderCostTable() {
             Đã thu (paid + partial) — ${countCollected} khoản
           </td>
           <td class="py-2 pr-3 text-right font-bold text-gray-500 text-sm whitespace-nowrap">${fmt(revTotalOrigCollected)}</td>
-          <td class="py-2 pr-3 text-right font-bold text-green-700 text-sm whitespace-nowrap">${fmt(revTotalCollected)}</td>
           <td class="py-2 pr-3 text-right font-bold text-blue-600 text-sm whitespace-nowrap">${revTotalCashCollected > 0 ? fmt(revTotalCashCollected) : '—'}</td>
+          <td class="py-2 pr-3 text-right font-bold text-green-700 text-sm whitespace-nowrap">${fmt(revTotalCollected)}</td>
           <td></td>
         </tr>
         <tr class="border-t border-gray-200 bg-gray-50">
@@ -9593,8 +9597,8 @@ function renderCostTable() {
             <i class="fas fa-sigma mr-1"></i>Tổng cộng (${displayRevenues.length} khoản)
           </td>
           <td class="py-2 pr-3 text-right font-bold text-gray-400 text-sm whitespace-nowrap">${fmt(revTotalOrigAll)}</td>
-          <td class="py-2 pr-3 text-right font-bold text-gray-700 text-sm whitespace-nowrap">${fmt(revTotalAll)}</td>
           <td class="py-2 pr-3 text-right font-bold text-blue-500 text-sm whitespace-nowrap">${revTotalCashAll > 0 ? fmt(revTotalCashAll) : '—'}</td>
+          <td class="py-2 pr-3 text-right font-bold text-gray-700 text-sm whitespace-nowrap">${fmt(revTotalAll)}</td>
           <td></td>
         </tr>`
     }
