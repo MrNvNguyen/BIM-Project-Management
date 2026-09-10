@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   aggregatePaymentsBeforeVat,
+  aggregateThreeMoney,
   amountExcludingVat,
   applyWorkDateFilter,
   computeBookedRevenue,
@@ -9,6 +10,7 @@ import {
   computeRealtimeLaborFromAggregates,
   dayAfter,
   enrichPaymentMetrics,
+  enrichRevenueRow,
   filterMlcMonths,
   monthDateRange,
   taskComputedProgress,
@@ -78,6 +80,101 @@ describe('amountExcludingVat / aggregatePaymentsBeforeVat', () => {
     ])
     expect(acceptanceByProject[1]).toBe(503_703_704)
     expect(cashByProject[1]).toBe(503_703_704)
+  })
+})
+
+describe('aggregateThreeMoney', () => {
+  it('VAT 10%: pending+partial+paid; cancelled excluded; pending not in cash', () => {
+    const r = aggregateThreeMoney([
+      { status: 'pending', amount: 1_100_000, paid_amount: 0, vat_pct: 10 },
+      { status: 'partial', amount: 1_100_000, paid_amount: 550_000, vat_pct: 10 },
+      { status: 'paid', amount: 1_100_000, paid_amount: 1_100_000, vat_pct: 10 },
+      { status: 'cancelled', amount: 9_999_000, paid_amount: 9_999_000, vat_pct: 10 },
+    ])
+    // NT: 3 × 1_000_000 (cancelled out)
+    expect(r.acceptanceBeforeVat).toBe(3_000_000)
+    expect(r.pendingAcceptanceBeforeVat).toBe(1_000_000)
+    // cash: 550k + 1.1M gross → before VAT 500_000 + 1_000_000
+    expect(r.cashGross).toBe(1_650_000)
+    expect(r.cashBeforeVat).toBe(1_500_000)
+  })
+
+  it('VAT 8%: 544M → 503_703_704 NT; cash only paid/partial', () => {
+    const r = aggregateThreeMoney([
+      { status: 'paid', amount: 544_000_000, paid_amount: 544_000_000, vat_pct: 8 },
+      { status: 'pending', amount: 544_000_000, paid_amount: 0, vat_pct: 8 },
+    ])
+    expect(r.acceptanceBeforeVat).toBe(503_703_704 * 2)
+    expect(r.pendingAcceptanceBeforeVat).toBe(503_703_704)
+    expect(r.cashBeforeVat).toBe(503_703_704)
+    expect(r.cashGross).toBe(544_000_000)
+  })
+})
+
+describe('enrichRevenueRow', () => {
+  it('pending 1.1tr / VAT 10% / fee 30% → NT 1M, DT_NS 700k, GTTT 0', () => {
+    const m = enrichRevenueRow({
+      source: 'payment_request',
+      payment_status: 'pending',
+      amount: 1_100_000,
+      paid_amount_original: 1_100_000,
+      paid_amount: 0,
+      vat_pct: 10,
+      fee_pct: 30,
+    })
+    expect(m.amount_before_vat).toBe(1_000_000)
+    expect(m.booked_revenue).toBe(700_000)
+    expect(m.cash_collected).toBe(0)
+    expect(m.cash_before_vat).toBe(0)
+  })
+
+  it('paid: NT from paid_amount_original; booked from row.amount; cash from paid_amount', () => {
+    const m = enrichRevenueRow({
+      source: 'revenue',
+      payment_status: 'paid',
+      amount: 700_000,
+      paid_amount_original: 1_100_000,
+      paid_amount: 1_100_000,
+      vat_pct: 10,
+      fee_pct: 30,
+    })
+    expect(m.acceptance_amount).toBe(1_100_000)
+    expect(m.amount_before_vat).toBe(1_000_000)
+    expect(m.booked_revenue).toBe(700_000)
+    expect(m.cash_collected).toBe(1_100_000)
+    expect(m.cash_before_vat).toBe(1_000_000)
+  })
+
+  it('orphan booked amount must not be re-VATed as gross NT', () => {
+    const m = enrichRevenueRow({
+      source: 'revenue',
+      payment_status: 'paid',
+      amount: 700_000,
+      paid_amount_original: 0,
+      paid_amount: 0,
+      vat_pct: 10,
+      fee_pct: 30,
+    })
+    expect(m.acceptance_amount).toBe(0)
+    expect(m.amount_before_vat).toBe(0)
+    expect(m.booked_revenue).toBe(700_000)
+  })
+
+  it('amount=0 yields zero derived money', () => {
+    const m = enrichRevenueRow({
+      source: 'payment_request',
+      payment_status: 'pending',
+      amount: 0,
+      paid_amount_original: 0,
+      paid_amount: 0,
+      vat_pct: 10,
+      fee_pct: 30,
+    })
+    expect(m.acceptance_amount).toBe(0)
+    expect(m.amount_before_vat).toBe(0)
+    expect(m.booked_revenue).toBe(0)
+    expect(m.cash_collected).toBe(0)
+    expect(m.cash_before_vat).toBe(0)
   })
 })
 

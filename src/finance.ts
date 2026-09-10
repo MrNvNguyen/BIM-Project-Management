@@ -40,6 +40,41 @@ export function aggregatePaymentsBeforeVat(
   return { acceptanceByProject, cashByProject }
 }
 
+const NT_STATUSES = new Set(['pending', 'partial', 'paid'])
+const CASH_STATUSES = new Set(['partial', 'paid'])
+
+/**
+ * Ba số tiền từ payment_requests (không gồm booked).
+ * NT trước VAT: pending+partial+paid; GTTT: partial+paid only; cancelled loại.
+ */
+export function aggregateThreeMoney(
+  rows: Array<{ status?: string; amount?: number; paid_amount?: number; vat_pct?: number | null }>
+): {
+  acceptanceBeforeVat: number
+  cashBeforeVat: number
+  cashGross: number
+  pendingAcceptanceBeforeVat: number
+} {
+  let acceptanceBeforeVat = 0
+  let cashBeforeVat = 0
+  let cashGross = 0
+  let pendingAcceptanceBeforeVat = 0
+  for (const r of rows) {
+    const status = String(r.status || '')
+    if (status === 'cancelled' || !NT_STATUSES.has(status)) continue
+    const vat = Number(r.vat_pct) || 0
+    const nt = amountExcludingVat(Number(r.amount) || 0, vat)
+    acceptanceBeforeVat += nt
+    if (status === 'pending') pendingAcceptanceBeforeVat += nt
+    if (CASH_STATUSES.has(status)) {
+      const paid = Number(r.paid_amount) || 0
+      cashGross += paid
+      cashBeforeVat += amountExcludingVat(paid, vat)
+    }
+  }
+  return { acceptanceBeforeVat, cashBeforeVat, cashGross, pendingAcceptanceBeforeVat }
+}
+
 export function computeProjectBudget(contractValue: number, feePct: number): number {
   const cv = Number(contractValue) || 0
   const fee = Number(feePct) || 0
@@ -118,7 +153,7 @@ export function enrichPaymentMetrics(payment: {
 
 export function enrichRevenueRow(row: {
   amount?: number
-  paid_amount_original?: number
+  paid_amount_original?: number | null
   paid_amount?: number
   vat_pct?: number
   fee_pct?: number
@@ -128,13 +163,20 @@ export function enrichRevenueRow(row: {
   const feePct = Number(row.fee_pct) || 0
   const vatPct = Number(row.vat_pct) || 0
   const isPendingPayment = row.source === 'payment_request' || row.payment_status === 'pending'
-  const acceptance = Number(row.paid_amount_original ?? (isPendingPayment ? row.amount : row.paid_amount_original)) || 0
-  const fallbackAcceptance = acceptance || Number(row.amount) || 0
-  const { amountBeforeVat, bookedRevenue } = computeBookedRevenue(fallbackAcceptance, vatPct, feePct)
   const cashGross = Number(row.paid_amount) || 0
+
+  // Gross NT chỉ từ payment_requests — không coi project_revenues.amount (đã booked) là gross
+  let grossAcceptance = 0
+  if (row.paid_amount_original != null && Number(row.paid_amount_original) > 0) {
+    grossAcceptance = Number(row.paid_amount_original) || 0
+  } else if (isPendingPayment) {
+    grossAcceptance = Number(row.amount) || 0
+  }
+
+  const { amountBeforeVat, bookedRevenue } = computeBookedRevenue(grossAcceptance, vatPct, feePct)
   return {
     ...row,
-    acceptance_amount: fallbackAcceptance,
+    acceptance_amount: grossAcceptance,
     amount_before_vat: amountBeforeVat,
     booked_revenue: isPendingPayment ? bookedRevenue : (Number(row.amount) || bookedRevenue),
     cash_collected: cashGross,

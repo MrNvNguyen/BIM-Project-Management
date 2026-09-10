@@ -18,7 +18,7 @@ Cần kế toán / PO ký trước khi tin số trên dashboard sau khi đổi c
 | Chi phí lương | Timesheet đã ghi × `monthly_labor_costs` (phân bổ theo giờ quy đổi) | Xem `computeProjectLaborFromTimesheets` | Không đọc `project_labor_costs` cho KPI (bảng đó chỉ cache đồng bộ tay) |
 | Chi phí chung | `shared_cost_allocations.allocated_amount` | — | — |
 
-Ba số phải tách trên mọi báo cáo: **nghiệm thu (trước VAT)**, **doanh thu vào sổ**, **dòng tiền**. Công nợ HĐ = GTHĐ − GTTT (cả hai trước VAT).
+Ba số phải tách trên mọi báo cáo: **nghiệm thu (trước VAT)**, **doanh thu vào sổ** (gồm phiếu `pending` đã NT — chưa thu tiền vẫn vào sổ), **dòng tiền** (chỉ `paid`/`partial`, trước VAT). Công nợ HĐ = GTHĐ − GTTT (cả hai trước VAT).
 
 ## Công / phép / timesheet
 
