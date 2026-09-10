@@ -19,6 +19,27 @@ export function computeBookedRevenue(
   return { amountBeforeVat, bookedRevenue }
 }
 
+/** Nghiệm thu / thanh toán báo cáo = trước VAT: gross ÷ (1 + vat%/100). */
+export function amountExcludingVat(grossAmount: number, vatPct: number): number {
+  return computeBookedRevenue(grossAmount, vatPct, 0).amountBeforeVat
+}
+
+/** Cộng dồn NT + TT trước VAT theo project_id (từ payment_requests). */
+export function aggregatePaymentsBeforeVat(
+  rows: Array<{ project_id: number; amount?: number; paid_amount?: number; vat_pct?: number | null }>
+): { acceptanceByProject: Record<number, number>; cashByProject: Record<number, number> } {
+  const acceptanceByProject: Record<number, number> = {}
+  const cashByProject: Record<number, number> = {}
+  for (const r of rows) {
+    const pid = Number(r.project_id)
+    if (!pid) continue
+    const vat = Number(r.vat_pct) || 0
+    acceptanceByProject[pid] = (acceptanceByProject[pid] || 0) + amountExcludingVat(Number(r.amount) || 0, vat)
+    cashByProject[pid] = (cashByProject[pid] || 0) + amountExcludingVat(Number(r.paid_amount) || 0, vat)
+  }
+  return { acceptanceByProject, cashByProject }
+}
+
 export function computeProjectBudget(contractValue: number, feePct: number): number {
   const cv = Number(contractValue) || 0
   const fee = Number(feePct) || 0
@@ -79,16 +100,19 @@ export function enrichPaymentMetrics(payment: {
   vat_pct?: number | null
 }, feePct: number) {
   const acceptance = Number(payment.amount) || 0
+  const cashGross = Number(payment.paid_amount) || 0
+  const vatPct = payment.vat_pct ?? 0
   const { amountBeforeVat, bookedRevenue } = computeBookedRevenue(
     acceptance,
-    payment.vat_pct ?? 0,
+    vatPct,
     feePct
   )
   return {
     acceptance_amount: acceptance,
     amount_before_vat: amountBeforeVat,
     booked_revenue: bookedRevenue,
-    cash_collected: Number(payment.paid_amount) || 0,
+    cash_collected: cashGross,
+    cash_before_vat: amountExcludingVat(cashGross, vatPct),
   }
 }
 

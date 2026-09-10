@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  aggregatePaymentsBeforeVat,
+  amountExcludingVat,
   applyWorkDateFilter,
   computeBookedRevenue,
   computeProjectBudget,
@@ -64,6 +66,18 @@ describe('enrichPaymentMetrics', () => {
     expect(m.amount_before_vat).toBe(1_000_000)
     expect(m.booked_revenue).toBe(700_000)
     expect(m.cash_collected).toBe(500_000)
+    expect(m.cash_before_vat).toBe(454_545) // 500_000 / 1.1
+  })
+})
+
+describe('amountExcludingVat / aggregatePaymentsBeforeVat', () => {
+  it('strips VAT from acceptance and cash', () => {
+    expect(amountExcludingVat(544_000_000, 8)).toBe(503_703_704)
+    const { acceptanceByProject, cashByProject } = aggregatePaymentsBeforeVat([
+      { project_id: 1, amount: 544_000_000, paid_amount: 544_000_000, vat_pct: 8 },
+    ])
+    expect(acceptanceByProject[1]).toBe(503_703_704)
+    expect(cashByProject[1]).toBe(503_703_704)
   })
 })
 

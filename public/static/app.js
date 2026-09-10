@@ -16755,7 +16755,7 @@ async function renderProjectFinancialTab(force = false) {
               <tr class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
                 <th class="text-left py-3 px-3 font-semibold border-b border-gray-200" style="overflow:hidden">Dự án</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap">GTHĐ</th>
-                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#0891b2" title="Giá trị nghiệm thu gốc"><i class="fas fa-clipboard-check mr-1"></i>Đã nghiệm thu</th>
+                <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#0891b2" title="Nghiệm thu trước VAT"><i class="fas fa-clipboard-check mr-1"></i>Đã nghiệm thu</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#2563eb" title="Dòng tiền thực thu từ khách hàng"><i class="fas fa-money-bill-wave mr-1"></i>GTTT Thực tế</th>
                 <th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#dc2626" title="Công nợ = GTHĐ − GTTT Thực tế"><i class="fas fa-exclamation-circle mr-1"></i>Công nợ</th>
                 ${hasBudgetCol ? `<th class="text-right py-3 px-3 font-semibold border-b border-gray-200 whitespace-nowrap" style="color:#059669"><i class="fas fa-wallet mr-1"></i>Ngân sách</th>` : ''}
@@ -16900,9 +16900,9 @@ async function renderProjectFinancialTab(force = false) {
           <span><strong>GTHĐ</strong>: Giá trị hợp đồng</span>
           ${hasBudgetCol ? `<span><strong class="text-emerald-700">Ngân sách</strong>: GTHĐ × (1 − % phí quản lý) — ngân sách thực tế để kiểm soát chi phí</span>` : ''}
           <span><strong>DT đã thu</strong>: Doanh thu trạng thái <em>paid + partial</em></span>
-          <span><strong style="color:#0891b2">Đã nghiệm thu</strong>: Giá trị nghiệm thu gốc theo hợp đồng</span>
-          <span><strong style="color:#2563eb">GTTT Thực tế</strong>: Dòng tiền thực thu từ khách hàng</span>
-          <span><strong class="text-red-600">Công nợ</strong>: GTHĐ − GTTT Thực tế (số tiền khách hàng chưa thanh toán)</span>
+          <span><strong style="color:#0891b2">Đã nghiệm thu</strong>: Giá trị nghiệm thu <em>trước VAT</em> (= gross ÷ (1+VAT%))</span>
+          <span><strong style="color:#2563eb">GTTT Thực tế</strong>: Số đã thanh toán <em>trước VAT</em></span>
+          <span><strong class="text-red-600">Công nợ</strong>: GTHĐ − GTTT (cả hai trước VAT)</span>
           <span><strong>CP trực tiếp</strong>: Chi phí vật liệu, thiết bị, đi lại, văn phòng…</span>
           <span><strong>CP lương</strong>: Từ bảng project_labor_costs (tính theo timesheet)</span>
           <span><strong>CP chung</strong>: Chi phí chung phân bổ (điện, nước, văn phòng…)</span>
@@ -19745,10 +19745,10 @@ function renderPaymentStatus(payments) {
   // Lấy thông tin dự án để tính doanh thu net (VAT/phí QL)
   const proj = _legalOverviewData?.project || {}
 
-  // Summary cards
+  // Summary cards — nghiệm thu & thanh toán = trước VAT
   const total = payments.length
-  const totalAmount = payments.reduce((s, p) => s + (p.amount || 0), 0)
-  const paidAmount = payments.reduce((s, p) => s + (p.paid_amount || 0), 0)
+  const totalAmount = payments.reduce((s, p) => s + (p.amount_before_vat != null ? Number(p.amount_before_vat) : calcRevenueNet(p.amount||0, p.vat_pct||0, 0)), 0)
+  const paidAmount = payments.reduce((s, p) => s + (p.cash_before_vat != null ? Number(p.cash_before_vat) : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0)), 0)
   const pending = payments.filter(p => p.status === 'pending' || p.status === 'processing').length
   const paid = payments.filter(p => p.status === 'paid').length
 
@@ -19760,11 +19760,11 @@ function renderPaymentStatus(payments) {
       </div>
       <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center">
         <div class="text-sm font-bold text-amber-700">${fmtMoney(totalAmount)}</div>
-        <div class="text-xs text-amber-500 mt-1">Tổng nghiệm thu</div>
+        <div class="text-xs text-amber-500 mt-1">Tổng nghiệm thu <span class="text-amber-400">(trước VAT)</span></div>
       </div>
       <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
         <div class="text-sm font-bold text-blue-600">${fmtMoney(paidAmount)}</div>
-        <div class="text-xs text-blue-400 mt-1">Dòng tiền đã thu</div>
+        <div class="text-xs text-blue-400 mt-1">Đã thanh toán <span class="text-blue-300">(trước VAT)</span></div>
       </div>
       <div class="bg-rose-50 border border-rose-200 rounded-xl p-3 text-center">
         <div class="text-2xl font-bold text-rose-700">${pending}</div>
@@ -19806,8 +19806,8 @@ function renderPaymentStatus(payments) {
         <tr class="border-b border-gray-200 bg-gray-50">
           <th class="py-2 px-3 text-left text-gray-600 font-semibold">Đợt TT</th>
           <th class="py-2 px-3 text-left text-gray-600 font-semibold">Nội dung</th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Nghiệm thu<br><span class="font-normal text-xs text-emerald-500">→ Doanh thu</span></th>
-          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT<br><span class="font-normal text-xs text-blue-400">→ Dòng tiền</span></th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Nghiệm thu<br><span class="font-normal text-xs text-amber-500">trước VAT</span></th>
+          <th class="py-2 px-3 text-right text-gray-600 font-semibold">Đã TT<br><span class="font-normal text-xs text-blue-400">trước VAT</span></th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">VAT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Ngày TT</th>
           <th class="py-2 px-3 text-center text-gray-600 font-semibold">Trạng thái</th>
@@ -19842,20 +19842,28 @@ function renderPaymentStatus(payments) {
           ${p.notes ? `<div class="text-xs text-gray-400 mt-0.5 italic">${p.notes}</div>` : ''}
         </td>
         <td class="py-2 px-3 text-right font-mono text-gray-700">
-          <div>${fmtMoney(p.amount || 0)}</div>
           ${(() => {
+            const beforeVat = p.amount_before_vat != null
+              ? Number(p.amount_before_vat)
+              : calcRevenueNet(p.amount||0, p.vat_pct||0, 0)
             const feePct = proj?.management_fee_pct || 0
             const dt = (p.booked_revenue != null)
               ? Number(p.booked_revenue)
               : calcRevenueNet(p.amount||0, p.vat_pct||0, feePct)
-            return (p.vat_pct > 0 || feePct > 0)
-              ? `<div class="text-xs text-emerald-600" title="Doanh thu vào sổ (sau VAT/phí QL)">DT: ${fmtMoney(dt)}</div>`
-              : ''
+            return `<div class="font-semibold" title="Trước VAT">${fmtMoney(beforeVat)}</div>
+              ${p.vat_pct > 0 ? `<div class="text-xs text-gray-400" title="Gross có VAT">có VAT: ${fmtMoney(p.amount||0)}</div>` : ''}
+              ${feePct > 0 ? `<div class="text-xs text-emerald-600" title="Doanh thu vào sổ (sau phí QL)">DT sổ: ${fmtMoney(dt)}</div>` : ''}`
           })()}
         </td>
         <td class="py-2 px-3 text-right">
-          <div class="font-mono text-blue-600">${fmtMoney(p.paid_amount || 0)}</div>
-          ${p.amount > 0 ? `<div class="text-xs text-gray-400">${paidPct}%</div>` : ''}
+          ${(() => {
+            const cashBv = p.cash_before_vat != null
+              ? Number(p.cash_before_vat)
+              : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0)
+            return `<div class="font-mono text-blue-600 font-semibold" title="Trước VAT">${fmtMoney(cashBv)}</div>
+              ${p.vat_pct > 0 && (p.paid_amount||0) > 0 ? `<div class="text-xs text-gray-400">có VAT: ${fmtMoney(p.paid_amount||0)}</div>` : ''}
+              ${p.amount > 0 ? `<div class="text-xs text-gray-400">${paidPct}%</div>` : ''}`
+          })()}
         </td>
         <td class="py-2 px-3 text-center">
           ${(p.vat_pct > 0)

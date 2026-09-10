@@ -14,17 +14,19 @@ Canonical text: [docs/TU-DIEN-SO-LIEU.md](../../../docs/TU-DIEN-SO-LIEU.md). Cod
 
 | Metric | Source | Forbidden |
 |--------|--------|-----------|
-| Nghiệm thu | `payment_requests.amount` | treating `project_revenues.amount` as HĐ |
-| Dòng tiền | `payment_requests.paid_amount` | adding cash into booked revenue |
+| Nghiệm thu | API `amount_before_vat` = `amount ÷ (1+vat%)` | treating gross+VAT as NT vs GTHĐ |
+| GTTT / thanh toán báo cáo | API `cash_before_vat` = `paid_amount ÷ (1+vat%)` | comparing GTHĐ to gross cash |
+| Dòng tiền gross | `cash_collected` (`paid_amount`) | adding cash into booked revenue |
 | Doanh thu vào sổ | `project_revenues.amount` via `syncPaymentToRevenue` | recomputing VAT/fee in `public/static/app.js` |
 | Ngân sách | `computeProjectBudget(contract_value, management_fee_pct)` | writing `projects.budget` as KPI |
 
 ```text
-amount_before_vat = amount / (1 + vat%/100)
+amount_before_vat = amount / (1 + vat%/100)   // nghiệm thu báo cáo
+cash_before_vat   = paid_amount / (1 + vat%/100)
 booked_revenue    = amount_before_vat × (1 − fee%/100)
 ```
 
-List/detail APIs must return `acceptance_amount`, `amount_before_vat`, `booked_revenue`, `cash_collected` (`enrichPaymentMetrics` / `enrichRevenueRow`).
+List/detail APIs must return `acceptance_amount`, `amount_before_vat`, `booked_revenue`, `cash_collected`, `cash_before_vat` (`enrichPaymentMetrics` / `enrichRevenueRow`).
 
 Labor KPI: timesheet hours × `monthly_labor_costs` (`computeProjectLaborFromTimesheets`). Do not read `project_labor_costs` for reports.
 

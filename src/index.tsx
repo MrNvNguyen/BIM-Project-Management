@@ -8,6 +8,8 @@ import { serveStatic } from 'hono/cloudflare-workers'
 import {
   allocateProjectLaborForCalendarMonths,
   applyWorkDateFilter,
+  aggregatePaymentsBeforeVat,
+  amountExcludingVat,
   calendarMonthsOrFilter,
   calendarPairsSpan,
   computeBookedRevenue,
@@ -11207,28 +11209,23 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       GROUP BY project_id
     `).all()
 
-    // ── Nghiệm thu gốc (NTC) + dòng tiền thực thu
-    // COALESCE(pr.amount_original, pr.amount): backfill cho data cũ chưa có amount_original
-    const revOrigRows = await db.prepare(`
-      SELECT pr.project_id,
-        SUM(COALESCE(pr.amount_original, pr.amount))  as revenue_collected_original,
-        SUM(COALESCE(pq.paid_amount, 0))               as paid_amount_total
-      FROM project_revenues pr
-      LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
-      WHERE pr.payment_status IN ('paid','partial','pending')
-        AND (
-          (pr.payment_status IN ('paid','partial') AND pr.revenue_date >= ? AND pr.revenue_date <= ?)
-          OR
-          (pr.payment_status = 'pending' AND (pq.request_date IS NULL OR (pq.request_date >= ? AND pq.request_date <= ?)))
-        )
-      GROUP BY pr.project_id
-    `).bind(fyStart, fyEnd, fyStart, fyEnd).all()
-    const revOrigMap: Record<number, number> = {}
-    const paidAmtMap: Record<number, number> = {}
-    ;(revOrigRows.results as any[]).forEach((r: any) => {
-      revOrigMap[r.project_id] = r.revenue_collected_original || 0
-      paidAmtMap[r.project_id] = r.paid_amount_total || 0
+    // ── Nghiệm thu + GTTT trước VAT (NTC) — từ payment_requests, ÷ (1+vat%)
+    const payRowsNtc = await db.prepare(`
+      SELECT project_id, amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status,
+             request_date, paid_date
+      FROM payment_requests
+      WHERE status IN ('paid', 'partial', 'pending')
+    `).all()
+    const payRowsNtcFiltered = (payRowsNtc.results as any[]).filter((r: any) => {
+      if (r.status === 'pending') {
+        if (!r.request_date) return true
+        return r.request_date >= fyStart && r.request_date <= fyEnd
+      }
+      const d = r.paid_date || r.request_date
+      return d && d >= fyStart && d <= fyEnd
     })
+    const { acceptanceByProject: revOrigMap, cashByProject: paidAmtMap } =
+      aggregatePaymentsBeforeVat(payRowsNtcFiltered)
 
     // ── 3. Chi phí trực tiếp theo dự án (non-salary, trong NTC)
     const directCostRows = await db.prepare(`
@@ -11430,23 +11427,14 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       GROUP BY project_id
     `).all()
 
-    // ── Nghiệm thu gốc (toàn vòng đời) + dòng tiền thực thu
-    // COALESCE(pr.amount_original, pr.amount): backfill cho data cũ chưa có amount_original
-    const revOrigRowsLT = await db.prepare(`
-      SELECT pr.project_id,
-        SUM(COALESCE(pr.amount_original, pr.amount))  as revenue_collected_original,
-        SUM(COALESCE(pq.paid_amount, 0))               as paid_amount_total
-      FROM project_revenues pr
-      LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
-      WHERE pr.payment_status IN ('paid','partial','pending')
-      GROUP BY pr.project_id
+    // ── Nghiệm thu + GTTT trước VAT (toàn vòng đời)
+    const payRowsLT = await db.prepare(`
+      SELECT project_id, amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct
+      FROM payment_requests
+      WHERE status IN ('paid', 'partial', 'pending')
     `).all()
-    const revOrigMapLT: Record<number, number> = {}
-    const paidAmtMapLT: Record<number, number> = {}
-    ;(revOrigRowsLT.results as any[]).forEach((r: any) => {
-      revOrigMapLT[r.project_id] = r.revenue_collected_original || 0
-      paidAmtMapLT[r.project_id] = r.paid_amount_total || 0
-    })
+    const { acceptanceByProject: revOrigMapLT, cashByProject: paidAmtMapLT } =
+      aggregatePaymentsBeforeVat(payRowsLT.results as any[])
 
     // ── 3. Chi phí trực tiếp theo dự án (TOÀN BỘ – không lọc ngày)
     const directCostRows = await db.prepare(`
@@ -13102,17 +13090,29 @@ app.get('/api/projects/:id/estimate-vs-actual', authMiddleware, adminOnly, async
   const estTotalRevenue = estMap.revenue || 0
   const estProfit       = estTotalRevenue - estTotalCost
 
-  // ── 2. Thực tế — Doanh thu (toàn vòng đời, bao gồm pending) ─────────────────
-  const revActual = await db.prepare(`
-    SELECT
-      SUM(COALESCE(pr.amount_original, pr.amount)) as nghiem_thu,
-      SUM(pr.amount)                               as doanh_thu_ns,
-      SUM(COALESCE(pq.paid_amount, 0))             as dong_tien
-    FROM project_revenues pr
-    LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
-    WHERE pr.project_id = ?
-      AND pr.payment_status IN ('paid','partial','pending')
+  // ── 2. Thực tế — Doanh thu (toàn vòng đời; NT + TT trước VAT)
+  const payActualRows = await db.prepare(`
+    SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct
+    FROM payment_requests
+    WHERE project_id = ? AND status IN ('paid', 'partial', 'pending')
+  `).bind(projectId).all()
+  let nghiemThuBeforeVat = 0
+  let dongTienBeforeVat = 0
+  for (const r of (payActualRows.results as any[])) {
+    const vat = Number(r.vat_pct) || 0
+    nghiemThuBeforeVat += amountExcludingVat(Number(r.amount) || 0, vat)
+    dongTienBeforeVat += amountExcludingVat(Number(r.paid_amount) || 0, vat)
+  }
+  const bookedRevActual = await db.prepare(`
+    SELECT SUM(amount) as doanh_thu_ns
+    FROM project_revenues
+    WHERE project_id = ? AND payment_status IN ('paid','partial','pending')
   `).bind(projectId).first() as any
+  const revActual = {
+    nghiem_thu: nghiemThuBeforeVat,
+    doanh_thu_ns: bookedRevActual?.doanh_thu_ns || 0,
+    dong_tien: dongTienBeforeVat,
+  }
 
   // ── 3. Thực tế — Chi phí trực tiếp ──────────────────────────────────────────
   const directActual = await db.prepare(`
