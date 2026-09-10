@@ -11,6 +11,7 @@ import {
   aggregatePaymentsBeforeVat,
   aggregateThreeMoney,
   amountExcludingVat,
+  sumPendingBookedFromPayments,
   calendarMonthsOrFilter,
   calendarPairsSpan,
   computeBookedRevenue,
@@ -5274,25 +5275,41 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
     const otherCostArr = otherRows.results as any[]
     const totalOtherCosts = otherCostArr.reduce((s, r) => s + (r.total_amount || 0), 0)
 
-    // ── Step 3: Doanh thu vào sổ (gồm pending đã NT) + dòng tiền chưa thu ─
+    // ── Step 3: Doanh thu vào sổ (gồm pending đã NT) ─────────────────
+    const feePctProj = Number(
+      (await db.prepare(`SELECT management_fee_pct FROM projects WHERE id = ?`).bind(projectId).first() as any)
+        ?.management_fee_pct
+    ) || 0
     const revPaidPartial = await db.prepare(`
       SELECT COALESCE(SUM(pr.amount), 0) as total
       FROM project_revenues pr
       WHERE pr.project_id = ? AND pr.payment_status IN ('paid','partial') ${revDateFilter}
     `).bind(projectId).first() as any
-    const pendingRevDateFilter = revDateFilter.replace(/pr\.revenue_date/g, 'pq.request_date')
-    const revPendingBooked = await db.prepare(`
-      SELECT COALESCE(SUM(pr.amount), 0) as total
-      FROM project_revenues pr
-      JOIN payment_requests pq ON pq.revenue_id = pr.id
-      WHERE pr.project_id = ? AND pr.payment_status = 'pending' ${pendingRevDateFilter}
-    `).bind(projectId).first() as any
-    const revenue = (revPaidPartial?.total || 0) + (revPendingBooked?.total || 0)
     const pendingPayRows = await db.prepare(
-      `SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
-       FROM payment_requests WHERE project_id = ? AND status = 'pending'`
+      `SELECT amount, COALESCE(vat_pct, 0) as vat_pct, request_date, status
+       FROM payment_requests WHERE project_id = ? AND status = 'pending' AND amount > 0`
     ).bind(projectId).all()
-    const pendingRevenue = aggregateThreeMoney(pendingPayRows.results as any[]).pendingAcceptanceBeforeVat
+    let pendOpts: { dateFrom?: string; dateTo?: string }
+    if (selectedMonths !== null && all_months !== 'true') {
+      const ranges = selectedMonths.map(lm => {
+        const { calYear, calMonth } = fiscalMonthToCalendar(lm, yInt, fySettings)
+        return monthDateRange(calYear, calMonth)
+      })
+      const starts = ranges.map(r => r.start).sort()
+      const endEx = ranges.map(r => r.endExclusive).sort().at(-1)!
+      const endInc = new Date(endEx + 'T00:00:00Z')
+      endInc.setUTCDate(endInc.getUTCDate() - 1)
+      pendOpts = { dateFrom: starts[0], dateTo: endInc.toISOString().slice(0, 10) }
+    } else {
+      pendOpts = { dateFrom: fyStart, dateTo: fyEnd }
+    }
+    const { pendingBooked } = sumPendingBookedFromPayments(
+      pendingPayRows.results as any[],
+      feePctProj,
+      pendOpts
+    )
+    const revenue = (revPaidPartial?.total || 0) + pendingBooked
+    const pendingRevenue = pendingBooked
 
     // ── Totals & profit ─────────────────────────────────────────────
     // Chi phí chung phân bổ về dự án này (theo năm + tháng được chọn)
@@ -5359,7 +5376,7 @@ app.get('/api/projects/:id/costs-revenue-summary', authMiddleware, adminOnly, as
         months_count: laborMonthsCount },
       financial: {
         revenue: { value: revenueBase, actual_revenue: revenue, pending_revenue: pendingRevenue, contract_value: contractValue,
-          label: revenue > 0 ? 'Doanh thu vào sổ (gồm đã NT chưa thu tiền)' : (pendingRevenue > 0 ? 'Chưa có DT vào sổ — còn NT chờ thu' : 'Chưa khai báo doanh thu') },
+          label: 'Doanh thu vào sổ (gồm đã NT chưa thu tiền)' },
         costs: {
           labor: { value: laborCost, label: 'Chi phí lương', source: laborSource,
             synced_from: laborSource === 'project_labor_costs' ? 'Chi Phí Lương (đã đồng bộ)' : laborSource === 'mixed' ? 'Hybrid: đồng bộ + real-time' : 'Tính real-time từ timesheet',
@@ -8295,17 +8312,30 @@ app.get('/api/dashboard/cost-summary', authMiddleware, adminOnly, async (c) => {
     const currentYear = String(fyYear)
     const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(fyYear, fySettings)
 
-    // Revenue by project trong NTC — dùng date range cho paid/partial
-    // pending_revenue đọc từ payment_requests (không có revenue_date → không lọc ngày)
+    // Revenue by project trong NTC — DT vào sổ = paid+partial + pending đã NT
     const revenueByProject = await db.prepare(`
       SELECT p.id, p.code, p.name, p.contract_value,
-        COALESCE(SUM(CASE WHEN pr.payment_status IN ('paid','partial') AND pr.revenue_date >= ? AND pr.revenue_date <= ? THEN pr.amount ELSE 0 END), 0) as total_revenue,
-        COALESCE((SELECT SUM(pq.amount) FROM payment_requests pq WHERE pq.project_id = p.id AND pq.status = 'pending'), 0) as pending_revenue
+        COALESCE(paid.total, 0) + COALESCE(pend.total, 0) as total_revenue,
+        COALESCE(pend.total, 0) as pending_revenue
       FROM projects p
-      LEFT JOIN project_revenues pr ON pr.project_id = p.id
+      LEFT JOIN (
+        SELECT project_id, SUM(amount) as total
+        FROM project_revenues
+        WHERE payment_status IN ('paid','partial')
+          AND revenue_date >= ? AND revenue_date <= ?
+        GROUP BY project_id
+      ) paid ON paid.project_id = p.id
+      LEFT JOIN (
+        SELECT pr.project_id, SUM(pr.amount) as total
+        FROM project_revenues pr
+        JOIN payment_requests pq ON pq.revenue_id = pr.id
+        WHERE pr.payment_status = 'pending'
+          AND pq.request_date >= ? AND pq.request_date <= ?
+        GROUP BY pr.project_id
+      ) pend ON pend.project_id = p.id
       WHERE p.status != 'cancelled'
-      GROUP BY p.id ORDER BY total_revenue DESC
-    `).bind(fyStart, fyEnd).all()
+      ORDER BY total_revenue DESC
+    `).bind(fyStart, fyEnd, fyStart, fyEnd).all()
 
     // Other costs from project_costs trong NTC
     const costByProject = await db.prepare(`
@@ -9466,12 +9496,42 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
         const totalOtherCostR = (otherCostsR.results as any[]).reduce((s, c) => s + (c as any).total, 0)
 
         const revsR = await db.prepare(`SELECT SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as total FROM project_revenues WHERE project_id = ? ${revDateFilter}`).bind(projectId).first() as any
-        const totalRevenueR = revsR?.total || 0
-        const pendingRevR = await db.prepare(`SELECT COALESCE(SUM(amount),0) as pending_total FROM payment_requests WHERE project_id = ? AND status = 'pending'`).bind(projectId).first() as any
-        const pendingRevenueR = pendingRevR?.pending_total || 0
+        const feePctR = Number(project.management_fee_pct) || 0
+        const pendingPayRowsR = await db.prepare(
+          `SELECT amount, COALESCE(vat_pct, 0) as vat_pct, request_date, status
+           FROM payment_requests WHERE project_id = ? AND status = 'pending' AND amount > 0`
+        ).bind(projectId).all()
+        const pendStarts = monthPairsR.map(p => monthDateRange(p.year, p.month).start).sort()
+        const pendEndEx = monthPairsR.map(p => monthDateRange(p.year, p.month).endExclusive).sort().at(-1)!
+        const pendEndInc = new Date(pendEndEx + 'T00:00:00Z')
+        pendEndInc.setUTCDate(pendEndInc.getUTCDate() - 1)
+        const { pendingBooked: pendingBookedR } = sumPendingBookedFromPayments(
+          pendingPayRowsR.results as any[],
+          feePctR,
+          { dateFrom: pendStarts[0], dateTo: pendEndInc.toISOString().slice(0, 10) }
+        )
+        const totalRevenueR = (revsR?.total || 0) + pendingBookedR
+        const pendingRevenueR = pendingBookedR
 
         const timelineR = await db.prepare(`SELECT strftime('%Y-%m', cost_date) as month, cost_type, SUM(amount) as total FROM project_costs WHERE project_id = ? ${costDateFilter} GROUP BY month, cost_type ORDER BY month`).bind(projectId).all()
         const revTimelineR = await db.prepare(`SELECT strftime('%Y-%m', revenue_date) as month, SUM(amount) as total FROM project_revenues WHERE project_id = ? AND payment_status IN ('paid','partial') ${revDateFilter} GROUP BY month ORDER BY month`).bind(projectId).all()
+        // Gộp DT pending (theo request_date) vào timeline
+        const pendingByMonthR: Record<string, number> = {}
+        for (const row of (pendingPayRowsR.results as any[])) {
+          const rd = row.request_date
+          if (!rd) continue
+          if (rd < pendStarts[0] || rd > pendEndInc.toISOString().slice(0, 10)) continue
+          const mk = rd.slice(0, 7)
+          const { bookedRevenue } = computeBookedRevenue(Number(row.amount) || 0, Number(row.vat_pct) || 0, feePctR)
+          pendingByMonthR[mk] = (pendingByMonthR[mk] || 0) + bookedRevenue
+        }
+        const revTimelineMergedR = [...(revTimelineR.results as any[])]
+        for (const [month, total] of Object.entries(pendingByMonthR)) {
+          const existing = revTimelineMergedR.find((r: any) => r.month === month)
+          if (existing) existing.total = (existing.total || 0) + total
+          else revTimelineMergedR.push({ month, total })
+        }
+        revTimelineMergedR.sort((a: any, b: any) => String(a.month).localeCompare(String(b.month)))
 
         const sharedRowR = await db.prepare(`SELECT COALESCE(SUM(sca.allocated_amount), 0) as total, COUNT(DISTINCT sca.shared_cost_id) as cnt FROM shared_cost_allocations sca JOIN shared_costs sc ON sc.id = sca.shared_cost_id WHERE sca.project_id = ? AND sc.status != 'deleted' AND sc.year = ? AND sc.month IN (${monthArr.join(',')})`).bind(projectId, parseInt(year)).first() as any
         const sharedTotalR = sharedRowR?.total || 0; const sharedCountR = sharedRowR?.cnt || 0
@@ -9500,7 +9560,7 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
           summary: { total_revenue: totalRevenueR, pending_revenue: pendingRevenueR, contract_value: contractValue, total_cost: totalCostR, labor_cost: laborCostR, other_cost: totalOtherCostR, shared_cost: sharedTotalR, shared_cost_count: sharedCountR, profit: profitR ?? null, margin: marginR ?? null, labor_hours: laborHoursR, labor_per_hour: Math.round(laborPerHourR), labor_source: laborSourceR, labor_months_count: laborMonthsCountR },
           costs_by_type: costsByTypeR,
           timeline: timelineR.results,
-          revenue_timeline: revTimelineR.results,
+          revenue_timeline: revTimelineMergedR,
           labor_timeline: laborTimelineR,
           validation: { warnings: validation_warnings, has_warnings: validation_warnings.length > 0, profit_status: profitR === null ? 'no_data' : (profitR > 0 ? (marginR !== null && marginR < 10 ? 'warning' : 'ok') : 'error') }
         })
@@ -9563,17 +9623,24 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       // KHÔNG cap laborCost — hiển thị đúng chi phí thực tế
     }
 
-    // ── Revenue ──────────────────────────────────────────────────────────
+    // ── Revenue (DT vào sổ = paid+partial + pending đã NT) ─────────────
+    const feePctFin = Number(project.management_fee_pct) || 0
     const revenues = await db.prepare(
       `SELECT
          SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as total
        FROM project_revenues WHERE project_id = ? ${revDateFilter}`
     ).bind(projectId).first() as any
-    const totalRevenue  = revenues?.total || 0
-    const pendingRevRow2 = await db.prepare(
-      `SELECT COALESCE(SUM(amount),0) as pending_total FROM payment_requests WHERE project_id = ? AND status = 'pending'`
-    ).bind(projectId).first() as any
-    const pendingRevenue2 = pendingRevRow2?.pending_total || 0
+    const pendingPayRowsFin = await db.prepare(
+      `SELECT amount, COALESCE(vat_pct, 0) as vat_pct, request_date, status
+       FROM payment_requests WHERE project_id = ? AND status = 'pending' AND amount > 0`
+    ).bind(projectId).all()
+    const { pendingBooked: pendingBookedFin } = sumPendingBookedFromPayments(
+      pendingPayRowsFin.results as any[],
+      feePctFin,
+      { dateFrom, dateTo: revDateTo }
+    )
+    const totalRevenue  = (revenues?.total || 0) + pendingBookedFin
+    const pendingRevenue2 = pendingBookedFin
 
     // ── Timeline: chi phí + doanh thu theo tháng ──────────────────────────
     const timeline = await db.prepare(`
@@ -9582,13 +9649,31 @@ app.get('/api/finance/project/:id', authMiddleware, adminOnly, async (c) => {
       GROUP BY month, cost_type ORDER BY month
     `).bind(projectId).all()
 
-    // Timeline doanh thu theo tháng
-    const revenueTimeline = await db.prepare(`
+    // Timeline doanh thu theo tháng (paid+partial + pending booked theo request_date)
+    const revenueTimelinePaid = await db.prepare(`
       SELECT strftime('%Y-%m', revenue_date) as month, SUM(amount) as total
       FROM project_revenues WHERE project_id = ?
         AND payment_status IN ('paid','partial') ${revDateFilter}
       GROUP BY month ORDER BY month
     `).bind(projectId).all()
+    const pendingByMonthFin: Record<string, number> = {}
+    for (const row of (pendingPayRowsFin.results as any[])) {
+      const rd = row.request_date as string | null
+      if (!rd) continue
+      if (rd < dateFrom || rd > revDateTo) continue
+      const mk = rd.slice(0, 7)
+      const { bookedRevenue } = computeBookedRevenue(Number(row.amount) || 0, Number(row.vat_pct) || 0, feePctFin)
+      pendingByMonthFin[mk] = (pendingByMonthFin[mk] || 0) + bookedRevenue
+    }
+    const revenueTimeline = {
+      results: [...(revenueTimelinePaid.results as any[])]
+    }
+    for (const [month, total] of Object.entries(pendingByMonthFin)) {
+      const existing = revenueTimeline.results.find((r: any) => r.month === month)
+      if (existing) existing.total = (existing.total || 0) + total
+      else revenueTimeline.results.push({ month, total })
+    }
+    revenueTimeline.results.sort((a: any, b: any) => String(a.month).localeCompare(String(b.month)))
 
     // Timeline lương từng tháng — reuse byMonth from O(1) allocation above
     const laborTimeline = [...laborAllocRange.byMonth.entries()]
@@ -10937,7 +11022,7 @@ app.get('/api/analytics/task-analytics', authMiddleware, adminOnly, async (c) =>
 // ⚠️ ĐỒNG BỘ với /api/dashboard/cost-summary:
 //   - Dùng NTC date range thay vì năm lịch
 //   - Tính đủ: project_costs + labor costs + shared costs
-//   - Doanh thu chỉ tính paid/partial (đã thu)
+//   - Doanh thu vào sổ = paid+partial+pending đã NT
 app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
@@ -10948,14 +11033,24 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
     const y = String(fyYear)
     const { startDate: fyStart, endDate: fyEnd } = getFiscalYearDateRange(fyYear, fySettings)
 
-    // ── 1. KPI: Doanh thu chỉ tính paid/partial (đồng bộ với cost-summary)
+    // ── 1. KPI: DT vào sổ paid/partial theo revenue_date + pending theo request_date
     const rawRevenue = await db.prepare(`
       SELECT strftime('%Y-%m', revenue_date) as month,
-        SUM(CASE WHEN payment_status IN ('paid','partial') THEN amount ELSE 0 END) as revenue,
-        SUM(amount) as total_amount
+        SUM(amount) as revenue
       FROM project_revenues
-      WHERE revenue_date >= ? AND revenue_date <= ?
+      WHERE payment_status IN ('paid','partial')
+        AND revenue_date >= ? AND revenue_date <= ?
       GROUP BY strftime('%Y-%m', revenue_date)
+    `).bind(fyStart, fyEnd).all()
+
+    const rawPendingBooked = await db.prepare(`
+      SELECT strftime('%Y-%m', pq.request_date) as month,
+        SUM(pr.amount) as revenue
+      FROM project_revenues pr
+      JOIN payment_requests pq ON pq.revenue_id = pr.id
+      WHERE pr.payment_status = 'pending'
+        AND pq.request_date >= ? AND pq.request_date <= ?
+      GROUP BY strftime('%Y-%m', pq.request_date)
     `).bind(fyStart, fyEnd).all()
 
     // ── 2. Chi phí trực tiếp (non-salary) trong NTC
@@ -10998,7 +11093,8 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
 
     // ── 5. Build monthly map (12 tháng NTC)
     const revMap: Record<string, number> = {}
-    ;(rawRevenue.results as any[]).forEach((r: any) => { revMap[r.month] = r.revenue || 0 })
+    ;(rawRevenue.results as any[]).forEach((r: any) => { revMap[r.month] = (revMap[r.month] || 0) + (r.revenue || 0) })
+    ;(rawPendingBooked.results as any[]).forEach((r: any) => { revMap[r.month] = (revMap[r.month] || 0) + (r.revenue || 0) })
     const directCostMap: Record<string, number> = {}
     ;(rawDirectCost.results as any[]).forEach((r: any) => { directCostMap[r.month] = r.cost || 0 })
     const laborMap: Record<string, number> = {}
@@ -11025,8 +11121,10 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       }
     })
 
-    // ── 6. KPI tổng hợp (đồng bộ với cost-summary)
-    const totalRevenue = (rawRevenue.results as any[]).reduce((s: number, r: any) => s + (r.revenue || 0), 0)
+    // ── 6. KPI tổng hợp (đồng bộ với cost-summary — DT gồm pending đã NT)
+    const totalRevenuePaid = (rawRevenue.results as any[]).reduce((s: number, r: any) => s + (r.revenue || 0), 0)
+    const totalPendingBooked = (rawPendingBooked.results as any[]).reduce((s: number, r: any) => s + (r.revenue || 0), 0)
+    const totalRevenue = totalRevenuePaid + totalPendingBooked
     const totalDirectCost = (rawDirectCost.results as any[]).reduce((s: number, r: any) => s + (r.cost || 0), 0)
     const totalLaborCost = laborMonthly.reduce((s: number, r: any) => s + (r.labor_cost || 0), 0)
     const totalSharedCost = (sharedRows.results as any[]).reduce((s: number, r: any) => s + (r.shared_cost || 0), 0)
@@ -11076,16 +11174,28 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
     const realtimeLaborByProject = await computeRealtimeLaborByProject(db, OVERTIME_FACTOR, fyStart, fyEnd)
     
     // FIX: Tách queries để tránh duplicate rows khi LEFT JOIN nhiều bảng
-    // Query revenue
+    // Query revenue (paid+partial trong kỳ + pending booked theo request_date)
     const topRevRaw = await db.prepare(`
       SELECT p.id, p.code, p.name,
-        COALESCE(SUM(CASE WHEN pr.payment_status IN ('paid','partial') THEN pr.amount ELSE 0 END), 0) as revenue
+        COALESCE(paid.total, 0) + COALESCE(pend.total, 0) as revenue
       FROM projects p
-      LEFT JOIN project_revenues pr ON pr.project_id = p.id
-        AND pr.revenue_date >= ? AND pr.revenue_date <= ?
+      LEFT JOIN (
+        SELECT project_id, SUM(amount) as total
+        FROM project_revenues
+        WHERE payment_status IN ('paid','partial')
+          AND revenue_date >= ? AND revenue_date <= ?
+        GROUP BY project_id
+      ) paid ON paid.project_id = p.id
+      LEFT JOIN (
+        SELECT pr.project_id, SUM(pr.amount) as total
+        FROM project_revenues pr
+        JOIN payment_requests pq ON pq.revenue_id = pr.id
+        WHERE pr.payment_status = 'pending'
+          AND pq.request_date >= ? AND pq.request_date <= ?
+        GROUP BY pr.project_id
+      ) pend ON pend.project_id = p.id
       WHERE p.status != 'cancelled'
-      GROUP BY p.id
-    `).bind(fyStart, fyEnd).all()
+    `).bind(fyStart, fyEnd, fyStart, fyEnd).all()
     
     // Query direct cost
     const topCostRaw = await db.prepare(`
@@ -11145,8 +11255,7 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
     
     const topProjectsByRevenue = { results: topProjectsWithLabor }
 
-    // ── 9. Revenue by payment status (trong NTC)
-    // paid/partial: lọc theo date range; pending: từ payment_requests (không lọc ngày)
+    // ── 9. Revenue by payment status (trong NTC) — pending = booked đã NT
     const revenueByStatusPaid = await db.prepare(`
       SELECT payment_status, SUM(amount) as total, COUNT(*) as count
       FROM project_revenues
@@ -11155,9 +11264,12 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
     `).bind(fyStart, fyEnd).all()
 
     const revenueByStatusPending = await db.prepare(`
-      SELECT 'pending' as payment_status, COALESCE(SUM(amount),0) as total, COUNT(*) as count
-      FROM payment_requests WHERE status = 'pending'
-    `).first() as any
+      SELECT 'pending' as payment_status, COALESCE(SUM(pr.amount),0) as total, COUNT(*) as count
+      FROM project_revenues pr
+      JOIN payment_requests pq ON pq.revenue_id = pr.id
+      WHERE pr.payment_status = 'pending'
+        AND pq.request_date >= ? AND pq.request_date <= ?
+    `).bind(fyStart, fyEnd).first() as any
 
     // Ghép thành mảng revenueByStatus
     const revenueByStatus = { results: [
@@ -11165,8 +11277,8 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       ...(revenueByStatusPending && revenueByStatusPending.total > 0 ? [revenueByStatusPending] : [])
     ]}
 
-    // ── 9b. Total pending revenue từ payment_requests
-    const totalPendingRevenue = revenueByStatusPending?.total || 0
+    // ── 9b. Pending booked (đã vào sổ, chưa thu tiền)
+    const totalPendingRevenue = revenueByStatusPending?.total || totalPendingBooked || 0
 
     // ── 10. Active / completed projects
     const activeProjects = await db.prepare(`SELECT COUNT(*) as cnt FROM projects WHERE status='active'`).first() as any

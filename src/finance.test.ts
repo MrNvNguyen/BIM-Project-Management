@@ -13,6 +13,7 @@ import {
   enrichRevenueRow,
   filterMlcMonths,
   monthDateRange,
+  sumPendingBookedFromPayments,
   taskComputedProgress,
   yearDateRange,
   yearMonthKey,
@@ -108,6 +109,31 @@ describe('aggregateThreeMoney', () => {
     expect(r.pendingAcceptanceBeforeVat).toBe(503_703_704)
     expect(r.cashBeforeVat).toBe(503_703_704)
     expect(r.cashGross).toBe(544_000_000)
+  })
+})
+
+describe('sumPendingBookedFromPayments', () => {
+  it('pending VAT 8% fee 60%: 2_203_000_000 → NT 2_039_814_815, DT 815_925_926', () => {
+    const r = sumPendingBookedFromPayments(
+      [{ status: 'pending', amount: 2_203_000_000, vat_pct: 8, request_date: '2026-05-20' }],
+      60
+    )
+    expect(r.pendingAcceptanceBeforeVat).toBe(2_039_814_815)
+    expect(r.pendingBooked).toBe(815_925_926)
+  })
+
+  it('respects inclusive date range; skips non-pending', () => {
+    const r = sumPendingBookedFromPayments(
+      [
+        { status: 'pending', amount: 1_100_000, vat_pct: 10, request_date: '2026-01-15' },
+        { status: 'pending', amount: 1_100_000, vat_pct: 10, request_date: '2026-03-01' },
+        { status: 'paid', amount: 1_100_000, vat_pct: 10, request_date: '2026-02-01' },
+      ],
+      30,
+      { dateFrom: '2026-02-01', dateTo: '2026-02-28' }
+    )
+    expect(r.pendingBooked).toBe(0)
+    expect(r.pendingAcceptanceBeforeVat).toBe(0)
   })
 })
 

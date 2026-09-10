@@ -8753,7 +8753,7 @@ async function loadCostDashboard() {
 
     $('costKpiRevenue').innerHTML = fmtMoney(totalRevenue) +
       (totalPendingRevenue > 0
-        ? `<br><span class="text-xs font-normal text-amber-600" title="Doanh thu trạng thái 'Chờ thanh toán' — chưa tính vào doanh thu thực tế"><i class="fas fa-clock mr-1"></i>⏳ Chờ thu: ${fmtMoney(totalPendingRevenue)}</span>`
+        ? `<br><span class="text-xs font-normal text-amber-600" title="Phần doanh thu vào sổ từ phiếu đã nghiệm thu nhưng chưa thu tiền (đã gồm trong tổng)"><i class="fas fa-clock mr-1"></i>Trong đó chờ thu: ${fmtMoney(totalPendingRevenue)}</span>`
         : '')
     $('costKpiCost').innerHTML = fmtMoney(totalCost) +
       (totalSharedAllocated > 0
@@ -9051,7 +9051,11 @@ async function loadCostAnalysis() {
 
     // Update dynamic labels to reflect period type
     if ($('anaRevenueLabel')) $('anaRevenueLabel').textContent = isMultiPeriod0 ? `Doanh thu (${anaPeriodLabel})` : 'Doanh thu tháng'
-    if ($('anaRevenueSubLabel')) $('anaRevenueSubLabel').textContent = isMultiPeriod0 ? 'Tổng thực thu các tháng' : 'Thực thu trong tháng'
+    if ($('anaRevenueSubLabel')) {
+      $('anaRevenueSubLabel').textContent = pendingRev > 0
+        ? `Trong đó chờ thu: ${fmtMoney(pendingRev)}`
+        : (isMultiPeriod0 ? 'DT vào sổ các tháng' : 'DT vào sổ trong tháng')
+    }
 
     $('anaRevenue').textContent   = fmtMoney(revVal)
     $('anaLaborCost').textContent = fmtMoney(laborVal)
@@ -9065,11 +9069,9 @@ async function loadCostAnalysis() {
     }
     $('anaTotalCost').textContent = fmtMoney(totalVal)
     $('anaProfit').textContent    = fmtMoney(profitVal)
-    // Hiển thị tỷ suất LN và cảnh báo pending revenue
+    // Hiển thị tỷ suất LN
     if (revVal > 0) {
       $('anaProfitMargin').textContent = `Tỷ suất LN: ${margin ?? 'N/A'}%`
-    } else if (pendingRev > 0) {
-      $('anaProfitMargin').textContent = `⏳ Chờ TT: ${fmtMoney(pendingRev)} (chưa tính DT)`
     } else {
       $('anaProfitMargin').textContent = '⚠️ Chưa có doanh thu'
     }
@@ -13213,10 +13215,10 @@ async function loadFinanceProject() {
                  <div class="flex justify-between text-xs text-gray-400 mb-0.5"><span>${project.project_budget > 0 ? 'Tiến độ NS' : 'Tiến độ HĐ'}</span><span>${revenueProgress}%</span></div>
                  <div class="w-full bg-gray-200 rounded-full h-1.5"><div class="bg-green-500 h-1.5 rounded-full" style="width:${revenueProgress}%"></div></div>
                </div>
-               ${pendingRevenue > 0 ? `<p class="text-xs text-amber-600 mt-1">⏳ Chờ TT: ${fmtMoney(pendingRevenue)}</p>` : ''}`
+               ${pendingRevenue > 0 ? `<p class="text-xs text-amber-600 mt-1" title="Phần DT vào sổ từ phiếu đã nghiệm thu nhưng chưa thu tiền (đã gồm trong tổng)">⏳ Trong đó chờ thu: ${fmtMoney(pendingRevenue)}</p>` : ''}`
             : pendingRevenue > 0
               ? `<p class="text-xl font-bold text-amber-500 mt-1">${fmtMoney(pendingRevenue)}</p>
-                 <p class="text-xs text-amber-600 mt-1">⏳ Chờ thanh toán (chưa tính DT)</p>`
+                 <p class="text-xs text-amber-600 mt-1">⏳ Chờ thu (đã gồm trong DT vào sổ)</p>`
               : `<p class="text-xl font-bold text-gray-400 mt-1">— 0 ₫</p>
                  <p class="text-xs text-orange-500 mt-1">⚠️ Chưa khai báo doanh thu</p>`
           }

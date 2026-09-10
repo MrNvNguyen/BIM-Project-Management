@@ -75,6 +75,34 @@ export function aggregateThreeMoney(
   return { acceptanceBeforeVat, cashBeforeVat, cashGross, pendingAcceptanceBeforeVat }
 }
 
+/** DT vào sổ từ phiếu pending (amount>0) — dùng khi chưa có / thiếu project_revenues. */
+export function sumPendingBookedFromPayments(
+  rows: Array<{ amount?: number; vat_pct?: number | null; request_date?: string | null; status?: string }>,
+  feePct: number,
+  opts?: { dateFrom?: string | null; dateTo?: string | null }
+): { pendingBooked: number; pendingAcceptanceBeforeVat: number } {
+  let pendingBooked = 0
+  let pendingAcceptanceBeforeVat = 0
+  const dateFrom = opts?.dateFrom || null
+  const dateTo = opts?.dateTo || null
+  const unboundedEnd = !dateTo || dateTo >= '9999-12-31'
+  for (const r of rows) {
+    if (r.status && r.status !== 'pending') continue
+    const rd = r.request_date || null
+    if (dateFrom && rd && rd < dateFrom) continue
+    if (!unboundedEnd && rd && rd > dateTo!) continue
+    if ((dateFrom || !unboundedEnd) && !rd && !unboundedEnd) continue
+    const { amountBeforeVat, bookedRevenue } = computeBookedRevenue(
+      Number(r.amount) || 0,
+      Number(r.vat_pct) || 0,
+      feePct
+    )
+    pendingBooked += bookedRevenue
+    pendingAcceptanceBeforeVat += amountBeforeVat
+  }
+  return { pendingBooked, pendingAcceptanceBeforeVat }
+}
+
 export function computeProjectBudget(contractValue: number, feePct: number): number {
   const cv = Number(contractValue) || 0
   const fee = Number(feePct) || 0
