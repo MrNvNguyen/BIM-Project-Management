@@ -49,24 +49,15 @@ import {
 } from './storage'
 
 // ---- Types ----
-type SendEmailBinding = {
-  send: (message: {
-    to: string | { email: string; name?: string } | Array<string | { email: string; name?: string }>
-    from: string | { email: string; name?: string }
-    subject: string
-    html?: string
-    text?: string
-  }) => Promise<{ messageId: string }>
-}
-
 type Bindings = {
   DB: D1Database
   JWT_SECRET: string
   RESEND_API_KEY: string
   FILES?: R2Bucket
   ALLOW_SYSTEM_INIT?: string
-  /** Cloudflare Email Sending (fallback after Resend daily limit) */
-  EMAIL?: SendEmailBinding
+  /** Optional Pages secrets for Cloudflare Email Sending REST */
+  CF_ACCOUNT_ID?: string
+  CF_EMAIL_API_TOKEN?: string
 }
 
 // ===================================================
@@ -735,6 +726,57 @@ async function countResendSentToday(db: D1Database): Promise<number> {
   }
 }
 
+async function resolveCloudflareEmailCreds(
+  env: Bindings,
+  db: D1Database
+): Promise<{ accountId: string; apiToken: string } | null> {
+  const cfg = await getSystemConfigMap(db, ['cloudflare_account_id', 'cloudflare_email_api_token'])
+  const accountId = (env.CF_ACCOUNT_ID || cfg.cloudflare_account_id || '').trim()
+  const apiToken = (env.CF_EMAIL_API_TOKEN || cfg.cloudflare_email_api_token || '').trim()
+  if (!accountId || !apiToken) return null
+  return { accountId, apiToken }
+}
+
+async function sendViaCloudflareRest(
+  creds: { accountId: string; apiToken: string },
+  opts: {
+    to: string
+    toName?: string
+    fromAddress: string
+    fromName: string
+    subject: string
+    html: string
+    text: string
+  }
+): Promise<void> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(creds.accountId)}/email/sending/send`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${creds.apiToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      to: opts.toName ? { address: opts.to, name: opts.toName } : opts.to,
+      from: { address: opts.fromAddress, name: opts.fromName },
+      subject: opts.subject,
+      html: opts.html,
+      text: opts.text,
+    }),
+  })
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(`CF Email HTTP ${res.status}: ${errText.slice(0, 400)}`)
+  }
+  const body = await res.json().catch(() => null) as any
+  if (body && body.success === false) {
+    const msg = Array.isArray(body.errors) && body.errors[0]?.message
+      ? body.errors[0].message
+      : 'Cloudflare Email API returned success=false'
+    throw new Error(msg)
+  }
+}
+
 async function getEmailStatsToday(db: D1Database, env: Bindings): Promise<{
   resend_sent: number
   cloudflare_sent: number
@@ -746,6 +788,7 @@ async function getEmailStatsToday(db: D1Database, env: Bindings): Promise<{
   const cfg = await getSystemConfigMap(db, ['resend_daily_limit', 'cloudflare_email_enabled'])
   const resendLimit = Math.max(0, parseInt(cfg.resend_daily_limit || String(DEFAULT_RESEND_DAILY_LIMIT), 10) || DEFAULT_RESEND_DAILY_LIMIT)
   const cloudflareEnabled = cfg.cloudflare_email_enabled !== '0'
+  const cfCreds = await resolveCloudflareEmailCreds(env, db)
   try {
     const row = await db.prepare(`
       SELECT
@@ -760,7 +803,7 @@ async function getEmailStatsToday(db: D1Database, env: Bindings): Promise<{
       cloudflare_sent: Number(row?.cloudflare_sent) || 0,
       failed: Number(row?.failed) || 0,
       resend_limit: resendLimit,
-      cloudflare_bound: !!env.EMAIL,
+      cloudflare_bound: !!cfCreds,
       cloudflare_enabled: cloudflareEnabled,
     }
   } catch {
@@ -776,7 +819,7 @@ async function getEmailStatsToday(db: D1Database, env: Bindings): Promise<{
       cloudflare_sent: 0,
       failed: Number(row?.failed) || 0,
       resend_limit: resendLimit,
-      cloudflare_bound: !!env.EMAIL,
+      cloudflare_bound: !!cfCreds,
       cloudflare_enabled: cloudflareEnabled,
     }
   }
@@ -829,6 +872,7 @@ async function sendEmail(env: Bindings, opts: {
   const cfg = await getSystemConfigMap(opts.db, [
     'resend_api_key', 'email_from_name', 'email_from_address',
     'resend_daily_limit', 'cloudflare_email_enabled', 'email_enabled',
+    'cloudflare_account_id', 'cloudflare_email_api_token',
   ])
   if (cfg.email_enabled === '0') {
     console.log(`[sendEmail] SKIPPED — email_enabled=0`)
@@ -841,10 +885,11 @@ async function sendEmail(env: Bindings, opts: {
   const fromHeader = `${fromName} <${fromAddress}>`
   const resendLimit = Math.max(0, parseInt(cfg.resend_daily_limit || String(DEFAULT_RESEND_DAILY_LIMIT), 10) || DEFAULT_RESEND_DAILY_LIMIT)
   const cloudflareEnabled = cfg.cloudflare_email_enabled !== '0'
+  const cfCreds = cloudflareEnabled ? await resolveCloudflareEmailCreds(env, opts.db) : null
 
   const resendSentToday = apiKey ? await countResendSentToday(opts.db) : resendLimit
   const useResend = !!apiKey && resendSentToday < resendLimit
-  const useCloudflare = !useResend && cloudflareEnabled && !!env.EMAIL
+  const useCloudflare = !useResend && !!cfCreds
 
   console.log(
     `[sendEmail] eventType=${opts.eventType} to=${opts.to} resendToday=${resendSentToday}/${resendLimit} ` +
@@ -852,7 +897,7 @@ async function sendEmail(env: Bindings, opts: {
   )
 
   if (!useResend && !useCloudflare) {
-    console.log(`[sendEmail] ABORT — no provider (resend key/limit or EMAIL binding)`)
+    console.log(`[sendEmail] ABORT — no provider (resend key/limit or Cloudflare REST creds)`)
     return 'skipped'
   }
 
@@ -887,14 +932,16 @@ async function sendEmail(env: Bindings, opts: {
         console.log(`[sendEmail] Resend SUCCESS to=${opts.to} event=${opts.eventType}`)
       }
     } else {
-      await env.EMAIL!.send({
-        to: opts.toName ? { email: opts.to, name: opts.toName } : opts.to,
-        from: { email: fromAddress, name: fromName },
+      await sendViaCloudflareRest(cfCreds!, {
+        to: opts.to,
+        toName: opts.toName,
+        fromAddress,
+        fromName,
         subject,
         html,
         text: plainText || subject,
       })
-      console.log(`[sendEmail] Cloudflare SUCCESS to=${opts.to} event=${opts.eventType}`)
+      console.log(`[sendEmail] Cloudflare REST SUCCESS to=${opts.to} event=${opts.eventType}`)
     }
   } catch (e: any) {
     status = 'failed'
@@ -7830,8 +7877,10 @@ app.get('/api/system-config', authMiddleware, adminOnly, async (c) => {
     // Mask API key value for security
     const configs: Record<string, any> = {}
     for (const row of (rows.results as any[])) {
-      if (row.key === 'resend_api_key' && row.value) {
-        configs[row.key] = { value: row.value.slice(0, 8) + '****' + row.value.slice(-4), description: row.description, updated_at: row.updated_at, configured: true }
+      if ((row.key === 'resend_api_key' || row.key === 'cloudflare_email_api_token') && row.value) {
+        const v = String(row.value)
+        const masked = v.length > 12 ? v.slice(0, 6) + '****' + v.slice(-4) : '****'
+        configs[row.key] = { value: masked, description: row.description, updated_at: row.updated_at, configured: true }
       } else {
         configs[row.key] = { value: row.value, description: row.description, updated_at: row.updated_at, configured: !!row.value }
       }
@@ -7853,6 +7902,7 @@ app.put('/api/system-config', authMiddleware, adminOnly, async (c) => {
     const allowedKeys = [
       'resend_api_key', 'email_from_name', 'email_from_address', 'email_enabled',
       'resend_daily_limit', 'cloudflare_email_enabled',
+      'cloudflare_account_id', 'cloudflare_email_api_token',
       'weekly_report_enabled', 'weekly_report_day', 'weekly_report_hour',
     ]
     
@@ -7957,7 +8007,7 @@ app.post('/api/email-settings/test', authMiddleware, async (c) => {
 
     if (result === 'skipped') {
       return c.json({
-        error: 'Không gửi được: thiếu Resend API key / đã hết hạn mức Resend và chưa có Cloudflare Email binding, hoặc email bị tắt.',
+        error: 'Không gửi được: thiếu Resend API key / đã hết hạn mức Resend và chưa cấu hình Cloudflare (Account ID + API Token), hoặc email bị tắt.',
       }, 400)
     }
     if (result === 'failed') {

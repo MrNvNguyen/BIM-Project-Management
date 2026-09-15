@@ -12095,6 +12095,14 @@ async function loadEmailConfig() {
       const el = $('cfgResendDailyLimit')
       if (el) el.value = config.resend_daily_limit.value
     }
+    if (config.cloudflare_account_id?.value) {
+      const el = $('cfgCfAccountId')
+      if (el) el.value = config.cloudflare_account_id.value
+    }
+    if (config.cloudflare_email_api_token?.configured) {
+      const el = $('cfgCfEmailApiToken')
+      if (el) { el.value = ''; el.placeholder = '(đã cấu hình — nhập để thay đổi)' }
+    }
     const cfEnabled = config.cloudflare_email_enabled?.value !== '0'
     const cfChk = $('cfgCfEmailEnabled')
     if (cfChk) cfChk.checked = cfEnabled
@@ -12123,17 +12131,17 @@ function _applyEmailStatsToday(stats) {
   if (failEl) failEl.textContent = String(failed)
   if (hintEl) {
     hintEl.textContent = resend >= limit
-      ? `Resend đã đủ ${limit}/ngày — email tiếp theo dùng Cloudflare (nếu bật).`
+      ? `Resend đã đủ ${limit}/ngày — email tiếp theo dùng Cloudflare (nếu bật + đã cấu hình).`
       : `Còn ${Math.max(0, limit - resend)} slot Resend hôm nay trước khi fallback Cloudflare.`
   }
   if (boundEl) {
     if (stats.cloudflare_bound) {
       boundEl.textContent = stats.cloudflare_enabled === false
-        ? '⚠️ Binding OK — fallback đang tắt'
-        : '✅ Binding EMAIL sẵn sàng'
+        ? '⚠️ Đã cấu hình — fallback đang tắt'
+        : '✅ Account ID + API Token sẵn sàng'
       boundEl.className = 'text-sm font-semibold ' + (stats.cloudflare_enabled === false ? 'text-orange-600' : 'text-green-600')
     } else {
-      boundEl.textContent = '❌ Chưa có binding EMAIL (cần deploy wrangler)'
+      boundEl.textContent = '❌ Chưa nhập Account ID / API Token'
       boundEl.className = 'text-sm font-semibold text-red-600'
     }
   }
@@ -12142,6 +12150,8 @@ function _applyEmailStatsToday(stats) {
 async function saveCloudflareEmailConfig() {
   const fromAddress = $('cfgEmailFromAddress')?.value?.trim()
   const dailyLimit = $('cfgResendDailyLimit')?.value?.trim()
+  const accountId = $('cfgCfAccountId')?.value?.trim()
+  const apiToken = $('cfgCfEmailApiToken')?.value?.trim()
   const cfEnabled = $('cfgCfEmailEnabled')?.checked ? '1' : '0'
   const statusEl = $('cfEmailSaveStatus')
   const btn = $('btnSaveCfEmail')
@@ -12158,6 +12168,8 @@ async function saveCloudflareEmailConfig() {
     const payload = { cloudflare_email_enabled: cfEnabled }
     if (fromAddress) payload.email_from_address = fromAddress
     if (dailyLimit) payload.resend_daily_limit = String(Math.max(1, parseInt(dailyLimit, 10) || 100))
+    if (accountId) payload.cloudflare_account_id = accountId
+    if (apiToken) payload.cloudflare_email_api_token = apiToken
     await api('/system-config', { method: 'PUT', data: payload })
     if (statusEl) { statusEl.textContent = '✅ Đã lưu'; statusEl.className = 'text-sm text-green-600' }
     toast('Đã lưu cấu hình Cloudflare / hạn mức Resend', 'success')
