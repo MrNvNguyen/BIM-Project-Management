@@ -2672,15 +2672,16 @@
         </div>
 
         <!-- Cloudflare Email fallback -->
-        <div class="card mb-6 border border-orange-200 bg-gradient-to-br from-orange-50 to-amber-50">
+        <div class="card mb-6 border-2 border-sky-300 bg-gradient-to-br from-sky-50 to-slate-50" id="cloudflareEmailConfigCard">
           <div class="flex items-center gap-3 mb-4">
-            <div class="w-10 h-10 rounded-xl bg-orange-500 flex items-center justify-center flex-shrink-0">
-              <i class="fas fa-cloud text-white"></i>
+            <div class="w-10 h-10 rounded-xl bg-sky-600 flex items-center justify-center flex-shrink-0">
+              <i class="fab fa-cloudflare text-white text-lg"></i>
             </div>
-            <div>
+            <div class="flex-1">
               <h3 class="font-bold text-gray-800">Cloudflare Email (fallback)</h3>
               <p class="text-xs text-gray-500">Sau khi Resend đủ hạn mức ngày → chuyển sang Cloudflare Email Sending</p>
             </div>
+            <span class="text-xs font-semibold px-2 py-1 rounded-full bg-sky-100 text-sky-700">CF</span>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div>
@@ -2699,18 +2700,18 @@
           </div>
           <div class="flex flex-wrap items-center gap-4 mb-3">
             <label class="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-              <input type="checkbox" id="cfgCfEmailEnabled" class="rounded border-gray-300 text-primary" checked>
+              <input type="checkbox" id="cfgCfEmailEnabled" class="rounded border-gray-300 text-sky-600" checked>
               Bật fallback Cloudflare
             </label>
-            <button onclick="saveCloudflareEmailConfig()" class="btn-secondary flex items-center gap-2 text-sm" id="btnSaveCfEmail">
+            <button onclick="saveCloudflareEmailConfig()" class="btn-primary flex items-center gap-2 text-sm" id="btnSaveCfEmail" style="background:#0284c7;border-color:#0284c7">
               <i class="fas fa-save"></i> Lưu cấu hình Cloudflare
             </button>
             <span id="cfEmailSaveStatus" class="text-sm font-medium"></span>
           </div>
-          <div class="p-3 bg-white/70 border border-orange-100 rounded-lg text-xs text-gray-700">
-            <i class="fas fa-route mr-1 text-orange-500"></i>
+          <div class="p-3 bg-white border border-sky-100 rounded-lg text-xs text-gray-700">
+            <i class="fas fa-route mr-1 text-sky-600"></i>
             Mỗi email chỉ đi <strong>một</strong> kênh: Resend trước (đến hạn mức), sau đó Cloudflare.
-            Domain <code class="bg-orange-100 px-1 rounded">bimonecadvn.com</code> cần DNS/SPF/DKIM cho cả hai provider.
+            Domain <code class="bg-sky-100 px-1 rounded">bimonecadvn.com</code> cần DNS/SPF/DKIM cho cả hai provider.
             Binding Cloudflare gắn lúc deploy — không cần API key trên UI.
             <span id="emailProviderSplitHint" class="block mt-1 text-gray-500"></span>
           </div>
@@ -6554,7 +6555,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260915b"></script>
+<script src="/static/app.js?v=20260915c"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
