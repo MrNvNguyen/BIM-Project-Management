@@ -2447,7 +2447,7 @@ app.get('/api/tasks', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    const { project_id, status, assigned_to, overdue, search, limit: limitQ, offset: offsetQ } = c.req.query()
+    const { project_id, status, assigned_to, overdue, search, limit: limitQ, offset: offsetQ, discipline, phase, priority, category_id } = c.req.query()
     const limit = Math.min(Math.max(parseInt(limitQ || '500', 10) || 500, 1), 1000)
     const offset = Math.max(parseInt(offsetQ || '0', 10) || 0, 0)
     const searchQ = String(search || '').trim().slice(0, 80).replace(/[%_]/g, '')
@@ -2527,21 +2527,61 @@ app.get('/api/tasks', authMiddleware, async (c) => {
 
     if (project_id) { query += ` AND t.project_id = ?`; params.push(parseInt(project_id)) }
     if (status) { query += ` AND t.status = ?`; params.push(status) }
+    if (priority) { query += ` AND t.priority = ?`; params.push(priority) }
+    if (phase) { query += ` AND t.phase = ?`; params.push(phase) }
+    if (discipline) { query += ` AND t.discipline_code = ?`; params.push(discipline) }
+    if (category_id) { query += ` AND t.category_id = ?`; params.push(parseInt(category_id)) }
     if (assigned_to) { query += ` AND t.assigned_to = ?`; params.push(parseInt(assigned_to)) }
     if (overdue === '1') { query += ` AND t.due_date IS NOT NULL AND t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled')` }
     if (searchQ) {
       const like = `%${searchQ}%`
-      query += ` AND (
-        t.title LIKE ? COLLATE NOCASE
-        OR u1.full_name LIKE ? COLLATE NOCASE
-        OR cat.name LIKE ? COLLATE NOCASE
-        OR p.code LIKE ? COLLATE NOCASE
-        OR p.name LIKE ? COLLATE NOCASE
-      )`
-      params.push(like, like, like, like, like)
+      // Khớp phụ trách không dấu: Lượng ≈ Lương (SQLite LIKE phân biệt dấu)
+      const foldVn = (s: string) => String(s || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd')
+        .replace(/Đ/g, 'D')
+        .toLowerCase()
+      const foldQ = foldVn(searchQ)
+      let assigneeIds: number[] = []
+      try {
+        const usersRes = await db.prepare(`SELECT id, full_name FROM users WHERE is_active = 1`).all()
+        assigneeIds = (usersRes.results || [])
+          .filter((u: any) => foldVn(u.full_name).includes(foldQ))
+          .map((u: any) => Number(u.id))
+          .filter((id: number) => Number.isFinite(id))
+      } catch (_) { /* ignore */ }
+
+      if (assigneeIds.length > 0) {
+        const placeholders = assigneeIds.map(() => '?').join(',')
+        query += ` AND (
+          t.title LIKE ? COLLATE NOCASE
+          OR u1.full_name LIKE ? COLLATE NOCASE
+          OR cat.name LIKE ? COLLATE NOCASE
+          OR p.code LIKE ? COLLATE NOCASE
+          OR p.name LIKE ? COLLATE NOCASE
+          OR t.assigned_to IN (${placeholders})
+        )`
+        params.push(like, like, like, like, like, ...assigneeIds)
+      } else {
+        query += ` AND (
+          t.title LIKE ? COLLATE NOCASE
+          OR u1.full_name LIKE ? COLLATE NOCASE
+          OR cat.name LIKE ? COLLATE NOCASE
+          OR p.code LIKE ? COLLATE NOCASE
+          OR p.name LIKE ? COLLATE NOCASE
+        )`
+        params.push(like, like, like, like, like)
+      }
     }
 
-    query += ` ORDER BY t.due_date ASC, t.priority DESC LIMIT ? OFFSET ?`
+    // Khi có filter hẹp (status/discipline/search/…) ưu tiên task mới cập nhật để không “mất” task trong LIMIT
+    const hasNarrowFilter = !!(status || priority || phase || discipline || category_id || searchQ || overdue === '1' || assigned_to)
+    if (hasNarrowFilter) {
+      query += ` ORDER BY t.updated_at DESC, t.due_date ASC LIMIT ? OFFSET ?`
+    } else {
+      query += ` ORDER BY t.due_date ASC, t.priority DESC LIMIT ? OFFSET ?`
+    }
     params.push(limit, offset)
 
     const result = await db.prepare(query).bind(...params).all()

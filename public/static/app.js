@@ -13,8 +13,81 @@ function getXLSXCore()     { return window._XLSXCore   || window.XLSX }
 const API_BASE = ''
 let currentUser = null
 let authToken = null
-const TASK_LIST_LIMIT = 500
+const TASK_LIST_LIMIT = 1000
 let _projectDetailFetchCache = { projectId: null, tasks: [], categories: [] }
+
+function _foldVn(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+}
+
+function _taskListFilters() {
+  return {
+    projectId: _cbGetValue('taskProjectCombobox') || '',
+    overdueOnly: !!$('taskOverdueFilter')?.checked,
+    search: ($('taskSearch')?.value || '').trim(),
+    status: $('taskStatusFilter')?.value || '',
+    priority: $('taskPriorityFilter')?.value || '',
+    phase: $('taskPhaseFilter')?.value || '',
+    discipline: _cbGetValue('taskDisciplineFilterCombobox') || '',
+    categoryId: _cbGetValue('taskCategoryCombobox') || '',
+  }
+}
+
+async function fetchTasksForList(opts = {}) {
+  // Hỗ trợ gọi cũ: fetchTasksForList(projectId, overdueOnly, search)
+  if (typeof opts === 'string' || typeof opts === 'number') {
+    opts = {
+      projectId: String(opts || ''),
+      overdueOnly: !!arguments[1],
+      search: String(arguments[2] || '').trim(),
+    }
+  }
+  const f = { ..._taskListFilters(), ...opts }
+  let url = `/tasks?limit=${TASK_LIST_LIMIT}&offset=0`
+  if (f.projectId) url += `&project_id=${encodeURIComponent(f.projectId)}`
+  if (f.overdueOnly) url += `&overdue=1`
+  if (f.search) url += `&search=${encodeURIComponent(f.search)}`
+  if (f.status) url += `&status=${encodeURIComponent(f.status)}`
+  if (f.priority) url += `&priority=${encodeURIComponent(f.priority)}`
+  if (f.phase) url += `&phase=${encodeURIComponent(f.phase)}`
+  if (f.discipline) url += `&discipline=${encodeURIComponent(f.discipline)}`
+  if (f.categoryId) url += `&category_id=${encodeURIComponent(f.categoryId)}`
+  const resp = await api(url)
+  return Array.isArray(resp) ? resp : (resp?.data || [])
+}
+
+function _taskListOverdueOnly() {
+  return !!$('taskOverdueFilter')?.checked
+}
+
+function _taskListSearch() {
+  return ($('taskSearch')?.value || '').trim()
+}
+
+let _taskSearchTimer = null
+function onTaskSearchInput() {
+  clearTimeout(_taskSearchTimer)
+  _taskSearchTimer = setTimeout(() => { reloadTaskList() }, 300)
+}
+
+async function onTaskSearchCommit() {
+  return reloadTaskList()
+}
+
+/** Refetch từ server với mọi filter (tránh mất task do LIMIT + lọc client). */
+async function reloadTaskList() {
+  try {
+    allTasks = await fetchTasksForList()
+    filterTasks()
+  } catch (e) {
+    toast('Lỗi tải task: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
 function _invalidateProjectDetailCache() {
   _projectDetailFetchCache = { projectId: null, tasks: [], categories: [] }
 }
@@ -3173,40 +3246,6 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   }
 })
-async function fetchTasksForList(projectId = '', overdueOnly = false, search = '') {
-  let url = `/tasks?limit=${TASK_LIST_LIMIT}&offset=0`
-  if (projectId) url += `&project_id=${encodeURIComponent(projectId)}`
-  if (overdueOnly) url += `&overdue=1`
-  const q = String(search || '').trim()
-  if (q) url += `&search=${encodeURIComponent(q)}`
-  const resp = await api(url)
-  return Array.isArray(resp) ? resp : (resp?.data || [])
-}
-
-function _taskListOverdueOnly() {
-  return !!$('taskOverdueFilter')?.checked
-}
-
-function _taskListSearch() {
-  return ($('taskSearch')?.value || '').trim()
-}
-
-let _taskSearchTimer = null
-function onTaskSearchInput() {
-  clearTimeout(_taskSearchTimer)
-  _taskSearchTimer = setTimeout(() => { onTaskSearchCommit() }, 300)
-}
-
-async function onTaskSearchCommit() {
-  const projectId = _cbGetValue('taskProjectCombobox') || ''
-  try {
-    allTasks = await fetchTasksForList(projectId, _taskListOverdueOnly(), _taskListSearch())
-    filterTasks()
-  } catch (e) {
-    toast('Lỗi tải task: ' + e.message, 'error')
-  }
-}
-
 async function loadTasks() {
   try {
     if (!allProjects.length) await fetchProjectsCached(false, 'slim')
@@ -3215,8 +3254,8 @@ async function loadTasks() {
     // Lưu lại giá trị filter đang chọn trước khi rebuild combobox
     const prevProjectFilter = _cbGetValue('taskProjectCombobox') || ''
 
-    // Khi đã chọn dự án: fetch theo project_id (cùng RBAC + phạm vi như Chi tiết dự án)
-    allTasks = await fetchTasksForList(prevProjectFilter, _taskListOverdueOnly(), _taskListSearch())
+    // Fetch với toàn bộ filter hiện tại (server-side trước LIMIT)
+    allTasks = await fetchTasksForList({ projectId: prevProjectFilter })
 
     // Populate project role cache for current user
     refreshProjectRoleCache()
@@ -3244,6 +3283,9 @@ async function loadTasks() {
       const discItems = allDisciplines.map(d => ({ value: d.code, label: `${d.code} - ${d.name}` }))
       if (_cbState['taskDisciplineFilterCombobox']) {
         _cbSetItems('taskDisciplineFilterCombobox', discItems, true)
+        if (_cbState['taskDisciplineFilterCombobox']) {
+          _cbState['taskDisciplineFilterCombobox'].onchange = () => reloadTaskList()
+        }
       } else {
         createCombobox('taskDisciplineFilterCombobox', {
           placeholder: 'Tất cả bộ môn',
@@ -3251,7 +3293,7 @@ async function loadTasks() {
           fullWidth: true,
           teleport: true,
           dropdownMaxHeight: '280px',
-          onchange: () => filterTasks()
+          onchange: () => reloadTaskList()
         })
       }
     }
@@ -3259,7 +3301,6 @@ async function loadTasks() {
     // Build category combobox (categories của dự án đang lọc)
     await updateTaskCategoryFilter(prevProjectFilter)
 
-    // Áp lại filter hiện tại thay vì render toàn bộ
     filterTasks()
   } catch (e) { toast('Lỗi tải task: ' + e.message, 'error') }
 }
@@ -3581,22 +3622,15 @@ document.addEventListener('click', function(e) {
 // Called when project combobox selection changes — refetch từ server (không chỉ lọc client)
 async function onTaskProjectFilterChange(projectId) {
   try {
-    allTasks = await fetchTasksForList(projectId || '', _taskListOverdueOnly(), _taskListSearch())
     await updateTaskCategoryFilter(projectId || '')
-    filterTasks()
+    await reloadTaskList()
   } catch (e) {
     toast('Lỗi tải task: ' + e.message, 'error')
   }
 }
 
 async function onTaskOverdueFilterChange() {
-  const projectId = _cbGetValue('taskProjectCombobox') || ''
-  try {
-    allTasks = await fetchTasksForList(projectId, _taskListOverdueOnly(), _taskListSearch())
-    filterTasks()
-  } catch (e) {
-    toast('Lỗi tải task: ' + e.message, 'error')
-  }
+  return reloadTaskList()
 }
 
 // Rebuild category combobox items based on selected project.
@@ -3639,13 +3673,16 @@ async function updateTaskCategoryFilter(selectedProjectId = '') {
   if (wrapper.querySelector('[id$="_wrap"]')) {
     // Combobox already rendered – just refresh items
     _cbSetItems('taskCategoryCombobox', items, keepValue)
+    if (_cbState['taskCategoryCombobox']) {
+      _cbState['taskCategoryCombobox'].onchange = () => reloadTaskList()
+    }
   } else {
     createCombobox('taskCategoryCombobox', {
       placeholder: 'Tất cả hạng mục',
       items,
       value: keepValue ? prevVal : '',
       fullWidth: true,
-      onchange: () => filterTasks()
+      onchange: () => reloadTaskList()
     })
   }
 
@@ -4155,7 +4192,8 @@ function refreshSubtaskBadge(taskId, subtasks) {
 }
 
 function filterTasks() {
-  const search   = $('taskSearch').value.toLowerCase()
+  const searchRaw = $('taskSearch').value || ''
+  const search   = _foldVn(searchRaw)
   const status   = $('taskStatusFilter').value
   const priority = $('taskPriorityFilter').value
   const project  = _cbGetValue('taskProjectCombobox')
@@ -4164,8 +4202,9 @@ function filterTasks() {
   const discipline = _cbGetValue('taskDisciplineFilterCombobox') || ''
   const onlyOverdue = $('taskOverdueFilter').checked
 
+  // Server đã lọc theo filter hẹp; client giữ lớp an toàn + tìm không dấu (Lượng ≈ Lương)
   const filtered = allTasks.filter(t =>
-    (!search   || t.title.toLowerCase().includes(search) || (t.assigned_to_name||'').toLowerCase().includes(search) || (t.category_name||'').toLowerCase().includes(search)) &&
+    (!search   || _foldVn(t.title).includes(search) || _foldVn(t.assigned_to_name).includes(search) || _foldVn(t.category_name).includes(search) || _foldVn(t.project_code).includes(search) || _foldVn(t.project_name).includes(search)) &&
     (!status   || t.status === status) &&
     (!priority || t.priority === priority) &&
     (!project  || String(t.project_id) === project) &&
