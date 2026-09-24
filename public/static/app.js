@@ -14,6 +14,8 @@ const API_BASE = ''
 let currentUser = null
 let authToken = null
 const TASK_LIST_LIMIT = 1000
+/** Fetch theo 1 dự án (chi tiết / Gantt / picker) — cao hơn để tránh cắt task */
+const TASK_PROJECT_LIMIT = 5000
 let _projectDetailFetchCache = { projectId: null, tasks: [], categories: [] }
 
 function _foldVn(s) {
@@ -1676,9 +1678,10 @@ let _lastSeenNotifId = 0   // Track highest notif id seen — detect new arrival
 
 async function loadNotifications() {
   try {
-    const [notifs, unreadChat] = await Promise.all([
+    const [notifs, unreadChat, summary] = await Promise.all([
       api('/notifications'),
-      api('/messages/unread').catch(() => [])
+      api('/messages/unread').catch(() => []),
+      api('/notifications/summary').catch(() => null)
     ])
 
     // ── Detect new notifications & fire browser Notification ──────
@@ -1715,10 +1718,12 @@ async function loadNotifications() {
       _chatUnreadMap[`${r.context_type}_${r.context_id}`] = r.count
     })
 
-    const unread = notifs.filter(n => !n.is_read).length
+    const unread = summary?.unread_count != null
+      ? Number(summary.unread_count)
+      : notifs.filter(n => !n.is_read).length
     const badge = $('notifBadge')
     if (badge) {
-      badge.textContent = unread
+      badge.textContent = unread > 99 ? '99+' : unread
       badge.style.display = unread > 0 ? 'flex' : 'none'
     }
     const list = $('notifList')
@@ -1824,18 +1829,11 @@ async function markChatNotifsRead(contextType, contextId) {
     // Remove from local unread map immediately for instant UI update
     delete _chatUnreadMap[`${contextType}_${contextId}`]
     updateChatUnreadBadges()
-    // Mark on server via read-all for this context (batch via notifications list)
-    const notifs = await api('/notifications')
-    const toRead = notifs.filter(n =>
-      !n.is_read &&
-      (n.type === 'chat_message' || n.type === 'chat_mention') &&
-      n.related_type === contextType &&
-      String(n.related_id) === String(contextId)
-    )
-    if (toRead.length > 0) {
-      await Promise.all(toRead.map(n => api(`/notifications/${n.id}/read`, { method: 'patch' })))
-      loadNotifications()
-    }
+    await api('/notifications/read-context', {
+      method: 'patch',
+      data: { related_type: contextType, related_id: contextId }
+    })
+    loadNotifications()
   } catch (e) { /* silent */ }
 }
 
@@ -2258,7 +2256,7 @@ async function openProjectDetail(id, openChatTab = false) {
     } else {
       ;[categories, tasks] = await Promise.all([
         api(`/projects/${id}/categories`),
-        api(`/tasks?project_id=${id}&limit=${TASK_LIST_LIMIT}`)
+        api(`/tasks?project_id=${id}&limit=${TASK_PROJECT_LIMIT}`)
       ])
       _projectDetailFetchCache = { projectId: pid, categories, tasks }
     }
@@ -6678,8 +6676,8 @@ async function loadTimesheets() {
     const memberId  = canSeeAll ? (_cbGetValue('tsUserFilterCombobox') || '') : ''
     const status    = canSeeAll ? ($('tsStatusFilter')?.value || '') : ''
 
-    // Build API URL
-    let url = '/timesheets?'
+    // Build API URL — limit cao + COUNT KPI server-side (không tin length sau LIMIT)
+    let url = '/timesheets?limit=5000&'
     if (month)     url += `month=${month}&`
     if (year)      url += `year=${year}&`
     if (projectId) url += `project_id=${projectId}&`
@@ -6693,8 +6691,15 @@ async function loadTimesheets() {
     renderTimesheetTable(allTimesheets, apiSummary)
 
     // ------ Summary KPI cards ------
-    const pending  = allTimesheets.filter(t => t.status === 'submitted').length
-    const approved = allTimesheets.filter(t => t.status === 'approved').length
+    const pending  = apiSummary?.pending_count != null
+      ? Number(apiSummary.pending_count)
+      : allTimesheets.filter(t => t.status === 'submitted').length
+    const approved = apiSummary?.approved_count != null
+      ? Number(apiSummary.approved_count)
+      : allTimesheets.filter(t => t.status === 'approved').length
+    const totalRows = apiSummary?.total_count != null
+      ? Number(apiSummary.total_count)
+      : allTimesheets.length
     // Đếm ngày nghỉ: full leave = 1 ngày, half_day = 0.5 ngày
     const leaveDays = allTimesheets.reduce((sum, t) => {
       if (!t.day_type || t.day_type === 'work' || t.day_type === 'business_trip') return sum
@@ -6707,13 +6712,17 @@ async function loadTimesheets() {
                                 : allTimesheets.reduce((s, t) => s + (t.overtime_hours || 0), 0)
     const totalH   = apiSummary ? (apiSummary.total_hours || 0) : totalReg + totalOT
 
-    if ($('tsCardTotal'))       $('tsCardTotal').textContent       = allTimesheets.length
+    if ($('tsCardTotal'))       $('tsCardTotal').textContent       = totalRows
     if ($('tsCardLeave'))       $('tsCardLeave').textContent       = leaveDays
     if ($('tsCardPending'))     $('tsCardPending').textContent     = pending
     if ($('tsCardApproved'))    $('tsCardApproved').textContent    = approved
     if ($('tsCardHours'))       $('tsCardHours').textContent       = totalH + 'h'
     if ($('tsCardHoursDetail')) $('tsCardHoursDetail').textContent = `HC: ${totalReg}h | OT: ${totalOT}h`
-    if ($('tsFilterCount'))     $('tsFilterCount').textContent     = allTimesheets.length
+    if ($('tsFilterCount')) {
+      $('tsFilterCount').textContent = apiSummary?.truncated
+        ? `${allTimesheets.length}/${totalRows}+`
+        : String(allTimesheets.length)
+    }
 
     // Bulk-approve button — chỉ hiện với system_admin và project_admin
     const bulkBtn = $('tsBulkApproveBtn')
@@ -7443,12 +7452,20 @@ async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, lock
   if (spinner) spinner.style.display = 'inline'
   if (spinnerMulti) spinnerMulti.style.display = 'inline'
   try {
-    const tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_LIST_LIMIT}`)
+    // exclude_done trước LIMIT; hạng mục lọc client trên cache đầy đủ
+    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1`)
     if (token !== null && token !== _tsProjChangeToken) return
-    _tsCachedTasks = Array.isArray(tasks) ? tasks : []
-    // Lọc theo hạng mục nếu đang có category được chọn
+    tasks = Array.isArray(tasks) ? tasks : []
+    // Giữ task đã chọn nếu đã completed (đang sửa timesheet cũ)
+    if (selectedTaskId && !tasks.some(t => String(t.id) === String(selectedTaskId))) {
+      try {
+        const one = await api(`/tasks/${selectedTaskId}`)
+        if (one && one.id) tasks = [one, ...tasks]
+      } catch (_) { /* ignore */ }
+    }
+    _tsCachedTasks = tasks
     const selCatId = parseInt($('tsCategoryHidden')?.value) || null
-    const tasksToShow = selCatId ? _tsCachedTasks.filter(t => t.category_id === selCatId) : _tsCachedTasks
+    const tasksToShow = selCatId ? tasks.filter(t => t.category_id === selCatId) : tasks
     _initTsTaskCombobox(tasksToShow, selectedTaskId, locked)
     // Re-render multi rows với task mới
     _tsRenderMultiRows()
@@ -8507,10 +8524,28 @@ async function rejectTimesheet(id) {
 }
 
 async function bulkApproveTimesheets() {
-  const pending = allTimesheets.filter(t => t.status === 'submitted')
-  if (!pending.length) { toast('Không có timesheet nào đang chờ duyệt', 'info'); return }
-  if (!confirm(`Duyệt tất cả ${pending.length} timesheet đang chờ?`)) return
+  // Refetch submitted theo filter hiện tại (không tin allTimesheets đã LIMIT)
+  const month     = $('tsMonthFilter')?.value   || ''
+  const year      = $('tsYearFilter')?.value    || ''
+  const projectId = _cbGetValue('tsProjectFilterCombobox')
+  const canSeeAll = currentUser && ['system_admin', 'project_admin'].includes(currentUser.role)
+  const memberId  = canSeeAll ? (_cbGetValue('tsUserFilterCombobox') || '') : ''
+  let url = '/timesheets?status=submitted&limit=5000&'
+  if (month)     url += `month=${month}&`
+  if (year)      url += `year=${year}&`
+  if (projectId) url += `project_id=${projectId}&`
+  if (memberId)  url += `member_id=${memberId}&`
   try {
+    const resp = await api(url)
+    const rows = Array.isArray(resp) ? resp : (resp.timesheets || [])
+    const pending = rows.filter(t => t.status === 'submitted')
+    if (!pending.length) { toast('Không có timesheet nào đang chờ duyệt', 'info'); return }
+    const totalPending = resp?.summary?.pending_count != null ? Number(resp.summary.pending_count) : pending.length
+    if (resp?.summary?.truncated && totalPending > pending.length) {
+      toast(`Có ${totalPending} chờ duyệt nhưng chỉ tải được ${pending.length}. Thu hẹp tháng/năm rồi thử lại.`, 'warning')
+      return
+    }
+    if (!confirm(`Duyệt tất cả ${pending.length} timesheet đang chờ?`)) return
     const ids = pending.map(t => t.id)
     const result = await api('/timesheets/bulk-approve', { method: 'post', data: { ids } })
     toast(`Đã duyệt ${result.approved}/${pending.length} timesheet`, 'success')
@@ -8561,7 +8596,7 @@ async function renderGantt() {
       categories = _projectDetailFetchCache.categories
     } else {
       ;[tasks, categories] = await Promise.all([
-        api(`/tasks?project_id=${projectId}&limit=${TASK_LIST_LIMIT}`),
+        api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}`),
         api(`/projects/${projectId}/categories`)
       ])
       _projectDetailFetchCache = { projectId: pid, tasks, categories }

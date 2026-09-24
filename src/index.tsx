@@ -2447,8 +2447,11 @@ app.get('/api/tasks', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    const { project_id, status, assigned_to, overdue, search, limit: limitQ, offset: offsetQ, discipline, phase, priority, category_id } = c.req.query()
-    const limit = Math.min(Math.max(parseInt(limitQ || '500', 10) || 500, 1), 1000)
+    const { project_id, status, assigned_to, overdue, search, limit: limitQ, offset: offsetQ, discipline, phase, priority, category_id, exclude_done } = c.req.query()
+    // Theo dự án: cho phép nhiều hơn (detail/Gantt); danh sách toàn cục: mặc định thấp hơn
+    const defaultLimit = project_id ? 5000 : 1000
+    const maxLimit = project_id ? 10000 : 2000
+    const limit = Math.min(Math.max(parseInt(limitQ || String(defaultLimit), 10) || defaultLimit, 1), maxLimit)
     const offset = Math.max(parseInt(offsetQ || '0', 10) || 0, 0)
     const searchQ = String(search || '').trim().slice(0, 80).replace(/[%_]/g, '')
 
@@ -2527,6 +2530,7 @@ app.get('/api/tasks', authMiddleware, async (c) => {
 
     if (project_id) { query += ` AND t.project_id = ?`; params.push(parseInt(project_id)) }
     if (status) { query += ` AND t.status = ?`; params.push(status) }
+    if (exclude_done === '1') { query += ` AND t.status NOT IN ('completed','cancelled')` }
     if (priority) { query += ` AND t.priority = ?`; params.push(priority) }
     if (phase) { query += ` AND t.phase = ?`; params.push(phase) }
     if (discipline) { query += ` AND t.discipline_code = ?`; params.push(discipline) }
@@ -2576,9 +2580,12 @@ app.get('/api/tasks', authMiddleware, async (c) => {
     }
 
     // Khi có filter hẹp (status/discipline/search/…) ưu tiên task mới cập nhật để không “mất” task trong LIMIT
-    const hasNarrowFilter = !!(status || priority || phase || discipline || category_id || searchQ || overdue === '1' || assigned_to)
+    // Theo dự án không filter: ưu tiên task đang mở trước completed (picker/detail gần đầy LIMIT)
+    const hasNarrowFilter = !!(status || priority || phase || discipline || category_id || searchQ || overdue === '1' || assigned_to || exclude_done === '1')
     if (hasNarrowFilter) {
       query += ` ORDER BY t.updated_at DESC, t.due_date ASC LIMIT ? OFFSET ?`
+    } else if (project_id) {
+      query += ` ORDER BY CASE WHEN t.status IN ('completed','cancelled') THEN 1 ELSE 0 END, t.due_date ASC, t.priority DESC LIMIT ? OFFSET ?`
     } else {
       query += ` ORDER BY t.due_date ASC, t.priority DESC LIMIT ? OFFSET ?`
     }
@@ -3506,6 +3513,8 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
     const qp = c.req.query()
     const { project_id, month, year, status } = qp
     const user_id = qp.user_id || qp.member_id || ''
+    const limit = Math.min(Math.max(parseInt(qp.limit || '2000', 10) || 2000, 1), 5000)
+    const offset = Math.max(parseInt(qp.offset || '0', 10) || 0, 0)
 
     let query = `
       SELECT ts.*,
@@ -3583,8 +3592,31 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       params.push(start, endY)
     }
 
-    query += ' ORDER BY ts.work_date DESC, ts.id DESC LIMIT 500'
-    const result = await db.prepare(query).bind(...params).all()
+    // COUNT trạng thái đầy đủ (không bị LIMIT cắt) — KPI / bulk-approve
+    const countQuery = `
+      SELECT
+        COUNT(*) AS total_count,
+        SUM(CASE WHEN ts.status = 'submitted' THEN 1 ELSE 0 END) AS pending_count,
+        SUM(CASE WHEN ts.status = 'approved' THEN 1 ELSE 0 END) AS approved_count
+      FROM timesheets ts
+      WHERE 1=1
+    `
+    // Mirror WHERE từ query chính (bỏ JOIN chỉ dùng cho SELECT)
+    let countQ = countQuery
+    const countParams: any[] = []
+    // Tái dùng cùng nhánh phân quyền + filter bằng cách cắt từ "WHERE 1=1" của query đã build
+    const whereIdx = query.indexOf('WHERE 1=1')
+    const whereClause = whereIdx >= 0 ? query.slice(whereIdx + 'WHERE 1=1'.length) : ''
+    // whereClause hiện chứa chứa AND ... chưa có ORDER/LIMIT
+    countQ += whereClause
+    countParams.push(...params)
+
+    query += ' ORDER BY ts.work_date DESC, ts.id DESC LIMIT ? OFFSET ?'
+    const listParams = [...params, limit, offset]
+    const [result, countRow] = await Promise.all([
+      db.prepare(query).bind(...listParams).all(),
+      db.prepare(countQ).bind(...countParams).first() as Promise<any>,
+    ])
 
     // Summary: simple SUM — no extra JOIN
     const sumQuery = `
@@ -3664,12 +3696,19 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       task_entries: taskEntriesMap[t.id] || []
     }))
 
+    const totalCount = Number(countRow?.total_count) || 0
     return c.json({
       timesheets: timesheetsWithEntries,
       summary: {
         total_regular_hours: summary?.total_regular_hours || 0,
         total_overtime_hours: summary?.total_overtime_hours || 0,
-        total_hours: summary?.total_hours || 0
+        total_hours: summary?.total_hours || 0,
+        total_count: totalCount,
+        pending_count: Number(countRow?.pending_count) || 0,
+        approved_count: Number(countRow?.approved_count) || 0,
+        truncated: totalCount > timesheetsWithEntries.length,
+        limit,
+        offset,
       }
     })
   } catch (e: any) {
@@ -7817,10 +7856,13 @@ app.get('/api/notifications', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
+    const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '100', 10) || 100, 1), 200)
+    // Ưu tiên chưa đọc trước — tránh LIMIT che mất unread cũ
     const notifications = await db.prepare(
       `SELECT id, user_id, type, title, message, related_type, related_id, is_read, created_at
-       FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 50`
-    ).bind(user.id).all()
+       FROM notifications WHERE user_id = ?
+       ORDER BY is_read ASC, id DESC LIMIT ?`
+    ).bind(user.id, limit).all()
     return c.json(notifications.results)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -7867,6 +7909,30 @@ app.patch('/api/notifications/read-all', authMiddleware, async (c) => {
     const user = c.get('user') as any
     await db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0').bind(user.id).run()
     return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+/** Đánh dấu đã đọc theo ngữ cảnh chat (không phụ thuộc LIMIT danh sách). */
+app.patch('/api/notifications/read-context', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const body = await c.req.json().catch(() => ({})) as any
+    const relatedType = String(body?.related_type || '').trim()
+    const relatedId = parseInt(body?.related_id, 10)
+    if (!relatedType || !Number.isFinite(relatedId)) {
+      return c.json({ error: 'related_type và related_id bắt buộc' }, 400)
+    }
+    const result = await db.prepare(`
+      UPDATE notifications
+      SET is_read = 1
+      WHERE user_id = ? AND is_read = 0
+        AND related_type = ? AND related_id = ?
+        AND type IN ('chat_message', 'chat_mention')
+    `).bind(user.id, relatedType, relatedId).run()
+    return c.json({ success: true, updated: result.meta?.changes || 0 })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
