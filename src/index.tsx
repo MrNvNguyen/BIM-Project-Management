@@ -3786,6 +3786,222 @@ app.post('/api/timesheets/bulk-import', authMiddleware, adminOnly, async (c) => 
   }
 })
 
+// ── Giới hạn giờ HC / ngày (8h), trừ nghỉ phép / nửa ngày ──────────────────
+const TS_WORK_LIKE_TYPES = ['work', 'half_day_am', 'half_day_pm', 'business_trip'] as const
+const TS_HALF_DAY_TYPES = ['half_day_am', 'half_day_pm'] as const
+/** Trần OT / ngày (sau khi đã đủ HC). Tránh lách bằng OT vô hạn. */
+const TS_MAX_OT_PER_DAY = 8
+
+type TimesheetDayBudget = {
+  dayCap: number
+  usedReg: number
+  remaining: number
+  usedOt: number
+  remainingOt: number
+  /** Đã đủ giờ HC trong ngày (trước khi cộng bản ghi đang nhập) */
+  hcFilled: boolean
+  blocked: boolean
+  blockReason?: string
+  leaveHint?: string
+}
+
+/** Ngân sách giờ HC trong ngày: nghỉ cả ngày → chặn; nửa ngày → cap 4h; còn lại 8h − đã khai. */
+async function getTimesheetDayBudget(
+  db: D1Database,
+  userId: number,
+  workDate: string,
+  opts: {
+    excludeTimesheetId?: number | null
+    excludeProjectId?: number | null
+    submittingDayType?: string | null
+  } = {}
+): Promise<TimesheetDayBudget> {
+  let dayCap = 8
+  let blocked = false
+  let blockReason: string | undefined
+  let leaveHint: string | undefined
+
+  // 1) Đơn nghỉ pending/approved bao phủ ngày
+  const leaves = await db.prepare(`
+    SELECT leave_type, status
+    FROM leave_requests
+    WHERE user_id = ?
+      AND status IN ('pending', 'approved')
+      AND start_date <= ?
+      AND end_date >= ?
+    ORDER BY CASE WHEN leave_type IN ('half_day_am','half_day_pm') THEN 1 ELSE 0 END ASC
+  `).bind(userId, workDate, workDate).all()
+
+  for (const lr of (leaves.results || []) as any[]) {
+    const stLabel = lr.status === 'approved' ? 'đã duyệt' : 'đang chờ duyệt'
+    if ((TS_HALF_DAY_TYPES as readonly string[]).includes(lr.leave_type)) {
+      dayCap = Math.min(dayCap, 4)
+      leaveHint = leaveHint || `Đơn nghỉ nửa ngày (${stLabel}) — còn tối đa 4h HC`
+    } else {
+      blocked = true
+      dayCap = 0
+      blockReason = `Ngày ${workDate} đã có đơn nghỉ phép (${lr.leave_type}, ${stLabel}). Không thể khai timesheet công việc.`
+      leaveHint = blockReason
+      break
+    }
+  }
+
+  // 2) Dòng timesheet nghỉ (project_id NULL) — tạo khi duyệt phép
+  if (!blocked) {
+    const leaveRows = await db.prepare(`
+      SELECT id, day_type FROM timesheets
+      WHERE user_id = ? AND work_date = ? AND project_id IS NULL
+    `).bind(userId, workDate).all()
+
+    for (const row of (leaveRows.results || []) as any[]) {
+      if (opts.excludeTimesheetId && Number(row.id) === Number(opts.excludeTimesheetId)) continue
+      const dt = row.day_type || 'work'
+      if ((TS_HALF_DAY_TYPES as readonly string[]).includes(dt)) {
+        dayCap = Math.min(dayCap, 4)
+        leaveHint = leaveHint || 'Đã ghi nhận nghỉ nửa ngày — còn tối đa 4h HC'
+      } else if (!(TS_WORK_LIKE_TYPES as readonly string[]).includes(dt)) {
+        blocked = true
+        dayCap = 0
+        blockReason = `Ngày ${workDate} đã ghi nhận nghỉ (${dt}). Không thể khai timesheet công việc.`
+        leaveHint = blockReason
+        break
+      }
+    }
+  }
+
+  // 3) Form chọn nửa ngày (khai công buổi còn lại) → cap 4h
+  const submitType = opts.submittingDayType || null
+  if (!blocked && submitType && (TS_HALF_DAY_TYPES as readonly string[]).includes(submitType)) {
+    dayCap = Math.min(dayCap, 4)
+    leaveHint = leaveHint || 'Nghỉ nửa ngày — còn tối đa 4h HC'
+  }
+
+  // 4) Giờ HC + OT đã khai trên các dòng công việc khác
+  let usedSql = `
+    SELECT
+      COALESCE(SUM(regular_hours), 0) AS used_reg,
+      COALESCE(SUM(IFNULL(overtime_hours, 0)), 0) AS used_ot
+    FROM timesheets
+    WHERE user_id = ? AND work_date = ?
+      AND project_id IS NOT NULL
+      AND day_type IN ('work','half_day_am','half_day_pm','business_trip')
+  `
+  const usedParams: any[] = [userId, workDate]
+  if (opts.excludeTimesheetId) {
+    usedSql += ` AND id != ?`
+    usedParams.push(opts.excludeTimesheetId)
+  }
+  if (opts.excludeProjectId != null && opts.excludeProjectId !== 0) {
+    usedSql += ` AND project_id != ?`
+    usedParams.push(opts.excludeProjectId)
+  }
+  const usedRow = await db.prepare(usedSql).bind(...usedParams).first() as any
+  const usedReg = Number(usedRow?.used_reg) || 0
+  const usedOt = Number(usedRow?.used_ot) || 0
+  const remaining = Math.max(0, dayCap - usedReg)
+  const remainingOt = Math.max(0, TS_MAX_OT_PER_DAY - usedOt)
+  const hcFilled = usedReg >= dayCap - 0.001
+
+  return {
+    dayCap, usedReg, remaining, usedOt, remainingOt, hcFilled,
+    blocked, blockReason, leaveHint,
+  }
+}
+
+/** Kiểm tra HC + OT theo ngân sách ngày. Trả về object lỗi hoặc null nếu OK. */
+function validateTimesheetHoursAgainstBudget(
+  budget: TimesheetDayBudget,
+  totalReg: number,
+  totalOT: number
+): { error: string; code: string; payload: Record<string, any> } | null {
+  if (budget.blocked) {
+    return {
+      error: budget.blockReason || 'Ngày này đã nghỉ phép, không thể khai timesheet công việc.',
+      code: 'leave_blocked',
+      payload: { leave_blocked: true, day_cap: budget.dayCap, used: budget.usedReg, remaining: 0 },
+    }
+  }
+  if (totalReg > budget.remaining + 0.001) {
+    const capLabel = budget.dayCap < 8 ? `${budget.dayCap}h (đã trừ nghỉ nửa ngày)` : '8h'
+    return {
+      error: `Tổng giờ HC vượt giới hạn ${capLabel}/ngày. Đã dùng ${budget.usedReg}h, còn lại ${budget.remaining}h. Bạn đang nhập ${totalReg}h.`,
+      code: 'hours_exceeded',
+      payload: {
+        hours_exceeded: true,
+        day_cap: budget.dayCap,
+        used: budget.usedReg,
+        remaining: budget.remaining,
+        leave_hint: budget.leaveHint,
+      },
+    }
+  }
+  if (totalOT > 0.001) {
+    // OT chỉ sau khi đủ HC trong ngày (gồm phần HC của bản ghi này)
+    const dayCap = Number(budget.dayCap) || 8
+    const used = Number(budget.usedReg) || 0
+    const reg = Number(totalReg) || 0
+    const ot = Number(totalOT) || 0
+    const hcAfter = used + reg
+    if (hcAfter < dayCap - 0.001) {
+      const need = Math.max(0, +(dayCap - hcAfter).toFixed(2))
+      return {
+        error: `Chỉ được khai OT khi đã đủ ${dayCap}h hành chính trong ngày. Hiện còn thiếu ${need}h HC (đã có ${used}h + đang nhập ${reg}h HC).`,
+        code: 'ot_requires_hc',
+        payload: {
+          ot_requires_hc: true,
+          day_cap: dayCap,
+          used,
+          remaining: budget.remaining,
+          submitting_reg: reg,
+          submitting_ot: ot,
+        },
+      }
+    }
+    if (ot > Number(budget.remainingOt) + 0.001) {
+      return {
+        error: `Tổng giờ OT vượt giới hạn ${TS_MAX_OT_PER_DAY}h/ngày. Đã dùng ${budget.usedOt}h OT, còn lại ${budget.remainingOt}h. Bạn đang nhập ${ot}h.`,
+        code: 'ot_exceeded',
+        payload: {
+          ot_exceeded: true,
+          used_ot: budget.usedOt,
+          remaining_ot: budget.remainingOt,
+          max_ot: TS_MAX_OT_PER_DAY,
+        },
+      }
+    }
+  }
+  return null
+}
+
+/** GET /api/timesheets/day-budget?work_date=&user_id= — gợi ý UI còn bao nhiêu giờ HC / OT */
+app.get('/api/timesheets/day-budget', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const workDate = String(c.req.query('work_date') || '').trim()
+    if (!workDate) return c.json({ error: 'work_date required' }, 400)
+
+    const effRole = await getEffectiveRole(db, user)
+    const canOther = effRole === 'system_admin' || effRole === 'project_admin'
+    const qUser = parseInt(c.req.query('user_id') || '', 10)
+    const targetUserId = (canOther && Number.isFinite(qUser)) ? qUser : user.id
+    const excludeId = parseInt(c.req.query('exclude_id') || '', 10)
+    const dayType = c.req.query('day_type') || 'work'
+
+    const budget = await getTimesheetDayBudget(db, targetUserId, workDate, {
+      excludeTimesheetId: Number.isFinite(excludeId) ? excludeId : null,
+      submittingDayType: dayType,
+    })
+    return c.json({
+      ...budget,
+      max_ot: TS_MAX_OT_PER_DAY,
+      ot_allowed: !budget.blocked && budget.hcFilled,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 app.post('/api/timesheets', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
@@ -3863,25 +4079,18 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     // Cho single-task: dùng task_id từ data; multi-task: task_id = null (chi tiết trong timesheet_tasks)
     const mainTaskId = isLeaveDay ? null : (isMultiTask ? null : (task_id || null))
 
-    // === Validate tổng giờ HC trong ngày không vượt 8h ===
-    if (!isLeaveDay && totalReg > 0) {
-      // Lấy tổng giờ HC đã khai báo trong ngày này (các bản ghi KHÁC project/timesheet hiện tại)
-      const usedRow = await db.prepare(
-        `SELECT COALESCE(SUM(regular_hours), 0) as used
-         FROM timesheets
-         WHERE user_id = ? AND work_date = ?
-           AND project_id != ?
-           AND day_type IN ('work','half_day_am','half_day_pm','business_trip')`
-      ).bind(targetUserId, work_date, project_id || 0).first() as any
-      const usedReg = usedRow?.used || 0
-      const remaining = Math.max(0, 8 - usedReg)
-      if (totalReg > remaining + 0.001) {
-        return c.json({
-          error: `Tổng giờ HC vượt giới hạn 8h/ngày. Đã dùng ${usedReg}h, còn lại ${remaining}h. Bạn đang nhập ${totalReg}h.`,
-          hours_exceeded: true,
-          used: usedReg,
-          remaining
-        }, 422)
+    // === Validate nghỉ phép + HC (8h/4h) + OT (chỉ sau đủ HC; trần OT/ngày) ===
+    // Ép số — tránh overtime_hours dạng string lọt validation
+    const nReg = Number(totalReg) || 0
+    const nOt  = Number(totalOT) || 0
+    if (!isLeaveDay && (nReg > 0 || nOt > 0)) {
+      const budget = await getTimesheetDayBudget(db, targetUserId, work_date, {
+        excludeProjectId: project_id ? parseInt(project_id) : null,
+        submittingDayType: day_type,
+      })
+      const bad = validateTimesheetHoursAgainstBudget(budget, nReg, nOt)
+      if (bad) {
+        return c.json({ error: bad.error, ...bad.payload }, 422)
       }
     }
 
@@ -4051,7 +4260,31 @@ app.put('/api/timesheets/:id', authMiddleware, async (c) => {
       if (category_id_put !== undefined) {
         updates.push('category_id = ?')
         values.push(isLeaveDay ? null : (category_id_put || null))
-      }    } else {
+      }
+
+      // === Validate nghỉ phép + HC/OT khi sửa nội dung công việc ===
+      const effectiveDayType = day_type !== undefined ? day_type : (ts.day_type || 'work')
+      const effectiveIsLeave = !['work','half_day_am','half_day_pm','business_trip'].includes(effectiveDayType)
+      if (!effectiveIsLeave) {
+        const effectiveDate = work_date !== undefined ? work_date : ts.work_date
+        const effectiveReg = isMultiTask
+          ? taskEntries.reduce((s, e) => s + (e.regular_hours || 0), 0)
+          : (regular_hours !== undefined ? regular_hours : ts.regular_hours || 0)
+        const effectiveOt = isMultiTask
+          ? taskEntries.reduce((s, e) => s + (e.overtime_hours || 0), 0)
+          : (overtime_hours !== undefined ? overtime_hours : ts.overtime_hours || 0)
+        if (effectiveReg > 0 || effectiveOt > 0) {
+          const budget = await getTimesheetDayBudget(db, ts.user_id, effectiveDate, {
+            excludeTimesheetId: id,
+            submittingDayType: effectiveDayType,
+          })
+          const bad = validateTimesheetHoursAgainstBudget(budget, effectiveReg, effectiveOt)
+          if (bad) {
+            return c.json({ error: bad.error, ...bad.payload }, 422)
+          }
+        }
+      }
+    } else {
       // member thường không được sửa nội dung (chỉ submit/rút lại)
       if (project_id !== undefined || regular_hours !== undefined || overtime_hours !== undefined ||
           description !== undefined || task_id !== undefined || work_date !== undefined || day_type !== undefined) {

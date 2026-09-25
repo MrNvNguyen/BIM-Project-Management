@@ -7607,7 +7607,10 @@ async function openTimesheetModal(tsId = null) {
     $('tsOvertimeHours').value    = ts.overtime_hours ?? 0
     $('tsDescription').value      = ts.description    || ''
     $('tsRegularHours').disabled  = locked
-    $('tsOvertimeHours').disabled = locked
+    if ($('tsOvertimeHours')) {
+      $('tsOvertimeHours').dataset.locked = locked ? '1' : '0'
+      $('tsOvertimeHours').disabled = locked
+    }
     $('tsDescription').disabled   = locked
 
     // Khởi tạo project combobox (set _tsModalLocked = locked)
@@ -7654,7 +7657,10 @@ async function openTimesheetModal(tsId = null) {
     $('tsOvertimeHours').value    = 0
     $('tsDescription').value      = ''
     $('tsRegularHours').disabled  = false
-    $('tsOvertimeHours').disabled = false
+    if ($('tsOvertimeHours')) {
+      $('tsOvertimeHours').dataset.locked = '0'
+      $('tsOvertimeHours').disabled = false
+    }
     $('tsDescription').disabled   = false
 
     // Reset về single mode
@@ -7717,11 +7723,19 @@ function tsDayTypeChanged() {
   // Nếu chọn nửa ngày → mặc định giờ HC = 4h, giữ chế độ single/multi bình thường
   if (isHalf) {
     const regEl = $('tsRegularHours')
-    if (regEl && (parseFloat(regEl.value) === 8 || parseFloat(regEl.value) === 0)) regEl.value = '4'
+    if (regEl && (parseFloat(regEl.value) === 8 || parseFloat(regEl.value) === 0 || parseFloat(regEl.value) > 4)) {
+      regEl.value = '4'
+      regEl.max = 4
+    }
   } else if (dayType === 'work') {
     const regEl = $('tsRegularHours')
     if (regEl && parseFloat(regEl.value) === 4) regEl.value = '8'
   }
+  // Refresh gợi ý còn giờ (trừ nghỉ phép / nửa ngày)
+  const editingId = $('tsId')?.value ? parseInt($('tsId').value) : null
+  const targetUid = (currentUser?.role === 'system_admin' && parseInt($('tsTargetUserHidden')?.value))
+    ? parseInt($('tsTargetUserHidden').value) : null
+  _updateTsDateHint($('tsDate')?.value, editingId, targetUid)
 }
 
 // ── Chế độ đơn/nhiều task ──────────────────────────────────────────────────
@@ -7937,6 +7951,8 @@ function _tsMultiRowChange(idx, field, val) {
   const row = _tsMultiRows.find(r => r.idx === idx)
   if (row) row[field] = val
   _tsUpdateMultiTotals()
+  // Đổi HC → khóa/mở OT theo đủ hành chính
+  if (field === 'reg' || field === 'ot') _onTsHoursInput()
 }
 
 function _tsUpdateMultiTotals() {
@@ -7978,69 +7994,180 @@ function _getCurrentWeekRange() {
 }
 
 // ── Cập nhật gợi ý dự án đã khai báo cho ngày được chọn ──
-function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overrideUserId = null) {
+async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overrideUserId = null) {
   const hint      = document.getElementById('tsDateHint')
   const hintProjs = document.getElementById('tsDateHintProjects')
   const hintUsed  = document.getElementById('tsDateHintUsed')
   const hintRemain= document.getElementById('tsDateHintRemain')
   const regInput  = document.getElementById('tsRegularHours')
+  const otInput   = document.getElementById('tsOvertimeHours')
   const regLabel  = document.getElementById('tsRegLabel')
   if (!hint || !hintProjs) return
 
   if (!selectedDate) {
     hint.style.display = 'none'
     if (regInput) { regInput.max = 8; regInput.value = Math.min(parseFloat(regInput.value)||8, 8) }
+    if (otInput) { otInput.max = 8; otInput.disabled = false }
     if (regLabel) regLabel.textContent = '(tối đa 8h/ngày)'
     return
   }
 
-  // Lọc timesheets cùng ngày, cùng user, loại trừ bản ghi đang sửa
   const userId = overrideUserId || currentUser.id
-  const sameDay = allTimesheets.filter(t =>
-    t.work_date === selectedDate &&
-    t.user_id   === userId &&
-    (excludeTimesheetId == null || t.id !== excludeTimesheetId) &&
-    ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
-  )
+  const dayType = $('tsDayType')?.value || 'work'
+  let remaining = 8
+  let usedReg = 0
+  let dayCap = 8
+  let usedOt = 0
+  let remainingOt = 8
+  let leaveHint = ''
+  let blocked = false
+  let hcFilled = false
 
-  // Tính tổng giờ HC đã dùng trong ngày (trừ bản ghi đang sửa)
-  const usedReg = sameDay.reduce((s, t) => s + (t.regular_hours || 0), 0)
-  const remaining = Math.max(0, 8 - usedReg)
+  try {
+    let url = `/timesheets/day-budget?work_date=${encodeURIComponent(selectedDate)}&day_type=${encodeURIComponent(dayType)}`
+    if (userId) url += `&user_id=${userId}`
+    if (excludeTimesheetId) url += `&exclude_id=${excludeTimesheetId}`
+    const budget = await api(url)
+    dayCap = Number(budget.day_cap ?? budget.dayCap ?? 8)
+    usedReg = Number(budget.used_reg ?? budget.usedReg ?? 0)
+    remaining = Number(budget.remaining ?? Math.max(0, dayCap - usedReg))
+    usedOt = Number(budget.used_ot ?? budget.usedOt ?? 0)
+    remainingOt = Number(budget.remaining_ot ?? budget.remainingOt ?? Math.max(0, 8 - usedOt))
+    blocked = !!budget.blocked
+    hcFilled = !!budget.hcFilled
+    leaveHint = budget.leave_hint || budget.leaveHint || budget.blockReason || budget.block_reason || ''
+  } catch (_) {
+    const sameDay = allTimesheets.filter(t =>
+      t.work_date === selectedDate &&
+      t.user_id   === userId &&
+      (excludeTimesheetId == null || t.id !== excludeTimesheetId) &&
+      ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work') &&
+      t.project_id
+    )
+    usedReg = sameDay.reduce((s, t) => s + (t.regular_hours || 0), 0)
+    usedOt = sameDay.reduce((s, t) => s + (t.overtime_hours || 0), 0)
+    const isHalf = dayType === 'half_day_am' || dayType === 'half_day_pm'
+    dayCap = isHalf ? 4 : 8
+    remaining = Math.max(0, dayCap - usedReg)
+    remainingOt = Math.max(0, 8 - usedOt)
+    hcFilled = usedReg >= dayCap - 0.001
+  }
 
-  // Cập nhật max trên input giờ HC
+  // Cap HC trước, rồi mới quyết định có cho OT (tránh form mặc định 8h → mở OT sai)
   if (regInput) {
-    regInput.max = remaining
-    // Nếu giá trị hiện tại > remaining → auto-cap
+    regInput.max = Math.max(0, remaining)
     const cur = parseFloat(regInput.value) || 0
     if (cur > remaining) regInput.value = remaining
   }
-  if (regLabel) {
-    if (remaining <= 0) {
-      regLabel.innerHTML = '<span class="text-red-500 font-semibold">⛔ Đã đủ 8h HC hôm nay</span>'
+
+  const formReg = parseFloat(regInput?.value) || 0
+  // Multi-mode: cộng HC các dòng
+  let multiReg = 0
+  if (typeof _tsMultiRows !== 'undefined' && _tsMultiRows.length) {
+    _tsMultiRows.forEach(r => {
+      const el = document.getElementById(`tsMultiReg_${r.idx}`)
+      multiReg += parseFloat(el ? el.value : r.reg) || 0
+    })
+  }
+  const isMultiModeUi = document.querySelector('input[name="tsModeRadio"]:checked')?.value === 'multi'
+  const effectiveFormReg = isMultiModeUi ? multiReg : formReg
+  const hcFilledWithForm = !blocked && (usedReg + effectiveFormReg) >= dayCap - 0.001
+  const otAllowed = hcFilledWithForm
+  const formLocked = $('tsOvertimeHours')?.dataset?.locked === '1'
+
+  if (otInput) {
+    if (!otAllowed) {
+      otInput.value = 0
+      otInput.max = 0
+      otInput.disabled = true
+      otInput.title = blocked
+        ? 'Ngày nghỉ phép — không khai OT'
+        : `Chỉ khai OT khi đã đủ ${dayCap}h HC trong ngày (đã có ${usedReg}h + form ${effectiveFormReg}h)`
     } else {
-      regLabel.innerHTML = `<span class="text-green-700">(còn ${remaining}h HC hôm nay)</span>`
+      otInput.max = remainingOt
+      otInput.disabled = !!formLocked
+      otInput.title = `Còn ${remainingOt}h OT trong ngày (tối đa 8h OT/ngày)`
+      const curOt = parseFloat(otInput.value) || 0
+      if (curOt > remainingOt) otInput.value = remainingOt
     }
   }
 
-  if (!sameDay.length) { hint.style.display = 'none'; return }
+  // Khóa OT trên các dòng multi-task
+  if (typeof _tsMultiRows !== 'undefined') {
+    _tsMultiRows.forEach(r => {
+      const otEl = document.getElementById(`tsMultiOT_${r.idx}`)
+      if (!otEl) return
+      if (!otAllowed) {
+        otEl.value = '0'
+        otEl.max = 0
+        otEl.disabled = true
+        otEl.title = blocked ? 'Ngày nghỉ phép' : `Cần đủ ${dayCap}h HC trước khi khai OT`
+        r.ot = 0
+      } else {
+        otEl.max = remainingOt
+        otEl.disabled = !!formLocked
+        otEl.title = `Còn ${remainingOt}h OT/ngày`
+      }
+    })
+    if (typeof _tsUpdateMultiTotals === 'function') _tsUpdateMultiTotals()
+  }
 
-  // Lấy tên dự án
-  const projNames = sameDay.map(t => {
+  if (regLabel) {
+    if (blocked) {
+      regLabel.innerHTML = '<span class="text-red-500 font-semibold">⛔ Ngày nghỉ phép</span>'
+    } else if (remaining <= 0) {
+      regLabel.innerHTML = otAllowed
+        ? `<span class="text-green-700 font-semibold">✅ Đủ ${dayCap}h HC — có thể khai OT</span>`
+        : `<span class="text-red-500 font-semibold">⛔ Đã đủ ${dayCap}h HC</span>`
+    } else {
+      const capNote = dayCap < 8 ? ` (cap ${dayCap}h sau nghỉ nửa ngày)` : ''
+      const otNote = otAllowed ? '' : ' · OT khóa đến khi đủ HC'
+      regLabel.innerHTML = `<span class="text-green-700">(còn ${remaining}h HC hôm nay${capNote}${otNote})</span>`
+    }
+  }
+
+  const sameDayProjs = allTimesheets.filter(t =>
+    t.work_date === selectedDate &&
+    t.user_id   === userId &&
+    (excludeTimesheetId == null || t.id !== excludeTimesheetId) &&
+    ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work') &&
+    t.project_id
+  )
+
+  if (!sameDayProjs.length && !leaveHint && !blocked && remainingOt >= 8) { hint.style.display = 'none'; return }
+
+  const projNames = sameDayProjs.map(t => {
     const proj = allProjects.find(p => p.id === t.project_id)
     return proj ? (proj.code ? proj.code : proj.name) : (t.project_name || `#${t.project_id}`)
   })
-  hintProjs.textContent = projNames.join(', ')
+  hintProjs.textContent = projNames.length ? projNames.join(', ') : (leaveHint || '—')
 
-  // Hiển thị số giờ HC đã dùng / còn lại
-  if (hintUsed)   hintUsed.textContent   = `⏱ Đã dùng: ${usedReg}h HC`
+  if (hintUsed) hintUsed.textContent = `⏱ HC ${usedReg}/${dayCap}h · OT ${usedOt}/8h`
   if (hintRemain) {
-    if (remaining <= 0) {
-      hintRemain.innerHTML = '<span class="text-red-600 font-bold">⛔ Đã đủ 8h — không thể thêm giờ HC</span>'
+    if (blocked) {
+      hintRemain.innerHTML = `<span class="text-red-600 font-bold">⛔ ${leaveHint || 'Đã nghỉ phép — không khai công việc/OT'}</span>`
+    } else if (remaining <= 0) {
+      hintRemain.innerHTML = otAllowed
+        ? `<span class="text-green-700 font-bold">✅ Đủ ${dayCap}h HC — còn ${remainingOt}h OT</span>`
+        : `<span class="text-amber-600 font-bold">✅ Đủ HC — nhập OT trong form (còn ${remainingOt}h)</span>`
     } else {
-      hintRemain.textContent = `✅ Còn lại: ${remaining}h HC`
+      hintRemain.textContent = leaveHint
+        ? `✅ Còn ${remaining}h HC — ${leaveHint}`
+        : `✅ Còn ${remaining}h HC · OT chỉ sau khi đủ HC (còn ${remainingOt}h OT)`
     }
   }
   hint.style.display = ''
+}
+
+/** Đổi giờ HC/OT trên form → refresh gợi ý còn giờ / quyền OT */
+function _onTsHoursInput() {
+  const editingId = $('tsId')?.value ? parseInt($('tsId').value) : null
+  const targetUid = (currentUser?.role === 'system_admin' && parseInt($('tsTargetUserHidden')?.value))
+    ? parseInt($('tsTargetUserHidden').value) : null
+  clearTimeout(_onTsHoursInput._t)
+  _onTsHoursInput._t = setTimeout(() => {
+    _updateTsDateHint($('tsDate')?.value, editingId, targetUid)
+  }, 200)
 }
 
 // ══════════════════════════════════════════════════
@@ -8297,40 +8424,90 @@ $('tsForm').addEventListener('submit', async (e) => {
     return
   }
 
-  // === Validate tổng giờ HC trong ngày không vượt 8h ===
+  // === Validate nghỉ phép + HC (8h/4h) + OT (chỉ sau đủ HC) ===
   if (!isLeaveDay) {
     const workDate = $('tsDate').value
     const editingId = id ? parseInt(id) : null
     const userId = (currentUser.role === 'system_admin' && parseInt($('tsTargetUserHidden')?.value))
       ? parseInt($('tsTargetUserHidden').value)
       : currentUser.id
-    // Tổng giờ HC đã khai trong ngày (trừ bản ghi đang sửa)
-    const usedReg = allTimesheets
-      .filter(t =>
-        t.work_date === workDate &&
-        t.user_id   === userId &&
-        (editingId == null || t.id !== editingId) &&
-        ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work')
-      )
-      .reduce((s, t) => s + (t.regular_hours || 0), 0)
-    const remaining = Math.max(0, 8 - usedReg)
 
-    // Tính giờ HC sẽ submit
     let submitReg = 0
+    let submitOt = 0
     if (isMultiMode) {
       _tsMultiRows.forEach(r => {
         const regEl = document.getElementById(`tsMultiReg_${r.idx}`)
+        const otEl  = document.getElementById(`tsMultiOT_${r.idx}`)
         submitReg += parseFloat(regEl ? regEl.value : r.reg) || 0
+        submitOt  += parseFloat(otEl  ? otEl.value  : r.ot)  || 0
       })
     } else {
       submitReg = parseFloat($('tsRegularHours')?.value) || 0
+      submitOt  = parseFloat($('tsOvertimeHours')?.value) || 0
     }
 
-    if (submitReg > remaining + 0.001) {
-      toast(`⛔ Tổng giờ HC vượt giới hạn! Ngày ${workDate} đã dùng ${usedReg}h, còn lại ${remaining}h. Bạn đang nhập ${submitReg}h.`, 'error')
-      // Auto-cap
-      if (!isMultiMode && $('tsRegularHours')) $('tsRegularHours').value = remaining
-      return
+    if (submitReg > 0 || submitOt > 0) {
+      let remaining = 8
+      let usedReg = 0
+      let dayCap = 8
+      let remainingOt = 8
+      let usedOt = 0
+      try {
+        let url = `/timesheets/day-budget?work_date=${encodeURIComponent(workDate)}&day_type=${encodeURIComponent(dayType)}&user_id=${userId}`
+        if (editingId) url += `&exclude_id=${editingId}`
+        const budget = await api(url)
+        if (budget.blocked) {
+          toast(budget.blockReason || budget.block_reason || 'Ngày này đã nghỉ phép, không thể khai timesheet công việc/OT.', 'error')
+          return
+        }
+        dayCap = Number(budget.day_cap ?? budget.dayCap ?? 8)
+        usedReg = Number(budget.used_reg ?? budget.usedReg ?? 0)
+        remaining = Number(budget.remaining ?? Math.max(0, dayCap - usedReg))
+        usedOt = Number(budget.used_ot ?? budget.usedOt ?? 0)
+        remainingOt = Number(budget.remaining_ot ?? budget.remainingOt ?? Math.max(0, 8 - usedOt))
+      } catch (_) {
+        usedReg = allTimesheets
+          .filter(t =>
+            t.work_date === workDate &&
+            t.user_id   === userId &&
+            (editingId == null || t.id !== editingId) &&
+            ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work') &&
+            t.project_id
+          )
+          .reduce((s, t) => s + (t.regular_hours || 0), 0)
+        usedOt = allTimesheets
+          .filter(t =>
+            t.work_date === workDate &&
+            t.user_id   === userId &&
+            (editingId == null || t.id !== editingId) &&
+            ['work','half_day_am','half_day_pm','business_trip'].includes(t.day_type || 'work') &&
+            t.project_id
+          )
+          .reduce((s, t) => s + (t.overtime_hours || 0), 0)
+        dayCap = (dayType === 'half_day_am' || dayType === 'half_day_pm') ? 4 : 8
+        remaining = Math.max(0, dayCap - usedReg)
+        remainingOt = Math.max(0, 8 - usedOt)
+      }
+
+      if (submitReg > remaining + 0.001) {
+        const capLabel = dayCap < 8 ? `${dayCap}h (đã trừ nghỉ nửa ngày)` : '8h'
+        toast(`⛔ Tổng giờ HC vượt giới hạn ${capLabel}! Ngày ${workDate} đã dùng ${usedReg}h, còn lại ${remaining}h. Bạn đang nhập ${submitReg}h.`, 'error')
+        if (!isMultiMode && $('tsRegularHours')) $('tsRegularHours').value = remaining
+        return
+      }
+      if (submitOt > 0.001) {
+        const hcAfter = usedReg + submitReg
+        if (hcAfter < dayCap - 0.001) {
+          const need = Math.max(0, +(dayCap - hcAfter).toFixed(2))
+          toast(`⛔ Chỉ được khai OT khi đã đủ ${dayCap}h hành chính trong ngày. Hiện còn thiếu ${need}h HC.`, 'error')
+          return
+        }
+        if (submitOt > remainingOt + 0.001) {
+          toast(`⛔ Tổng OT vượt ${8}h/ngày. Đã dùng ${usedOt}h OT, còn ${remainingOt}h. Bạn đang nhập ${submitOt}h.`, 'error')
+          if (!isMultiMode && $('tsOvertimeHours')) $('tsOvertimeHours').value = remainingOt
+          return
+        }
+      }
     }
   }
 
@@ -8489,6 +8666,13 @@ $('tsForm').addEventListener('submit', async (e) => {
       // Auto-cap giờ HC về giờ còn lại
       const rem = e.response?.data?.remaining ?? 0
       if ($('tsRegularHours')) $('tsRegularHours').value = rem
+    } else if (e.response?.status === 422 && (e.response?.data?.ot_requires_hc || e.response?.data?.ot_exceeded)) {
+      toast('⛔ ' + errMsg, 'error')
+      if (e.response?.data?.ot_exceeded && $('tsOvertimeHours')) {
+        $('tsOvertimeHours').value = e.response.data.remaining_ot ?? 0
+      }
+    } else if (e.response?.status === 422 && e.response?.data?.leave_blocked) {
+      toast('🌴 ' + errMsg, 'error')
     } else if (e.response?.status === 409 && e.response?.data?.exists) {
       toast('⚠️ ' + errMsg, 'warning')
     } else {
