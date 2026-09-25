@@ -8008,7 +8008,7 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
     hint.style.display = 'none'
     if (regInput) { regInput.max = 8; regInput.value = Math.min(parseFloat(regInput.value)||8, 8) }
     if (otInput) { otInput.max = 8; otInput.disabled = false }
-    if (regLabel) regLabel.textContent = '(tối đa 8h/ngày)'
+    if (regLabel) regLabel.textContent = ''
     return
   }
 
@@ -8019,9 +8019,7 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
   let dayCap = 8
   let usedOt = 0
   let remainingOt = 8
-  let leaveHint = ''
   let blocked = false
-  let hcFilled = false
 
   try {
     let url = `/timesheets/day-budget?work_date=${encodeURIComponent(selectedDate)}&day_type=${encodeURIComponent(dayType)}`
@@ -8034,8 +8032,6 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
     usedOt = Number(budget.used_ot ?? budget.usedOt ?? 0)
     remainingOt = Number(budget.remaining_ot ?? budget.remainingOt ?? Math.max(0, 8 - usedOt))
     blocked = !!budget.blocked
-    hcFilled = !!budget.hcFilled
-    leaveHint = budget.leave_hint || budget.leaveHint || budget.blockReason || budget.block_reason || ''
   } catch (_) {
     const sameDay = allTimesheets.filter(t =>
       t.work_date === selectedDate &&
@@ -8050,10 +8046,9 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
     dayCap = isHalf ? 4 : 8
     remaining = Math.max(0, dayCap - usedReg)
     remainingOt = Math.max(0, 8 - usedOt)
-    hcFilled = usedReg >= dayCap - 0.001
   }
 
-  // Cap HC trước, rồi mới quyết định có cho OT (tránh form mặc định 8h → mở OT sai)
+  // Cap HC trước, rồi mới quyết định có cho OT
   if (regInput) {
     regInput.max = Math.max(0, remaining)
     const cur = parseFloat(regInput.value) || 0
@@ -8061,7 +8056,6 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
   }
 
   const formReg = parseFloat(regInput?.value) || 0
-  // Multi-mode: cộng HC các dòng
   let multiReg = 0
   if (typeof _tsMultiRows !== 'undefined' && _tsMultiRows.length) {
     _tsMultiRows.forEach(r => {
@@ -8071,8 +8065,7 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
   }
   const isMultiModeUi = document.querySelector('input[name="tsModeRadio"]:checked')?.value === 'multi'
   const effectiveFormReg = isMultiModeUi ? multiReg : formReg
-  const hcFilledWithForm = !blocked && (usedReg + effectiveFormReg) >= dayCap - 0.001
-  const otAllowed = hcFilledWithForm
+  const otAllowed = !blocked && (usedReg + effectiveFormReg) >= dayCap - 0.001
   const formLocked = $('tsOvertimeHours')?.dataset?.locked === '1'
 
   if (otInput) {
@@ -8080,19 +8073,16 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
       otInput.value = 0
       otInput.max = 0
       otInput.disabled = true
-      otInput.title = blocked
-        ? 'Ngày nghỉ phép — không khai OT'
-        : `Chỉ khai OT khi đã đủ ${dayCap}h HC trong ngày (đã có ${usedReg}h + form ${effectiveFormReg}h)`
+      otInput.title = blocked ? 'Nghỉ phép' : `Cần đủ ${dayCap}h HC`
     } else {
       otInput.max = remainingOt
       otInput.disabled = !!formLocked
-      otInput.title = `Còn ${remainingOt}h OT trong ngày (tối đa 8h OT/ngày)`
+      otInput.title = `Còn ${remainingOt}h OT`
       const curOt = parseFloat(otInput.value) || 0
       if (curOt > remainingOt) otInput.value = remainingOt
     }
   }
 
-  // Khóa OT trên các dòng multi-task
   if (typeof _tsMultiRows !== 'undefined') {
     _tsMultiRows.forEach(r => {
       const otEl = document.getElementById(`tsMultiOT_${r.idx}`)
@@ -8101,29 +8091,22 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
         otEl.value = '0'
         otEl.max = 0
         otEl.disabled = true
-        otEl.title = blocked ? 'Ngày nghỉ phép' : `Cần đủ ${dayCap}h HC trước khi khai OT`
+        otEl.title = blocked ? 'Nghỉ phép' : `Cần đủ ${dayCap}h HC`
         r.ot = 0
       } else {
         otEl.max = remainingOt
         otEl.disabled = !!formLocked
-        otEl.title = `Còn ${remainingOt}h OT/ngày`
+        otEl.title = `Còn ${remainingOt}h OT`
       }
     })
     if (typeof _tsUpdateMultiTotals === 'function') _tsUpdateMultiTotals()
   }
 
+  // Label ngắn: chỉ "còn Xh HC" / "đủ Xh HC" / "nghỉ phép"
   if (regLabel) {
-    if (blocked) {
-      regLabel.innerHTML = '<span class="text-red-500 font-semibold">⛔ Ngày nghỉ phép</span>'
-    } else if (remaining <= 0) {
-      regLabel.innerHTML = otAllowed
-        ? `<span class="text-green-700 font-semibold">✅ Đủ ${dayCap}h HC — có thể khai OT</span>`
-        : `<span class="text-red-500 font-semibold">⛔ Đã đủ ${dayCap}h HC</span>`
-    } else {
-      const capNote = dayCap < 8 ? ` (cap ${dayCap}h sau nghỉ nửa ngày)` : ''
-      const otNote = otAllowed ? '' : ' · OT khóa đến khi đủ HC'
-      regLabel.innerHTML = `<span class="text-green-700">(còn ${remaining}h HC hôm nay${capNote}${otNote})</span>`
-    }
+    if (blocked) regLabel.textContent = '(nghỉ phép)'
+    else if (remaining <= 0) regLabel.textContent = `(đủ ${dayCap}h HC)`
+    else regLabel.textContent = `(còn ${remaining}h HC)`
   }
 
   const sameDayProjs = allTimesheets.filter(t =>
@@ -8134,28 +8117,28 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
     t.project_id
   )
 
-  if (!sameDayProjs.length && !leaveHint && !blocked && remainingOt >= 8) { hint.style.display = 'none'; return }
+  // Chỉ hiện hint khi có thông tin giờ / dự án / bị chặn
+  if (!sameDayProjs.length && !blocked && remaining >= 8 && dayCap >= 8) {
+    hint.style.display = 'none'
+    return
+  }
 
   const projNames = sameDayProjs.map(t => {
     const proj = allProjects.find(p => p.id === t.project_id)
     return proj ? (proj.code ? proj.code : proj.name) : (t.project_name || `#${t.project_id}`)
   })
-  hintProjs.textContent = projNames.length ? projNames.join(', ') : (leaveHint || '—')
+  if (hintProjs) hintProjs.textContent = projNames.length ? projNames.join(', ') : ''
 
-  if (hintUsed) hintUsed.textContent = `⏱ HC ${usedReg}/${dayCap}h · OT ${usedOt}/8h`
   if (hintRemain) {
     if (blocked) {
-      hintRemain.innerHTML = `<span class="text-red-600 font-bold">⛔ ${leaveHint || 'Đã nghỉ phép — không khai công việc/OT'}</span>`
+      hintRemain.innerHTML = '<span class="text-red-600 font-bold">Nghỉ phép</span>'
     } else if (remaining <= 0) {
-      hintRemain.innerHTML = otAllowed
-        ? `<span class="text-green-700 font-bold">✅ Đủ ${dayCap}h HC — còn ${remainingOt}h OT</span>`
-        : `<span class="text-amber-600 font-bold">✅ Đủ HC — nhập OT trong form (còn ${remainingOt}h)</span>`
+      hintRemain.textContent = `Đủ ${dayCap}h HC`
     } else {
-      hintRemain.textContent = leaveHint
-        ? `✅ Còn ${remaining}h HC — ${leaveHint}`
-        : `✅ Còn ${remaining}h HC · OT chỉ sau khi đủ HC (còn ${remainingOt}h OT)`
+      hintRemain.textContent = `Còn ${remaining}h HC`
     }
   }
+  if (hintUsed) hintUsed.textContent = ''
   hint.style.display = ''
 }
 
