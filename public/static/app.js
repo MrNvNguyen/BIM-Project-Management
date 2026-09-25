@@ -6735,15 +6735,15 @@ async function loadTimesheets() {
       }
     }
 
-    // Bulk-submit drafts — hiện khi có nháp trong bộ lọc (owner gửi được; admin/PA cũng gửi được)
-    const draftCount = apiSummary?.draft_count != null
-      ? Number(apiSummary.draft_count)
-      : allTimesheets.filter(t => t.status === 'draft').length
+    // Bulk-submit drafts — chỉ timesheet NHÁP CỦA CHÍNH MÌNH (cá nhân tự gửi)
+    const ownDraftCount = allTimesheets.filter(t =>
+      t.status === 'draft' && t.user_id === currentUser.id
+    ).length
     const submitAllBtn = $('tsBulkSubmitBtn')
     if (submitAllBtn) {
-      if (draftCount > 0) {
+      if (ownDraftCount > 0) {
         submitAllBtn.classList.remove('hidden')
-        submitAllBtn.innerHTML = `<i class="fas fa-paper-plane mr-1 text-blue-500"></i>Gửi tất cả nháp (${draftCount})`
+        submitAllBtn.innerHTML = `<i class="fas fa-paper-plane mr-1 text-blue-500"></i>Gửi tất cả nháp (${ownDraftCount})`
       } else {
         submitAllBtn.classList.add('hidden')
       }
@@ -9398,29 +9398,22 @@ async function submitTimesheet(id) {
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 }
 
-/** Gửi duyệt tất cả timesheet nháp theo bộ lọc hiện tại (tuần tự PUT). */
+/** Gửi duyệt tất cả timesheet nháp CỦA CHÍNH MÌNH theo bộ lọc (cá nhân tự gửi). */
 async function bulkSubmitDraftTimesheets() {
   const month     = $('tsMonthFilter')?.value   || ''
   const year      = $('tsYearFilter')?.value    || ''
   const projectId = _cbGetValue('tsProjectFilterCombobox')
-  const canSeeAll = currentUser && ['system_admin', 'project_admin'].includes(currentUser.role)
-  const memberId  = canSeeAll ? (_cbGetValue('tsUserFilterCombobox') || '') : ''
-  let url = '/timesheets?status=draft&limit=5000&'
+  // Luôn lọc theo user hiện tại — không gửi nháp hộ người khác
+  let url = `/timesheets?status=draft&limit=5000&user_id=${currentUser.id}&`
   if (month)     url += `month=${month}&`
   if (year)      url += `year=${year}&`
   if (projectId) url += `project_id=${projectId}&`
-  if (memberId)  url += `member_id=${memberId}&`
   try {
     const resp = await api(url)
     const rows = Array.isArray(resp) ? resp : (resp.timesheets || [])
-    const drafts = rows.filter(t => t.status === 'draft')
-    if (!drafts.length) { toast('Không có timesheet nháp để gửi', 'info'); return }
-    const totalDraft = resp?.summary?.draft_count != null ? Number(resp.summary.draft_count) : drafts.length
-    if (resp?.summary?.truncated && totalDraft > drafts.length) {
-      toast(`Có ${totalDraft} nháp nhưng chỉ tải được ${drafts.length}. Thu hẹp tháng/năm rồi thử lại.`, 'warning')
-      return
-    }
-    if (!confirm(`Gửi duyệt ${drafts.length} timesheet nháp?`)) return
+    const drafts = rows.filter(t => t.status === 'draft' && t.user_id === currentUser.id)
+    if (!drafts.length) { toast('Bạn không có timesheet nháp để gửi', 'info'); return }
+    if (!confirm(`Gửi duyệt ${drafts.length} timesheet nháp của bạn?`)) return
 
     let ok = 0, failed = 0
     let lastErr = ''
