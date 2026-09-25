@@ -3597,7 +3597,8 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       SELECT
         COUNT(*) AS total_count,
         SUM(CASE WHEN ts.status = 'submitted' THEN 1 ELSE 0 END) AS pending_count,
-        SUM(CASE WHEN ts.status = 'approved' THEN 1 ELSE 0 END) AS approved_count
+        SUM(CASE WHEN ts.status = 'approved' THEN 1 ELSE 0 END) AS approved_count,
+        SUM(CASE WHEN ts.status = 'draft' THEN 1 ELSE 0 END) AS draft_count
       FROM timesheets ts
       WHERE 1=1
     `
@@ -3706,6 +3707,7 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
         total_count: totalCount,
         pending_count: Number(countRow?.pending_count) || 0,
         approved_count: Number(countRow?.approved_count) || 0,
+        draft_count: Number(countRow?.draft_count) || 0,
         truncated: totalCount > timesheetsWithEntries.length,
         limit,
         offset,
@@ -3792,6 +3794,17 @@ const TS_HALF_DAY_TYPES = ['half_day_am', 'half_day_pm'] as const
 /** Trần OT / ngày (sau khi đã đủ HC). Tránh lách bằng OT vô hạn. */
 const TS_MAX_OT_PER_DAY = 8
 
+/** weekday 0=CN … 6=T7 theo lịch lịch (UTC noon, tránh lệch TZ). */
+function weekdayOfIsoDate(isoDate: string): number {
+  const [y, m, d] = String(isoDate).split('-').map(Number)
+  if (!y || !m || !d) return -1
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay()
+}
+
+function isSundayIsoDate(isoDate: string): boolean {
+  return weekdayOfIsoDate(isoDate) === 0
+}
+
 type TimesheetDayBudget = {
   dayCap: number
   usedReg: number
@@ -3803,9 +3816,11 @@ type TimesheetDayBudget = {
   blocked: boolean
   blockReason?: string
   leaveHint?: string
+  /** Chủ nhật: không tính HC, chỉ OT */
+  isSunday?: boolean
 }
 
-/** Ngân sách giờ HC trong ngày: nghỉ cả ngày → chặn; nửa ngày → cap 4h; còn lại 8h − đã khai. */
+/** Ngân sách giờ HC trong ngày: nghỉ cả ngày → chặn; nửa ngày → cap 4h; CN → 0h HC; còn lại 8h − đã khai. */
 async function getTimesheetDayBudget(
   db: D1Database,
   userId: number,
@@ -3816,10 +3831,15 @@ async function getTimesheetDayBudget(
     submittingDayType?: string | null
   } = {}
 ): Promise<TimesheetDayBudget> {
-  let dayCap = 8
+  const isSunday = isSundayIsoDate(workDate)
+  // Chủ nhật: không có giờ hành chính — chỉ OT (dayCap=0 → ot_requires_hc không chặn)
+  let dayCap = isSunday ? 0 : 8
   let blocked = false
   let blockReason: string | undefined
   let leaveHint: string | undefined
+  if (isSunday) {
+    leaveHint = 'Chủ nhật — chỉ khai OT (không tính giờ HC)'
+  }
 
   // 1) Đơn nghỉ pending/approved bao phủ ngày
   const leaves = await db.prepare(`
@@ -3835,8 +3855,10 @@ async function getTimesheetDayBudget(
   for (const lr of (leaves.results || []) as any[]) {
     const stLabel = lr.status === 'approved' ? 'đã duyệt' : 'đang chờ duyệt'
     if ((TS_HALF_DAY_TYPES as readonly string[]).includes(lr.leave_type)) {
-      dayCap = Math.min(dayCap, 4)
-      leaveHint = leaveHint || `Đơn nghỉ nửa ngày (${stLabel}) — còn tối đa 4h HC`
+      if (!isSunday) {
+        dayCap = Math.min(dayCap, 4)
+        leaveHint = leaveHint || `Đơn nghỉ nửa ngày (${stLabel}) — còn tối đa 4h HC`
+      }
     } else {
       blocked = true
       dayCap = 0
@@ -3857,8 +3879,10 @@ async function getTimesheetDayBudget(
       if (opts.excludeTimesheetId && Number(row.id) === Number(opts.excludeTimesheetId)) continue
       const dt = row.day_type || 'work'
       if ((TS_HALF_DAY_TYPES as readonly string[]).includes(dt)) {
-        dayCap = Math.min(dayCap, 4)
-        leaveHint = leaveHint || 'Đã ghi nhận nghỉ nửa ngày — còn tối đa 4h HC'
+        if (!isSunday) {
+          dayCap = Math.min(dayCap, 4)
+          leaveHint = leaveHint || 'Đã ghi nhận nghỉ nửa ngày — còn tối đa 4h HC'
+        }
       } else if (!(TS_WORK_LIKE_TYPES as readonly string[]).includes(dt)) {
         blocked = true
         dayCap = 0
@@ -3869,9 +3893,9 @@ async function getTimesheetDayBudget(
     }
   }
 
-  // 3) Form chọn nửa ngày (khai công buổi còn lại) → cap 4h
+  // 3) Form chọn nửa ngày (khai công buổi còn lại) → cap 4h (không áp CN)
   const submitType = opts.submittingDayType || null
-  if (!blocked && submitType && (TS_HALF_DAY_TYPES as readonly string[]).includes(submitType)) {
+  if (!blocked && !isSunday && submitType && (TS_HALF_DAY_TYPES as readonly string[]).includes(submitType)) {
     dayCap = Math.min(dayCap, 4)
     leaveHint = leaveHint || 'Nghỉ nửa ngày — còn tối đa 4h HC'
   }
@@ -3904,7 +3928,7 @@ async function getTimesheetDayBudget(
 
   return {
     dayCap, usedReg, remaining, usedOt, remainingOt, hcFilled,
-    blocked, blockReason, leaveHint,
+    blocked, blockReason, leaveHint, isSunday,
   }
 }
 
@@ -3922,7 +3946,9 @@ function validateTimesheetHoursAgainstBudget(
     }
   }
   if (totalReg > budget.remaining + 0.001) {
-    const capLabel = budget.dayCap < 8 ? `${budget.dayCap}h (đã trừ nghỉ nửa ngày)` : '8h'
+    const capLabel = budget.isSunday
+      ? '0h (Chủ nhật chỉ OT)'
+      : (budget.dayCap < 8 ? `${budget.dayCap}h (đã trừ nghỉ nửa ngày)` : '8h')
     return {
       error: `Tổng giờ HC vượt giới hạn ${capLabel}/ngày. Đã dùng ${budget.usedReg}h, còn lại ${budget.remaining}h. Bạn đang nhập ${totalReg}h.`,
       code: 'hours_exceeded',
@@ -3932,17 +3958,19 @@ function validateTimesheetHoursAgainstBudget(
         used: budget.usedReg,
         remaining: budget.remaining,
         leave_hint: budget.leaveHint,
+        is_sunday: !!budget.isSunday,
       },
     }
   }
   if (totalOT > 0.001) {
-    // OT chỉ sau khi đủ HC trong ngày (gồm phần HC của bản ghi này)
-    const dayCap = Number(budget.dayCap) || 8
+    // OT chỉ sau khi đủ HC — trừ Chủ nhật (dayCap=0): được khai OT ngay
+    // Dùng ?? không dùng || — dayCap=0 phải giữ 0 (tránh || 8)
+    const dayCap = Number(budget.dayCap ?? 8)
     const used = Number(budget.usedReg) || 0
     const reg = Number(totalReg) || 0
     const ot = Number(totalOT) || 0
     const hcAfter = used + reg
-    if (hcAfter < dayCap - 0.001) {
+    if (dayCap > 0 && hcAfter < dayCap - 0.001) {
       const need = Math.max(0, +(dayCap - hcAfter).toFixed(2))
       return {
         error: `Chỉ được khai OT khi đã đủ ${dayCap}h hành chính trong ngày. Hiện còn thiếu ${need}h HC (đã có ${used}h + đang nhập ${reg}h HC).`,

@@ -1396,6 +1396,9 @@
             <p id="tsPageSubtitle" class="text-gray-500 text-sm">Theo dõi giờ làm việc hàng ngày</p>
           </div>
           <div class="flex flex-wrap gap-2">
+            <button id="tsBulkSubmitBtn" onclick="bulkSubmitDraftTimesheets()" class="btn-secondary text-sm hidden" title="Gửi duyệt tất cả timesheet nháp theo bộ lọc">
+              <i class="fas fa-paper-plane mr-1 text-blue-500"></i>Gửi tất cả nháp
+            </button>
             <button id="tsBulkApproveBtn" onclick="bulkApproveTimesheets()" class="btn-secondary text-sm hidden" title="Duyệt tất cả timesheet đang chờ">
               <i class="fas fa-check-double mr-1"></i>Duyệt tất cả
             </button>
@@ -3487,7 +3490,7 @@
                   <div class="flex-1">
                     <p class="font-semibold text-gray-800">Điền thông tin timesheet</p>
                     <ul class="mt-2 space-y-1 text-sm text-gray-600 list-none">
-                      <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Ngày làm việc:</strong> Chọn ngày làm (mặc định hôm nay)</span></li>
+                      <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Ngày làm việc:</strong> Chọn ngày (mặc định hôm nay). Tick thêm ngày → mỗi ngày khai nhiều dự án/task; <strong>Chủ nhật mặc định OT</strong> (HC=0). Ngày đã gửi/duyệt sẽ bỏ qua.</span></li>
                       <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Dự án:</strong> Chọn dự án bạn đã làm trong ngày đó</span></li>
                       <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Số giờ thường:</strong> Số giờ làm việc bình thường (VD: 8)</span></li>
                       <li class="flex items-start gap-2"><i class="fas fa-angle-right text-yellow-500 mt-0.5 flex-shrink-0"></i><span><strong>Số giờ OT:</strong> Số giờ làm thêm ngoài giờ (nếu có)</span></li>
@@ -5430,6 +5433,17 @@
           </select>
         </div>
       </div>
+      <!-- Copy tuần: chỉ hiện khi Thêm mới -->
+      <div id="tsWeekCopyRow" style="display:none" class="mb-3">
+        <label class="label mb-1.5">Ngày trong tuần</label>
+        <div id="tsWeekCopyDays" class="flex flex-wrap gap-2"></div>
+        <p class="text-xs text-gray-400 mt-1.5">Tick nhiều ngày → mỗi ngày có thể thêm nhiều dự án/task. Chủ nhật mặc định OT.</p>
+      </div>
+      <!-- Khai theo ngày (N>1) -->
+      <div id="tsWeekDayEntries" style="display:none" class="mb-3">
+        <label class="label mb-1.5">Khai báo theo ngày</label>
+        <div id="tsWeekDayEntriesList" class="space-y-2" style="max-height:380px;overflow-y:auto;padding-right:2px"></div>
+      </div>
       <!-- Leave notice banner -->
       <div id="tsLeaveNotice" style="display:none" class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium" style="background:#fef3c7;border:1px solid #fde68a;color:#92400e">
         <i class="fas fa-info-circle text-amber-500"></i>
@@ -5538,7 +5552,7 @@
       </div>
       <div class="flex justify-end gap-3 pt-2">
         <button type="button" onclick="closeModal('timesheetModal')" class="btn-secondary">Hủy</button>
-        <button type="submit" class="btn-primary">Lưu timesheet</button>
+        <button type="submit" id="tsSubmitBtn" class="btn-primary">Lưu timesheet</button>
       </div>
     </form>
   </div>
@@ -6559,7 +6573,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260925d"></script>
+<script src="/static/app.js?v=20260925h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
