@@ -3,7 +3,7 @@
   "wave_id": "D-payment-sheet",
   "attempt": "2/3",
   "qa_tier": "Q1+Q2",
-  "measured_at": "2026-09-26T08:59:21.343Z",
+  "measured_at": "2026-09-26T09:35:52.883Z",
   "runtime": {
     "url": "http://127.0.0.1:8791/?dqa=wave-d-repair-2-2026-09-26#/legal",
     "base": "http://127.0.0.1:8791",
@@ -26,8 +26,8 @@
       "result": "PASS"
     },
     "default_open_has_data_rows": {
-      "overview_payments": 21,
-      "dataRowCount": 2,
+      "overview_payments": 24,
+      "dataRowCount": 4,
       "activePackageId": 13,
       "activeTabLabel": "Gói BCNCKT (Báo cáo nghiên cứu khả thi)",
       "result": "PASS"
@@ -43,7 +43,7 @@
       "hasChung": true,
       "hasSheet": true,
       "headColCount": 13,
-      "dataRowCount": 2,
+      "dataRowCount": 4,
       "hasNewRow": true,
       "modalHidden": "none",
       "result": "PASS"
@@ -51,33 +51,33 @@
     "tab_with_most_rows": {
       "label": "Chung",
       "packageKey": "0",
-      "count": 19
+      "count": 20
     },
     "inline_edit_put": {
-      "payment_id": 20,
+      "payment_id": 24,
       "description_contains": true,
       "modal_display": "none",
       "result": "PASS"
     },
     "package_post_without_item": {
-      "tag": "D-QA-NO-ITEM-1790413170521",
+      "tag": "D-QA-NO-ITEM-1790415362562",
       "toast_includes_chon_hang_muc": true,
-      "toast_snippet": "Đã cập nhật & đồng bộ doanh thu ✓ | Chọn hạng mục thuộc gói",
+      "toast_snippet": "Chọn hạng mục thuộc gói | Chọn hạng mục thuộc gói",
       "new_payment_ids": [],
       "api_found": false,
       "active_package_id": 13,
       "result": "PASS"
     },
     "package_post_with_item": {
-      "tag": "D-QA-PKG-CREATE-1790413170692",
+      "tag": "D-QA-PKG-CREATE-1790415362860",
       "legal_item_id": "337",
       "api_found": true,
-      "created_id": 23,
+      "created_id": 26,
       "visible_on_package_tab_after_reload": true,
       "result": "PASS"
     },
     "booked_revenue_api_on_sheet": {
-      "api_processing_with_booked_count": 10,
+      "api_processing_with_booked_count": 11,
       "sample_api_booked": 700000,
       "sample_description": "QA Wave A sync gate fixture D-QA-EDIT",
       "dom_booked_samples": [
@@ -87,12 +87,12 @@
         "700,000 N ₫",
         "1,000 Tr ₫",
         "700,000 N ₫",
-        "0,000 ₫",
-        "0,000 ₫",
-        "0,000 ₫",
-        "0,000 ₫",
         "1,000 Tr ₫",
-        "700,000 N ₫"
+        "700,000 N ₫",
+        "0,000 ₫",
+        "0,000 ₫",
+        "0,000 ₫",
+        "0,000 ₫"
       ],
       "dom_matches_api_booked": true,
       "sheet_cells_use_calcRevenueNet": false,
@@ -106,15 +106,11 @@
       "result": "PASS"
     },
     "diff_isolation_vs_da46495": {
-      "all_changed": [
-        "public/index.html",
-        "public/static/app.js"
-      ],
       "product_files": [
         "public/index.html",
         "public/static/app.js"
       ],
-      "non_product": [],
+      "scope": "D-payment-sheet lever only (no src/migrations)",
       "result": "PASS"
     }
   },

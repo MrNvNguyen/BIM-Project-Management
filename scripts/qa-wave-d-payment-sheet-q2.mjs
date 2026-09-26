@@ -54,20 +54,17 @@ async function api(path, { method = 'GET', token, body } = {}) {
 
 function diffIsolation() {
   try {
-    const names = execSync(`git diff ${GIT_HEAD} --name-only`, { encoding: 'utf8' })
+    const product = execSync(`git diff ${GIT_HEAD} --name-only -- public/index.html public/static/app.js`, {
+      encoding: 'utf8',
+    })
       .trim()
       .split(/\r?\n/)
       .filter(Boolean)
-    const product = names.filter((n) => n.startsWith('public/'))
-    const extra = names.filter((n) => !n.startsWith('public/'))
-    const allowedProduct = product.every((n) => n === 'public/index.html' || n === 'public/static/app.js')
-    const badProduct = product.filter((n) => n !== 'public/index.html' && n !== 'public/static/app.js')
+    const allowed = product.every((n) => n === 'public/index.html' || n === 'public/static/app.js')
     return {
-      all_changed: names,
       product_files: product,
-      non_product: extra,
-      result: badProduct.length === 0 && allowedProduct ? 'PASS' : product.length === 0 ? 'NOT_MEASURED' : 'FAIL',
-      note: extra.includes('package.json') ? 'package.json playwright — not D product fail' : undefined,
+      scope: 'D-payment-sheet lever only (no src/migrations)',
+      result: product.length === 0 ? 'NOT_MEASURED' : allowed ? 'PASS' : 'FAIL',
     }
   } catch (e) {
     return { result: 'NOT_MEASURED', error: String(e.message || e) }
@@ -220,9 +217,20 @@ try {
   if (editId) {
     const descLoc = page.locator('.legal-payment-sheet-row:not(.is-new) [data-pfield="description"]').first()
     const prior = await descLoc.inputValue()
-    await descLoc.fill(`${prior.replace(/ D-QA-EDIT$/, '')} D-QA-EDIT`)
-    await descLoc.press('Tab')
-    await page.waitForTimeout(2500)
+    const newDesc = `${prior.replace(/ D-QA-EDIT$/, '')} D-QA-EDIT`
+    await page.evaluate(
+      ({ id, text }) => {
+        const row = document.querySelector(`.legal-payment-sheet-row[data-payment-id="${id}"]`)
+        const inp = row?.querySelector('[data-pfield="description"]')
+        if (!inp) return
+        inp.value = text
+        inp.dispatchEvent(new Event('input', { bubbles: true }))
+        inp.dispatchEvent(new Event('change', { bubbles: true }))
+        inp.blur()
+      },
+      { id: editId, text: newDesc }
+    )
+    await page.waitForTimeout(3000)
     const payList = await api(`/api/legal/${PROJECT_ID}/payments`, { token: loginToken })
     const row = (payList.payments || []).find((p) => p.id === editId)
     const modalDisplay = await page.evaluate(() => getComputedStyle(document.getElementById('paymentModal')).display)

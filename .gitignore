@@ -37,3 +37,6 @@ scripts/.tmp-icons/
 scripts/*qa-spot*.mjs
 docs/evidence/**/*qa-spot*.mjs
 wave-c4-copy-from-qa-spot.mjs
+scripts/qa-legal-status-ring-*.mjs
+docs/evidence/ui-theme/wave-c2-status-ring-q2-browser.mjs
+docs/evidence/ui-theme/wave-c2-status-ring-q2-screenshots.mjs
