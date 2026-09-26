@@ -15,6 +15,7 @@ import {
   calendarMonthsOrFilter,
   calendarPairsSpan,
   computeBookedRevenue,
+  computeLegalCostA,
   computeMonthLaborCost as computeMonthLaborCostCore,
   computeProjectBudget,
   computeProjectLaborFromTimesheets,
@@ -14512,6 +14513,200 @@ app.delete('/api/legal/payments/:id', authMiddleware, async (c) => {
     }
 
     return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+function legalCostAFormulaLabel(feePct: number, vatPct: number): string {
+  const fee = Number(feePct) || 0
+  const vat = Number(vatPct) || 0
+  const denom = vat > 0 ? 1 + vat / 100 : 1
+  return `${fee}%/${denom}`
+}
+
+function legalCostAPackageKey(packageName: string | null | undefined): string {
+  const s = (packageName || '').trim()
+  return s || 'Chung'
+}
+
+// GET /api/legal/:projectId/cost-a — Chi phí A (system_admin only)
+app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const user = c.get('user') as any
+  if (user.role !== 'system_admin') {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+  try {
+    const db = c.env.DB
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập HSPL dự án này' }, 403)
+    }
+
+    const project = await db.prepare(
+      'SELECT management_fee_pct FROM projects WHERE id = ?'
+    ).bind(projectId).first() as any
+    if (!project) return c.json({ error: 'not found' }, 404)
+
+    const feePct = Number(project.management_fee_pct) || 0
+
+    const rows = await db.prepare(
+      `SELECT pr.id, pr.description, pr.payment_phase, pr.amount, pr.vat_pct, pr.status,
+              pr.request_number, lp.name as package_name,
+              lca.amount_override, lca.spend_status, lca.note
+       FROM payment_requests pr
+       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
+       LEFT JOIN legal_cost_a lca ON lca.payment_request_id = pr.id
+       WHERE pr.project_id = ? AND pr.amount > 0 AND pr.status != 'rejected'
+       ORDER BY pr.created_at DESC`
+    ).bind(projectId).all()
+
+    const groupMap = new Map<string, any[]>()
+    let pageTotal = 0
+
+    for (const raw of rows.results as any[]) {
+      const vatPct = Number(raw.vat_pct) || 0
+      const gross = Number(raw.amount) || 0
+      const formulaAmount = computeLegalCostA(gross, vatPct, feePct)
+      const overrideRaw = raw.amount_override
+      const amountOverride =
+        overrideRaw === null || overrideRaw === undefined ? null : Number(overrideRaw)
+      const amountInUse =
+        amountOverride != null && !Number.isNaN(amountOverride)
+          ? Math.round(amountOverride)
+          : formulaAmount
+      pageTotal += amountInUse
+
+      const row = {
+        payment_request_id: raw.id,
+        description: raw.description,
+        payment_phase: raw.payment_phase,
+        request_number: raw.request_number,
+        amount: gross,
+        vat_pct: vatPct,
+        status: raw.status,
+        formula_label: legalCostAFormulaLabel(feePct, vatPct),
+        formula_amount: formulaAmount,
+        amount_override: amountOverride,
+        amount_in_use: amountInUse,
+        spend_status: raw.spend_status || 'unspent',
+        note: raw.note ?? null,
+      }
+
+      const pkgKey = legalCostAPackageKey(raw.package_name)
+      if (!groupMap.has(pkgKey)) groupMap.set(pkgKey, [])
+      groupMap.get(pkgKey)!.push(row)
+    }
+
+    const groups = Array.from(groupMap.entries())
+      .sort(([a], [b]) => {
+        if (a === 'Chung') return 1
+        if (b === 'Chung') return -1
+        return a.localeCompare(b, 'vi')
+      })
+      .map(([package_name, groupRows]) => ({
+        package_name,
+        rows: groupRows,
+        group_total: groupRows.reduce((s, r) => s + r.amount_in_use, 0),
+      }))
+
+    const defaultVat =
+      (rows.results as any[]).length > 0
+        ? Number((rows.results as any[])[0].vat_pct) || 0
+        : 0
+    return c.json({
+      groups,
+      page_total: pageTotal,
+      management_fee_pct: feePct,
+      formula_label: legalCostAFormulaLabel(feePct, defaultVat),
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// PATCH /api/legal/payments/:id/cost-a — sidecar only (system_admin)
+app.patch('/api/legal/payments/:id/cost-a', authMiddleware, async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const user = c.get('user') as any
+  if (user.role !== 'system_admin') {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+  try {
+    const db = c.env.DB
+    const payment = await db.prepare(
+      `SELECT pr.*, lp.name as package_name
+       FROM payment_requests pr
+       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
+       WHERE pr.id = ?`
+    ).bind(id).first() as any
+    if (!payment) return c.json({ error: 'not found' }, 404)
+    if (!(await canAccessProject(db, user, payment.project_id))) {
+      return c.json({ error: 'Không có quyền truy cập HSPL dự án này' }, 403)
+    }
+
+    const project = await db.prepare(
+      'SELECT management_fee_pct FROM projects WHERE id = ?'
+    ).bind(payment.project_id).first() as any
+    const feePct = Number(project?.management_fee_pct) || 0
+
+    const existing = await db.prepare(
+      'SELECT * FROM legal_cost_a WHERE payment_request_id = ?'
+    ).bind(id).first() as any
+
+    const data = await c.req.json().catch(() => ({})) as any
+
+    let amountOverride: number | null
+    if (data.amount_override === null) {
+      amountOverride = null
+    } else if (data.amount_override !== undefined) {
+      amountOverride = Math.round(Number(data.amount_override) || 0)
+    } else {
+      amountOverride =
+        existing?.amount_override === null || existing?.amount_override === undefined
+          ? null
+          : Number(existing.amount_override)
+    }
+
+    const spendStatus =
+      data.spend_status === 'spent' || data.spend_status === 'unspent'
+        ? data.spend_status
+        : (existing?.spend_status || 'unspent')
+
+    const note =
+      data.note !== undefined
+        ? (data.note === null ? null : String(data.note))
+        : (existing?.note ?? null)
+
+    await db.prepare(
+      `INSERT INTO legal_cost_a (payment_request_id, amount_override, spend_status, note, updated_at)
+       VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(payment_request_id) DO UPDATE SET
+         amount_override = excluded.amount_override,
+         spend_status = excluded.spend_status,
+         note = excluded.note,
+         updated_at = datetime('now')`
+    ).bind(id, amountOverride, spendStatus, note).run()
+
+    const vatPct = Number(payment.vat_pct) || 0
+    const gross = Number(payment.amount) || 0
+    const formulaAmount = computeLegalCostA(gross, vatPct, feePct)
+    const amountInUse = amountOverride != null ? amountOverride : formulaAmount
+
+    return c.json({
+      payment_request_id: id,
+      package_name: legalCostAPackageKey(payment.package_name),
+      formula_label: legalCostAFormulaLabel(feePct, vatPct),
+      formula_amount: formulaAmount,
+      amount_override: amountOverride,
+      amount_in_use: amountInUse,
+      spend_status: spendStatus,
+      note,
+    })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }

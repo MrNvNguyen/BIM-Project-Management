@@ -5,6 +5,7 @@ import {
   amountExcludingVat,
   applyWorkDateFilter,
   computeBookedRevenue,
+  computeLegalCostA,
   computeProjectBudget,
   computeProjectLaborFromAggregates,
   computeRealtimeLaborFromAggregates,
@@ -154,6 +155,16 @@ describe('syncPaymentToRevenue (Wave A sync gate)', () => {
     expect(id).toBeNull()
     expect(harness.deletedRevenueIds).toEqual([88])
     expect(harness.paymentRevenueNulled).toBe(true)
+  })
+})
+
+describe('computeLegalCostA (Wave D2 Chi phí A)', () => {
+  it('1_395_000_000 gross, VAT 8%, fee 30% → 387_500_000', () => {
+    expect(computeLegalCostA(1_395_000_000, 8, 30)).toBe(387_500_000)
+  })
+
+  it('155_000_000 gross, VAT 8%, fee 30% → 43_055_556', () => {
+    expect(computeLegalCostA(155_000_000, 8, 30)).toBe(43_055_556)
   })
 })
 

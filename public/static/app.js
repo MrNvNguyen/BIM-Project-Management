@@ -18535,6 +18535,7 @@ function exportAnalyticsPDF() {
 
 let _legalCurrentProjectId = null
 let _legalOverviewData = null
+let _legalCostAData = null
 let _legalCurrentTab = 'stages'
 let _legalTabSetByUser = false
 let _legalProjectSearch = ''
@@ -18776,7 +18777,7 @@ async function loadLegalProject(projectId) {
     if (!isSystemAdmin) {
       // Member / Project Leader / Project Admin: chỉ hiện Văn bản gửi đi, Biên bản họp, Tài liệu đính kèm
       $('legalTabs').style.display = ''
-      ;['stages', 'payments', 'completed'].forEach(t => {
+      ;['stages', 'payments', 'completed', 'cost-a'].forEach(t => {
         const btn = $('ltab-' + t)
         if (btn) btn.style.display = 'none'
       })
@@ -18807,7 +18808,7 @@ async function loadLegalProject(projectId) {
     } else {
       // System Admin: toàn quyền tất cả tabs
       $('legalTabs').style.display = ''
-      ;['stages', 'letters', 'minutes', 'docs', 'payments'].forEach(t => {
+      ;['stages', 'letters', 'minutes', 'docs', 'payments', 'cost-a'].forEach(t => {
         const btn = $('ltab-' + t)
         if (btn) btn.style.display = ''
       })
@@ -18847,13 +18848,21 @@ async function loadLegalProject(projectId) {
   }
 }
 
+function _legalTabPanelEl(tab) {
+  if (tab === 'cost-a') return $('legalTabCostA')
+  return $('legalTab' + tab.charAt(0).toUpperCase() + tab.slice(1))
+}
+
 function switchLegalTab(tab) {
+  if (tab === 'cost-a' && currentUser?.role !== 'system_admin') {
+    tab = 'letters'
+  }
   // Nếu gọi từ onclick của người dùng → đánh dấu
   _legalCurrentTab = tab
   _legalTabSetByUser = true
-  ;['stages','letters','minutes','docs','payments','completed'].forEach(t => {
+  ;['stages','letters','minutes','docs','payments','cost-a','completed'].forEach(t => {
     const btn = $('ltab-' + t)
-    const panel = $('legalTab' + t.charAt(0).toUpperCase() + t.slice(1))
+    const panel = _legalTabPanelEl(t)
     if (btn) btn.classList.toggle('active', t === tab)
     if (panel) panel.style.display = t === tab ? '' : 'none'
   })
@@ -18861,6 +18870,10 @@ function switchLegalTab(tab) {
 }
 
 function renderLegalTab(tab) {
+  if (tab === 'cost-a') {
+    loadLegalCostA()
+    return
+  }
   if (!_legalOverviewData) return
   if (tab === 'stages') renderLegalPackages(_legalOverviewData.packages || [], _legalOverviewData.stages || [])
   else if (tab === 'letters') renderLegalLetters(_legalOverviewData.letters || [])
@@ -18868,6 +18881,172 @@ function renderLegalTab(tab) {
   else if (tab === 'docs') renderLegalDocs(_legalOverviewData.documents || [])
   else if (tab === 'payments') renderPaymentStatus(_legalOverviewData.payments || [])
   else if (tab === 'completed') renderCompletedItemsTab()
+}
+
+async function loadLegalCostA() {
+  const container = $('legalCostAContainer')
+  if (!container || !_legalCurrentProjectId) return
+  if (currentUser?.role !== 'system_admin') {
+    switchLegalTab('letters')
+    return
+  }
+  container.innerHTML = '<div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>'
+  try {
+    const data = await api(`/legal/${_legalCurrentProjectId}/cost-a`)
+    _legalCostAData = data
+    renderLegalCostA(data)
+  } catch (e) {
+    container.innerHTML = `<div class="text-center py-8 text-red-500">${escHtml(e.message || 'Lỗi tải Chi phí A')}</div>`
+  }
+}
+
+function renderLegalCostA(data) {
+  const container = $('legalCostAContainer')
+  const totalEl = $('legalCostAPageTotal')
+  const hintEl = $('legalCostAFormulaHint')
+  if (!container) return
+  if (!data || !(data.groups || []).length) {
+    if (totalEl) totalEl.textContent = 'Tổng trang: ' + fmtMoney(0)
+    if (hintEl) hintEl.textContent = data?.formula_label ? `Công thức gợi ý: ${data.formula_label}` : ''
+    container.innerHTML = '<div class="text-center py-10 text-gray-400">Chưa có phiếu thanh toán phù hợp</div>'
+    return
+  }
+  if (totalEl) totalEl.textContent = 'Tổng trang: ' + fmtMoney(data.page_total || 0)
+  if (hintEl) {
+    const fee = data.management_fee_pct != null ? `${data.management_fee_pct}% phí QL` : ''
+    hintEl.textContent = [fee, data.formula_label ? `(${data.formula_label})` : ''].filter(Boolean).join(' ')
+  }
+
+  container.innerHTML = (data.groups || []).map(grp => {
+    const rowsHtml = (grp.rows || []).map(r => {
+      const overrideDisplay = r.amount_override != null ? fmt(Math.round(r.amount_override)) : ''
+      const autoHint = r.amount_override == null ? '<span class="legal-cost-a-auto">(auto)</span>' : ''
+      const ref = [r.payment_phase, r.description].filter(Boolean).join(' — ') || `#${r.payment_request_id}`
+      return `<tr data-cost-a-id="${r.payment_request_id}"
+        data-override-active="${r.amount_override != null ? '1' : '0'}"
+        data-override-value="${r.amount_override != null ? Math.round(r.amount_override) : ''}">
+        <td>${escHtml(ref)}</td>
+        <td>${escHtml(r.formula_label || '')}</td>
+        <td>${fmtMoney(r.formula_amount)}</td>
+        <td>
+          <input type="text" class="legal-cost-a-override" data-raw="${r.amount_override != null ? Math.round(r.amount_override) : ''}"
+            value="${escHtml(overrideDisplay)}" placeholder="Ghi đè" ${autoHint ? 'title="Để trống = theo công thức"' : ''}>
+          ${autoHint}
+        </td>
+        <td><strong>${fmtMoney(r.amount_in_use)}</strong></td>
+        <td>
+          <button type="button" class="btn-secondary text-xs legal-cost-a-reset" onclick="legalCostAReset(${r.payment_request_id})">Reset</button>
+        </td>
+        <td>
+          <select class="legal-cost-a-spend" onchange="legalCostASpendChange(${r.payment_request_id}, this)">
+            <option value="unspent" ${r.spend_status === 'unspent' ? 'selected' : ''}>Chưa chi</option>
+            <option value="spent" ${r.spend_status === 'spent' ? 'selected' : ''}>Đã chi</option>
+          </select>
+        </td>
+        <td><textarea class="legal-cost-a-note" rows="2" placeholder="Ghi chú">${escHtml(r.note || '')}</textarea></td>
+      </tr>`
+    }).join('')
+    return `<div class="legal-cost-a-card">
+      <div class="legal-cost-a-card-head">
+        <span><i class="fas fa-box mr-2"></i>${escHtml(grp.package_name || 'Chung')}</span>
+        <span class="legal-cost-a-card-total">Tổng gói: ${fmtMoney(grp.group_total || 0)}</span>
+      </div>
+      <table class="legal-cost-a-table">
+        <thead><tr>
+          <th>Phiếu</th><th>Công thức</th><th>Theo CT</th><th>Ghi đè</th><th>Đang dùng</th><th></th><th>Trạng thái chi</th><th>Ghi chú</th>
+        </tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>`
+  }).join('')
+
+  container.querySelectorAll('.legal-cost-a-override').forEach(inp => {
+    inp.addEventListener('blur', legalCostAOverrideBlur)
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); inp.blur() } })
+    inp.addEventListener('input', legalCostAOverrideInputFormat)
+  })
+  container.querySelectorAll('.legal-cost-a-note').forEach(ta => {
+    ta.addEventListener('blur', legalCostANoteBlur)
+  })
+}
+
+function _legalCostARowEl(paymentId) {
+  return document.querySelector(`tr[data-cost-a-id="${paymentId}"]`)
+}
+
+function _legalCostAPatchPayload(paymentId, fromOverrideField) {
+  const row = _legalCostARowEl(paymentId)
+  if (!row) return null
+  const overrideInp = row.querySelector('.legal-cost-a-override')
+  const spendSel = row.querySelector('.legal-cost-a-spend')
+  const noteTa = row.querySelector('.legal-cost-a-note')
+  let amountOverride = null
+  if (fromOverrideField && overrideInp) {
+    const raw = overrideInp.dataset.raw
+    if (raw !== undefined && raw !== '') amountOverride = Math.round(Number(raw) || 0)
+    else if (overrideInp.value.trim() !== '') {
+      const parsed = parseInt(String(overrideInp.value).replace(/\D/g, ''), 10)
+      if (!Number.isNaN(parsed)) amountOverride = parsed
+    }
+    row.dataset.overrideActive = amountOverride != null ? '1' : '0'
+    row.dataset.overrideValue = amountOverride != null ? String(amountOverride) : ''
+  } else if (row.dataset.overrideActive === '1') {
+    amountOverride = Math.round(Number(row.dataset.overrideValue) || 0)
+  }
+  return {
+    amount_override: amountOverride,
+    spend_status: spendSel?.value || 'unspent',
+    note: noteTa ? (noteTa.value.trim() || null) : null,
+  }
+}
+
+async function legalCostAPatchRow(paymentId, fromOverrideField) {
+  const body = _legalCostAPatchPayload(paymentId, fromOverrideField)
+  if (!body) return
+  try {
+    await api(`/legal/payments/${paymentId}/cost-a`, { method: 'PATCH', data: body })
+    await loadLegalCostA()
+  } catch (e) {
+    toast('Lỗi lưu Chi phí A: ' + e.message, 'error')
+  }
+}
+
+function legalCostAOverrideInputFormat(ev) {
+  const el = ev.target
+  const raw = parseInt(String(el.value).replace(/\D/g, ''), 10)
+  el.dataset.raw = Number.isNaN(raw) ? '' : String(raw)
+  el.value = el.dataset.raw ? fmt(Number(el.dataset.raw)) : ''
+}
+
+function legalCostAOverrideBlur(ev) {
+  legalCostAPatchRow(Number(ev.target.closest('tr')?.dataset?.costAId), true)
+}
+
+function legalCostANoteBlur(ev) {
+  legalCostAPatchRow(Number(ev.target.closest('tr')?.dataset?.costAId), false)
+}
+
+function legalCostASpendChange(paymentId, sel) {
+  legalCostAPatchRow(paymentId, false)
+}
+
+async function legalCostAReset(paymentId) {
+  try {
+    const row = _legalCostARowEl(paymentId)
+    const spendSel = row?.querySelector('.legal-cost-a-spend')
+    const noteTa = row?.querySelector('.legal-cost-a-note')
+    await api(`/legal/payments/${paymentId}/cost-a`, {
+      method: 'PATCH',
+      data: {
+        amount_override: null,
+        spend_status: spendSel?.value || 'unspent',
+        note: noteTa ? (noteTa.value.trim() || null) : null,
+      },
+    })
+    await loadLegalCostA()
+  } catch (e) {
+    toast('Lỗi Reset Chi phí A: ' + e.message, 'error')
+  }
 }
 
 

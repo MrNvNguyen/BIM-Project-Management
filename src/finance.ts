@@ -24,6 +24,17 @@ export function amountExcludingVat(grossAmount: number, vatPct: number): number 
   return computeBookedRevenue(grossAmount, vatPct, 0).amountBeforeVat
 }
 
+/** Chi phí A (HSPL): trước VAT × phí QL% — không dùng booked path. */
+export function computeLegalCostA(
+  grossAmount: number,
+  vatPct: number,
+  managementFeePct: number
+): number {
+  const beforeVat = amountExcludingVat(grossAmount, vatPct)
+  const fee = Number(managementFeePct) || 0
+  return Math.round(beforeVat * fee / 100)
+}
+
 /** Cộng dồn NT + TT trước VAT theo project_id (từ payment_requests). */
 export function aggregatePaymentsBeforeVat(
   rows: Array<{ project_id: number; amount?: number; paid_amount?: number; vat_pct?: number | null }>

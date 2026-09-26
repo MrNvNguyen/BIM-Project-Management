@@ -640,6 +640,20 @@
     .legal-payment-sheet-readonly { font-size: 11px; color: var(--shell-text-muted); line-height: 1.25; white-space: nowrap; }
     .legal-payment-sheet-readonly strong { color: var(--shell-text); font-weight: 600; }
     .legal-payment-sheet-actions { display: flex; justify-content: center; gap: 2px; }
+    .legal-cost-a-page-total { font-size: 14px; font-weight: 700; color: var(--primary); margin-bottom: 12px; }
+    .legal-cost-a-card { border: 1px solid var(--shell-border); border-radius: 10px; margin-bottom: 16px; overflow: hidden; background: var(--shell-surface); }
+    .legal-cost-a-card-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--shell-table-head-bg); border-bottom: 1px solid var(--shell-border); font-weight: 700; font-size: 13px; }
+    .legal-cost-a-card-total { font-size: 12px; font-weight: 600; color: var(--primary); }
+    .legal-cost-a-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .legal-cost-a-table th, .legal-cost-a-table td { padding: 8px 10px; border-bottom: 1px solid var(--shell-table-row-border); text-align: left; vertical-align: middle; }
+    .legal-cost-a-table th { font-size: 11px; font-weight: 600; color: var(--shell-text-muted); background: var(--shell-input-bg); }
+    .legal-cost-a-table tr:last-child td { border-bottom: none; }
+    .legal-cost-a-table input[type="text"], .legal-cost-a-table select, .legal-cost-a-table textarea {
+      width: 100%; min-width: 72px; padding: 4px 6px; border: 1px solid var(--shell-border); border-radius: 6px;
+      background: var(--shell-input-bg); color: var(--shell-text); font-size: 12px;
+    }
+    .legal-cost-a-table textarea { min-height: 36px; resize: vertical; }
+    .legal-cost-a-auto { font-size: 10px; color: var(--shell-text-muted); }
     .legal-checklist-host { display: flex; flex-direction: column; gap: 14px; }
     .legal-checklist-stage { border: 1px solid var(--shell-border); border-radius: 10px; overflow: hidden; background: var(--shell-surface); }
     .legal-checklist-stage-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--shell-table-head-bg); border-bottom: 1px solid var(--shell-border); flex-wrap: wrap; }
@@ -5059,6 +5073,7 @@
           <button class="tab-btn" id="ltab-minutes" onclick="switchLegalTab('minutes')"><i class="fas fa-clipboard-list mr-1"></i>Biên bản họp</button>
           <button class="tab-btn" id="ltab-docs" onclick="switchLegalTab('docs')"><i class="fas fa-paperclip mr-1"></i>Tài liệu đính kèm</button>
           <button class="tab-btn" id="ltab-payments" onclick="switchLegalTab('payments')"><i class="fas fa-money-check-alt mr-1"></i>Tình trạng thanh toán</button>
+          <button class="tab-btn" id="ltab-cost-a" onclick="switchLegalTab('cost-a')"><i class="fas fa-calculator mr-1"></i>Chi phí A</button>
           <button class="tab-btn" id="ltab-completed" onclick="switchLegalTab('completed')" style="border-color:#10b981;color:#065f46;background:#f0fdf4"><i class="fas fa-calendar-check mr-1 text-green-600"></i>Theo dõi hoàn thành</button>
         </div>
 
@@ -5121,6 +5136,20 @@
             <div id="paymentSummaryCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
             <div id="legalPaymentPackageSubtabs" role="tablist" class="legal-package-subtabs"></div>
             <div id="legalPaymentsTable" class="legal-payment-sheet-wrap">
+              <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Chi phí A (system_admin) -->
+        <div id="legalTabCostA" style="display:none">
+          <div class="card legal-payment-card">
+            <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-calculator text-indigo-600 mr-2"></i>Chi phí A</h3>
+              <span class="text-xs text-gray-500" id="legalCostAFormulaHint"></span>
+            </div>
+            <div id="legalCostAPageTotal" class="legal-cost-a-page-total"></div>
+            <div id="legalCostAContainer">
               <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
             </div>
           </div>
