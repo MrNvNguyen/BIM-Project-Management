@@ -21336,8 +21336,8 @@ async function savePayment(e) {
     vat_pct:         vatPctVal
   }
   try {
-    const syncStatuses = ['paid', 'partial']
-    const willSync = syncStatuses.includes(payload.status) && (payload.paid_amount || 0) > 0
+    const syncStatuses = ['processing', 'partial', 'paid']
+    const willSync = syncStatuses.includes(payload.status) && (payload.amount || 0) > 0
     if (id) {
       const res = await api(`/legal/payments/${id}`, { method: 'PUT', data: payload })
       const msg = willSync

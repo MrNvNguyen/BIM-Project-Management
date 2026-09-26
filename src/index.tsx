@@ -14039,7 +14039,8 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
       currency: currency || 'VND',
       paid_date: paid_date || null, invoice_number: invoice_number || null,
       payment_phase: payment_phase || null, status: status || 'pending',
-      revenue_id: null, notes: notes || null, vat_pct: vatPctVal
+      revenue_id: null, notes: notes || null, vat_pct: vatPctVal,
+      request_date: request_date || null,
     }, user.id)
 
     // Lưu revenue_id vào payment nếu có
@@ -14120,7 +14121,8 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
       notes: merged.notes || null,
       vat_pct: merged.vat_pct != null
         ? Math.min(100, Math.max(0, parseFloat(merged.vat_pct) || 0))
-        : (current.vat_pct || 0)
+        : (current.vat_pct || 0),
+      request_date: merged.request_date ?? current.request_date ?? null,
     }, user.id)
 
     // Cập nhật revenue_id
@@ -14216,13 +14218,14 @@ app.delete('/api/legal/payments/:id', authMiddleware, async (c) => {
   }
 })
 
-// POST /api/legal/:projectId/resync-revenues — re-sync mọi phiếu đã NT (amount > 0), gồm pending
+// POST /api/legal/:projectId/resync-revenues — áp gate sync (processing|partial|paid); gỡ pending/rejected
 app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, async (c) => {
   const projectId = parseInt(c.req.param('projectId'))
   const user = c.get('user') as any
   try {
     const payments = await c.env.DB.prepare(
-      `SELECT * FROM payment_requests WHERE project_id = ? AND status IN ('paid','partial','pending') AND amount > 0`
+      `SELECT * FROM payment_requests WHERE project_id = ?
+       AND (status IN ('processing','partial','paid','pending','rejected') OR revenue_id IS NOT NULL)`
     ).bind(projectId).all()
 
     let synced = 0
@@ -14236,7 +14239,8 @@ app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, asy
         invoice_number: p.invoice_number || null,
         payment_phase: p.payment_phase || null, status: p.status,
         revenue_id: p.revenue_id || null, notes: p.notes || null,
-        vat_pct: p.vat_pct || 0
+        vat_pct: p.vat_pct || 0,
+        request_date: p.request_date || null,
       }, user.id)
       synced++
     }
@@ -14246,12 +14250,13 @@ app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, asy
   }
 })
 
-// POST /api/legal/resync-revenues-all — re-sync mọi phiếu amount > 0 (gồm pending)
+// POST /api/legal/resync-revenues-all — toàn DB: gate mới + phiếu còn revenue_id
 app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) => {
   const user = c.get('user') as any
   try {
     const payments = await c.env.DB.prepare(
-      `SELECT * FROM payment_requests WHERE status IN ('paid','partial','pending') AND amount > 0`
+      `SELECT * FROM payment_requests
+       WHERE status IN ('processing','partial','paid','pending','rejected') OR revenue_id IS NOT NULL`
     ).all()
 
     let synced = 0
@@ -14267,7 +14272,8 @@ app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) 
           invoice_number: p.invoice_number || null,
           payment_phase: p.payment_phase || null, status: p.status,
           revenue_id: p.revenue_id || null, notes: p.notes || null,
-          vat_pct: p.vat_pct || 0
+          vat_pct: p.vat_pct || 0,
+          request_date: p.request_date || null,
         }, user.id)
         synced++
       } catch (e: any) {

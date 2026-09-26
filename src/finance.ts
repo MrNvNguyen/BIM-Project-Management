@@ -151,10 +151,16 @@ export function taskComputedProgress(totalTasks: number, doneTasks: number): num
   return total > 0 ? Math.round((done / total) * 100) : 0
 }
 
+const REVENUE_BOOK_STATUSES = new Set(['processing', 'partial', 'paid'])
+
 export function paymentStatusToRevenue(status: string): string {
   if (status === 'paid') return 'paid'
   if (status === 'partial') return 'partial'
   return 'pending'
+}
+
+function isoDateToday(): string {
+  return new Date().toISOString().slice(0, 10)
 }
 
 export function enrichPaymentMetrics(payment: {
@@ -228,11 +234,13 @@ export async function syncPaymentToRevenue(
     revenue_id: number | null
     notes: string | null
     vat_pct?: number | null
+    request_date?: string | null
   },
   userId: number
 ): Promise<number | null> {
   const rawAmount = payment.amount || 0
-  const shouldSync = rawAmount > 0
+  const status = String(payment.status || '')
+  const shouldSync = rawAmount > 0 && REVENUE_BOOK_STATUSES.has(status)
 
   const projRow = await db.prepare(
     'SELECT management_fee_pct FROM projects WHERE id = ?'
@@ -253,7 +261,14 @@ export async function syncPaymentToRevenue(
     ? `[${payment.payment_phase}] ${payment.description}`
     : payment.description
   const revenueStatus = paymentStatusToRevenue(payment.status)
-  const revenueDate = payment.status === 'pending' ? null : (payment.paid_date || null)
+  let revenueDate: string | null
+  if (status === 'processing') {
+    revenueDate = payment.request_date || isoDateToday()
+  } else if (status === 'partial' || status === 'paid') {
+    revenueDate = payment.paid_date || isoDateToday()
+  } else {
+    revenueDate = null
+  }
 
   let calcNote = ''
   if (vatPct > 0 && feePct > 0) {

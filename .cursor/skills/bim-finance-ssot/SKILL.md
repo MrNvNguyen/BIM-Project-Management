@@ -17,7 +17,7 @@ Canonical text: [docs/TU-DIEN-SO-LIEU.md](../../../docs/TU-DIEN-SO-LIEU.md). Cod
 | Nghiệm thu | API `amount_before_vat` = `amount ÷ (1+vat%)` | treating gross+VAT as NT vs GTHĐ |
 | GTTT / thanh toán báo cáo | API `cash_before_vat` = `paid_amount ÷ (1+vat%)` | comparing GTHĐ to gross cash |
 | Dòng tiền gross | `cash_collected` (`paid_amount`) | adding cash into booked revenue |
-| Doanh thu vào sổ | `project_revenues.amount` via `syncPaymentToRevenue` | recomputing VAT/fee in `public/static/app.js` |
+| Doanh thu vào sổ | `project_revenues.amount` via `syncPaymentToRevenue` when payment `processing`/`partial`/`paid` and `amount > 0`; `pending`/`rejected` → delete linked revenue | recomputing VAT/fee in `public/static/app.js` |
 | Ngân sách | `computeProjectBudget(contract_value, management_fee_pct)` | writing `projects.budget` as KPI |
 
 ```text
