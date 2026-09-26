@@ -19180,7 +19180,8 @@ function renderLegalChecklistDisplayRow(item, stageId, isChild) {
   const ringClass = isDone ? 'done' : isInprog ? 'progress' : 'pending'
   const dueOverdue = item.due_date && new Date(item.due_date) < new Date() && !isDone
   const itemArg = JSON.stringify(item).replace(/"/g, '&quot;')
-  const statusClass = LEGAL_STATUS_COLORS[item.status] || 'badge-todo'
+  const statusKey = item.status && LEGAL_STATUS_LABELS[item.status] ? item.status : 'pending'
+  const statusClass = `legal-status-${statusKey}`
   const titleClass = isDone ? ' legal-checklist-title-done' : ''
   const statusOptions = Object.keys(LEGAL_STATUS_LABELS).map(k => {
     const sel = item.status === k ? ' selected' : ''
