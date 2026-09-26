@@ -19373,10 +19373,58 @@ function initLegalChecklistDnD() {
   })
 }
 
+/** Checklist status ring: tick toggles toward completed (not full status cycle). */
+function legalChecklistRingNextStatus(status) {
+  const s = status || 'pending'
+  if (s === 'completed') return 'pending'
+  if (s === 'na') return 'pending'
+  return 'completed'
+}
+
+function legalChecklistApplyRowStatusUI(row, status) {
+  if (!row) return
+  const isDone = status === 'completed'
+  const isInprog = status === 'in_progress'
+  const isNa = status === 'na'
+  const ringClass = isDone ? 'done' : isInprog ? 'progress' : isNa ? 'na' : 'pending'
+  const ring = row.querySelector('.legal-checklist-status-ring')
+  if (ring) {
+    ring.className = `legal-checklist-status-ring ${ringClass}`
+    ring.setAttribute('aria-pressed', isDone ? 'true' : 'false')
+    const label = isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'
+    ring.setAttribute('aria-label', label)
+    ring.title = label
+  }
+  const titleEl = row.querySelector('.legal-checklist-inline-title')
+  if (titleEl) titleEl.classList.toggle('legal-checklist-title-done', isDone)
+  const sel = row.querySelector('.legal-checklist-inline-status')
+  if (sel) {
+    sel.value = status
+    sel.className = `legal-checklist-inline-status legal-status-${status}`
+  }
+  const dueInput = row.querySelector('.legal-checklist-inline-date')
+  const dueOverdue = dueInput?.value && new Date(dueInput.value) < new Date() && !isDone
+  row.classList.toggle('is-overdue', !!dueOverdue)
+}
+
+async function legalChecklistStatusRingClick(e, id, item) {
+  e.preventDefault()
+  e.stopPropagation()
+  if (typeof item === 'string') item = JSON.parse(item.replace(/&quot;/g, '"'))
+  const cur = item.status || 'pending'
+  const next = legalChecklistRingNextStatus(cur)
+  if (next === cur) return
+  const row = e.currentTarget.closest('.legal-checklist-row')
+  legalChecklistApplyRowStatusUI(row, next)
+  await legalInlineSaveStatus(id, next, item)
+}
+
 function renderLegalChecklistDisplayRow(item, stageId, isChild) {
   const isDone = item.status === 'completed'
   const isInprog = item.status === 'in_progress'
-  const ringClass = isDone ? 'done' : isInprog ? 'progress' : 'pending'
+  const isNa = item.status === 'na'
+  const ringClass = isDone ? 'done' : isInprog ? 'progress' : isNa ? 'na' : 'pending'
+  const ringLabel = isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'
   const dueOverdue = item.due_date && new Date(item.due_date) < new Date() && !isDone
   const itemArg = JSON.stringify(item).replace(/"/g, '&quot;')
   const statusKey = item.status && LEGAL_STATUS_LABELS[item.status] ? item.status : 'pending'
@@ -19399,7 +19447,10 @@ function renderLegalChecklistDisplayRow(item, stageId, isChild) {
          data-parent-id="${parentAttr}"
          data-is-child="${isChild ? '1' : '0'}">
       ${dragHandle}
-      <span class="legal-checklist-status-ring ${ringClass}" aria-hidden="true"></span>
+      <button type="button" class="legal-checklist-status-ring ${ringClass}"
+        aria-label="${escHtml(ringLabel)}" aria-pressed="${isDone ? 'true' : 'false'}"
+        title="${escHtml(ringLabel)}"
+        onclick="legalChecklistStatusRingClick(event, ${item.id}, ${itemArg})"></button>
       <span class="legal-checklist-title legal-checklist-inline-title${titleClass}"
             contenteditable="true"
             spellcheck="false"

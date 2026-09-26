@@ -600,16 +600,100 @@
     .legal-checklist-stage-count { font-size: 11px; font-weight: 600; color: var(--shell-text-muted); background: var(--shell-input-bg); border: 1px solid var(--shell-border); border-radius: 999px; padding: 2px 10px; }
     .legal-checklist-stage-actions { display: flex; gap: 4px; flex-shrink: 0; }
     .legal-checklist-rows { display: flex; flex-direction: column; }
-    .legal-checklist-row { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--shell-table-row-border); cursor: default; background: var(--shell-surface); transition: background .12s; }
+    .legal-checklist-row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--shell-table-row-border); cursor: default; background: var(--shell-surface); transition: background .12s; }
     .legal-checklist-row:last-child { border-bottom: none; }
     .legal-checklist-row:hover { background: var(--shell-row-hover); }
     .legal-checklist-row.is-child { padding-left: 28px; }
     .legal-checklist-row.is-overdue { background: rgba(248, 113, 113, 0.08); }
     html[data-theme="dark"] .legal-checklist-row.is-overdue { background: rgba(248, 113, 113, 0.12); }
-    .legal-checklist-status-ring { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; border: 2px solid var(--shell-text-faint); }
-    .legal-checklist-status-ring.done { background: var(--primary); border-color: var(--primary); }
-    .legal-checklist-status-ring.progress { border-color: #3b82f6; background: rgba(59, 130, 246, 0.35); }
-    .legal-checklist-status-ring.pending { background: transparent; }
+    .legal-checklist-status-ring {
+      box-sizing: border-box;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      min-width: 26px;
+      min-height: 26px;
+      padding: 0;
+      margin: 0;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      cursor: pointer;
+      position: relative;
+    }
+    .legal-checklist-status-ring::before {
+      content: '';
+      box-sizing: border-box;
+      display: block;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      border: 2px solid var(--shell-text-muted);
+      background: transparent;
+      transition: border-color .12s, background .12s, box-shadow .12s;
+    }
+    .legal-checklist-status-ring:hover::before {
+      border-color: var(--primary);
+      background: rgba(0, 166, 81, 0.08);
+    }
+    .legal-checklist-status-ring:focus-visible {
+      outline: 2px solid rgba(0, 166, 81, 0.45);
+      outline-offset: 1px;
+    }
+    .legal-checklist-status-ring.pending::before {
+      border-color: var(--shell-text-muted);
+      background: transparent;
+    }
+    html[data-theme="dark"] .legal-checklist-status-ring.pending::before {
+      border-color: #94a3b8;
+      background: transparent;
+    }
+    .legal-checklist-status-ring.progress::before {
+      border-color: #2563eb;
+      background: rgba(59, 130, 246, 0.22);
+      box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.15);
+    }
+    html[data-theme="dark"] .legal-checklist-status-ring.progress::before {
+      border-color: #60a5fa;
+      background: rgba(59, 130, 246, 0.28);
+    }
+    .legal-checklist-status-ring.done::before {
+      border-color: var(--primary);
+      background: var(--primary);
+    }
+    .legal-checklist-status-ring.done:hover::before {
+      border-color: var(--primary);
+      background: var(--primary);
+    }
+    .legal-checklist-status-ring.done::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 4px;
+      height: 7px;
+      margin-left: -2.5px;
+      margin-top: -5px;
+      border: solid #fff;
+      border-width: 0 1.5px 1.5px 0;
+      transform: rotate(45deg);
+      pointer-events: none;
+    }
+    .legal-checklist-status-ring.na::before {
+      border-style: dashed;
+      border-color: var(--shell-text-faint);
+      background: rgba(148, 163, 184, 0.12);
+    }
+    html[data-theme="dark"] .legal-checklist-status-ring.na::before {
+      border-color: #64748b;
+      background: rgba(100, 116, 139, 0.2);
+    }
+    .legal-checklist-status-ring.na {
+      opacity: 0.85;
+    }
     .legal-checklist-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; color: var(--shell-text); line-height: 1.35; }
     .legal-checklist-row.is-child .legal-checklist-title { font-size: 12px; font-weight: 400; color: var(--shell-text-muted); }
     .legal-checklist-due { font-size: 11px; font-weight: 600; color: var(--shell-text-muted); padding: 3px 8px; border-radius: 6px; background: var(--shell-input-bg); border: 1px solid var(--shell-border); white-space: nowrap; }
