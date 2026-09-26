@@ -309,6 +309,13 @@ function api(endpoint, options = {}) {
     headers,
     ...options
   }).then(r => r.data).catch(err => {
+    if (!err.response && (err.message === 'Network Error' || err.code === 'ERR_NETWORK')) {
+      const hint = new Error(
+        'Không kết nối được server API — dùng http://localhost:5173 (npm run dev) hoặc npm run preview:watch (port 8788)'
+      )
+      hint.cause = err
+      throw hint
+    }
     throw err
   })
 }
