@@ -19180,19 +19180,41 @@ function renderLegalChecklistDisplayRow(item, stageId, isChild) {
   const ringClass = isDone ? 'done' : isInprog ? 'progress' : 'pending'
   const dueOverdue = item.due_date && new Date(item.due_date) < new Date() && !isDone
   const itemArg = JSON.stringify(item).replace(/"/g, '&quot;')
-  const dueLabel = item.due_date ? fmtDate(item.due_date) : '—'
-  const statusLabel = LEGAL_STATUS_LABELS[item.status] || item.status
   const statusClass = LEGAL_STATUS_COLORS[item.status] || 'badge-todo'
   const titleClass = isDone ? ' legal-checklist-title-done' : ''
+  const statusOptions = Object.keys(LEGAL_STATUS_LABELS).map(k => {
+    const sel = item.status === k ? ' selected' : ''
+    return `<option value="${k}"${sel}>${escHtml(LEGAL_STATUS_LABELS[k])}</option>`
+  }).join('')
   return `
     <div class="legal-checklist-row${isChild ? ' is-child' : ''}${dueOverdue ? ' is-overdue' : ''}"
-         role="button" tabindex="0"
-         onclick="openEditLegalItem(${itemArg})"
-         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openEditLegalItem(${itemArg})}">
+         data-legal-item-id="${item.id}">
       <span class="legal-checklist-status-ring ${ringClass}" aria-hidden="true"></span>
-      <span class="legal-checklist-title${titleClass}">${escHtml(item.title || '')}</span>
-      <span class="legal-checklist-due">${dueLabel}</span>
-      <span class="badge ${statusClass}">${escHtml(statusLabel)}</span>
+      <span class="legal-checklist-title legal-checklist-inline-title${titleClass}"
+            contenteditable="true"
+            spellcheck="false"
+            data-field="title"
+            data-item-id="${item.id}"
+            onclick="event.stopPropagation()"
+            onkeydown="legalChecklistTitleKeydown(event, ${item.id}, ${itemArg})"
+            oninput="legalInlineSaveDebounced(${item.id}, 'title', this.innerText.trim(), ${itemArg})"
+            onblur="legalInlineSaveFlush(${item.id}, 'title', this.innerText.trim(), ${itemArg})"
+            role="textbox"
+            aria-label="Tên hạng mục">${escHtml(item.title || '')}</span>
+      <input type="date"
+        class="legal-checklist-inline-date"
+        value="${item.due_date || ''}"
+        onclick="event.stopPropagation()"
+        onchange="legalInlineSave(${item.id}, 'due_date', this.value, ${itemArg})"
+        title="Hạn thực hiện"
+        aria-label="Hạn thực hiện" />
+      <select class="legal-checklist-inline-status ${statusClass}"
+        onclick="event.stopPropagation()"
+        onchange="legalInlineSaveStatus(${item.id}, this.value, ${itemArg})"
+        aria-label="Trạng thái">${statusOptions}</select>
+      <button type="button" class="btn-secondary text-xs legal-checklist-overflow-btn"
+        onclick="event.stopPropagation();openEditLegalItem(${itemArg})"
+        title="Chi tiết (loại, ngày hoàn thành, ghi chú)"><i class="fas fa-ellipsis-h"></i></button>
     </div>`
 }
 
@@ -20566,9 +20588,48 @@ async function legalToggleComplete(id, isChecked, item) {
   }
 }
 
+// ── Checklist display face: debounced inline save (C2) ───────────────────────
+const _legalInlineSaveTimers = {}
+
+function legalInlineSaveDebounced(id, field, value, item, delayMs = 550) {
+  const key = `${id}:${field}`
+  if (_legalInlineSaveTimers[key]) clearTimeout(_legalInlineSaveTimers[key])
+  _legalInlineSaveTimers[key] = setTimeout(() => {
+    delete _legalInlineSaveTimers[key]
+    legalInlineSave(id, field, value, item)
+  }, delayMs)
+}
+
+function legalInlineSaveFlush(id, field, value, item) {
+  const key = `${id}:${field}`
+  if (_legalInlineSaveTimers[key]) {
+    clearTimeout(_legalInlineSaveTimers[key])
+    delete _legalInlineSaveTimers[key]
+  }
+  legalInlineSave(id, field, value, item)
+}
+
+function legalChecklistTitleKeydown(e, itemId, item) {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    const el = e.target
+    if (el) {
+      legalInlineSaveFlush(itemId, 'title', el.innerText.trim(), item)
+      el.blur()
+    }
+  }
+}
+
+async function legalInlineSaveStatus(id, value, item) {
+  if (typeof item === 'string') item = JSON.parse(item)
+  if (value === (item.status || 'pending')) return
+  await legalInlineSave(id, 'status', value, item)
+  if (_legalCurrentProjectId) await loadLegalProject(_legalCurrentProjectId)
+}
+
 // ── Inline Edit: lưu trực tiếp từ contenteditable / date input ───────────────
 async function legalInlineSave(id, field, value, item) {
-  if (typeof item === 'string') item = JSON.parse(item)
+  if (typeof item === 'string') item = JSON.parse(item.replace(/&quot;/g, '"'))
 
   // Không lưu nếu không thay đổi
   const oldVal = (item[field] || '').toString().trim()
@@ -20581,7 +20642,7 @@ async function legalInlineSave(id, field, value, item) {
     item_type: item.item_type || 'task',
     due_date: field === 'due_date' ? (value || null) : (item.due_date || null),
     actual_completion_date: field === 'actual_completion_date' ? (value || null) : (item.actual_completion_date || null),
-    status: item.status || 'pending',
+    status: field === 'status' ? value : (item.status || 'pending'),
     notes: field === 'notes' ? (value || null) : (item.notes || null),
   }
 
