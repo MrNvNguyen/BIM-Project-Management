@@ -22079,6 +22079,87 @@ function _legalPaymentSyncToast(status, amount) {
   return syncStatuses.includes(status) && (amount || 0) > 0
 }
 
+const _legalPaymentCommitTimers = {}
+
+function legalPaymentCommitDebounced(ev, paymentId, delayMs = 500) {
+  const key = paymentId != null && paymentId !== 'null' ? String(paymentId) : 'new'
+  if (_legalPaymentCommitTimers[key]) clearTimeout(_legalPaymentCommitTimers[key])
+  _legalPaymentCommitTimers[key] = setTimeout(() => {
+    delete _legalPaymentCommitTimers[key]
+    legalPaymentCommitRow(ev, paymentId === 'null' || paymentId === null ? null : paymentId)
+  }, delayMs)
+}
+
+function legalPaymentCommitFlush(ev, paymentId) {
+  const key = paymentId != null && paymentId !== 'null' ? String(paymentId) : 'new'
+  if (_legalPaymentCommitTimers[key]) {
+    clearTimeout(_legalPaymentCommitTimers[key])
+    delete _legalPaymentCommitTimers[key]
+  }
+  return legalPaymentCommitRow(ev, paymentId === 'null' || paymentId === null ? null : paymentId)
+}
+
+function _legalPaymentPayloadUnchanged(paymentId, payload) {
+  const p = (_legalOverviewData?.payments || []).find(x => Number(x.id) === Number(paymentId))
+  if (!p) return false
+  const str = (v) => String(v ?? '').trim()
+  const num = (v) => Number(v) || 0
+  const dateOrNull = (v) => (v ? String(v) : null)
+  const itemId = (v) => (v == null || v === '' ? null : Number(v) || null)
+  return (
+    str(payload.description) === str(p.description) &&
+    str(payload.payment_phase) === str(p.payment_phase) &&
+    str(payload.request_number) === str(p.request_number) &&
+    dateOrNull(payload.request_date) === dateOrNull(p.request_date) &&
+    str(payload.status) === str(p.status || 'pending') &&
+    num(payload.amount) === num(p.amount) &&
+    num(payload.paid_amount) === num(p.paid_amount) &&
+    dateOrNull(payload.paid_date) === dateOrNull(p.paid_date) &&
+    str(payload.invoice_number) === str(p.invoice_number) &&
+    itemId(payload.legal_item_id) === itemId(p.legal_item_id) &&
+    str(payload.notes) === str(p.notes) &&
+    num(payload.vat_pct) === num(p.vat_pct != null ? p.vat_pct : 0)
+  )
+}
+
+function _legalMergePaymentInOverview(updated) {
+  if (!_legalOverviewData?.payments || !updated?.id) return
+  const idx = _legalOverviewData.payments.findIndex(x => Number(x.id) === Number(updated.id))
+  if (idx >= 0) _legalOverviewData.payments[idx] = { ..._legalOverviewData.payments[idx], ...updated }
+}
+
+function _legalPatchPaymentRowMetrics(rowEl, p) {
+  if (!rowEl || !p) return
+  const amountCell = rowEl.querySelector('[data-pfield="amount"]')?.closest('.legal-payment-sheet-cell')
+  if (amountCell) {
+    let nt = amountCell.querySelector('.legal-payment-sheet-readonly[title="Trước VAT (API)"]')
+    if (p.amount_before_vat != null) {
+      const ntHtml = `<div class="legal-payment-sheet-readonly" title="Trước VAT (API)">NT trước VAT: <strong>${fmtMoney(Number(p.amount_before_vat))}</strong></div>`
+      if (nt) nt.outerHTML = ntHtml
+      else amountCell.insertAdjacentHTML('beforeend', ntHtml)
+    } else if (nt) nt.remove()
+  }
+  const paidCell = rowEl.querySelector('[data-pfield="paid_amount"]')?.closest('.legal-payment-sheet-cell')
+  if (paidCell) {
+    let cash = paidCell.querySelector('.legal-payment-sheet-readonly:not([title="Trước VAT (API)"])')
+    const showCash = p.cash_before_vat != null && (p.paid_amount || 0) > 0
+    if (showCash) {
+      const cashHtml = `<div class="legal-payment-sheet-readonly">Thu trước VAT: <strong>${fmtMoney(Number(p.cash_before_vat))}</strong></div>`
+      if (cash) cash.outerHTML = cashHtml
+      else paidCell.insertAdjacentHTML('beforeend', cashHtml)
+    } else if (cash) cash.remove()
+  }
+  const invCell = rowEl.querySelector('[data-pfield="invoice_number"]')?.closest('.legal-payment-sheet-cell')
+  const bookedCell = invCell?.nextElementSibling
+  if (bookedCell?.classList?.contains('legal-payment-sheet-cell')) {
+    if (p.booked_revenue != null) {
+      bookedCell.innerHTML = `<div class="legal-payment-sheet-readonly"><strong>${fmtMoney(Number(p.booked_revenue))}</strong></div>`
+    } else {
+      bookedCell.innerHTML = '<span class="legal-payment-sheet-readonly">—</span>'
+    }
+  }
+}
+
 async function legalPaymentCommitRow(ev, paymentId) {
   if (_legalPaymentInlineBusy) return
   const row = ev?.target?.closest?.('.legal-payment-sheet-row')
@@ -22094,18 +22175,25 @@ async function legalPaymentCommitRow(ev, paymentId) {
     toast('Chọn hạng mục thuộc gói', 'error')
     return
   }
+  if (paymentId && _legalPaymentPayloadUnchanged(paymentId, payload)) return
   _legalPaymentInlineBusy = true
   const willSync = _legalPaymentSyncToast(payload.status, payload.amount)
   try {
     if (paymentId) {
       await api(`/legal/payments/${paymentId}`, { method: 'PUT', data: payload })
       toast(willSync ? 'Đã cập nhật & đồng bộ doanh thu ✓' : 'Đã cập nhật đợt thanh toán', 'success', 4000)
+      const refreshed = await api(`/legal/${_legalCurrentProjectId}/payments`)
+      const updated = (refreshed.payments || []).find(x => Number(x.id) === Number(paymentId))
+      if (updated) {
+        _legalMergePaymentInOverview(updated)
+        _legalPatchPaymentRowMetrics(row, updated)
+      }
     } else {
       await api(`/legal/${_legalCurrentProjectId}/payments`, { method: 'POST', data: payload })
       toast(willSync ? 'Đã thêm đợt TT & tự động tạo doanh thu ✓' : 'Đã thêm đợt thanh toán', 'success', 4000)
+      await loadLegalProject(_legalCurrentProjectId)
+      if (_legalCurrentTab !== 'payments') switchLegalTab('payments')
     }
-    await loadLegalProject(_legalCurrentProjectId)
-    if (_legalCurrentTab !== 'payments') switchLegalTab('payments')
   } catch (err) {
     toast('Lỗi: ' + err.message, 'error')
   } finally {
@@ -22116,13 +22204,13 @@ async function legalPaymentCommitRow(ev, paymentId) {
 function legalPaymentRowKeydown(ev, paymentId) {
   if (ev.key === 'Enter') {
     ev.preventDefault()
-    legalPaymentCommitRow(ev, paymentId || null)
+    legalPaymentCommitFlush(ev, paymentId || null)
   }
 }
 
 async function legalPaymentStatusChange(ev, paymentId) {
   if (!paymentId) return
-  await legalPaymentCommitRow(ev, paymentId)
+  await legalPaymentCommitFlush(ev, paymentId)
 }
 
 function _legalPaymentMoneyInputValue(n) {
@@ -22158,23 +22246,23 @@ function _renderLegalPaymentSheetRow(p, packageKey, isNew) {
   return `
     <div class="${rowClass}" data-payment-id="${idAttr}">
       <input type="hidden" data-pfield="notes" value="${notesVal}">
-      <div class="legal-payment-sheet-cell"><input data-pfield="payment_phase" value="${escHtml(p.payment_phase || '')}" placeholder="Đợt" onblur="legalPaymentCommitRow(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
-      <div class="legal-payment-sheet-cell"><input data-pfield="description" value="${escHtml(p.description || '')}" placeholder="Mô tả *" required onblur="legalPaymentCommitRow(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
-      <div class="legal-payment-sheet-cell"><select data-pfield="legal_item_id" onchange="legalPaymentCommitRow(event, ${commitId})">${itemOpts}</select></div>
-      <div class="legal-payment-sheet-cell"><input data-pfield="request_number" value="${escHtml(p.request_number || '')}" placeholder="Số YC" onblur="legalPaymentCommitRow(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
-      <div class="legal-payment-sheet-cell"><input type="date" data-pfield="request_date" value="${escHtml(p.request_date || '')}" onblur="legalPaymentCommitRow(event, ${commitId})"></div>
+      <div class="legal-payment-sheet-cell"><input data-pfield="payment_phase" value="${escHtml(p.payment_phase || '')}" placeholder="Đợt" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
+      <div class="legal-payment-sheet-cell"><input data-pfield="description" value="${escHtml(p.description || '')}" placeholder="Mô tả *" required onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
+      <div class="legal-payment-sheet-cell"><select data-pfield="legal_item_id" onchange="legalPaymentCommitFlush(event, ${commitId})">${itemOpts}</select></div>
+      <div class="legal-payment-sheet-cell"><input data-pfield="request_number" value="${escHtml(p.request_number || '')}" placeholder="Số YC" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
+      <div class="legal-payment-sheet-cell"><input type="date" data-pfield="request_date" value="${escHtml(p.request_date || '')}" onblur="legalPaymentCommitDebounced(event, ${commitId})"></div>
       <div class="legal-payment-sheet-cell"><select data-pfield="status" onchange="legalPaymentStatusChange(event, ${commitId})">${statusOpts}</select></div>
       <div class="legal-payment-sheet-cell">
-        <input data-pfield="amount" data-money="1" data-raw-val="${p.amount || ''}" value="${amountFmt}" placeholder="0" oninput="moneyInputFmt(this)" onblur="legalPaymentCommitRow(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})">
+        <input data-pfield="amount" data-money="1" data-raw-val="${p.amount || ''}" value="${amountFmt}" placeholder="0" oninput="moneyInputFmt(this)" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})">
         ${ntHint}
       </div>
-      <div class="legal-payment-sheet-cell"><input data-pfield="vat_pct" type="number" min="0" max="100" step="0.1" value="${isNew ? '0' : (p.vat_pct != null ? p.vat_pct : 0)}" onblur="legalPaymentCommitRow(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
+      <div class="legal-payment-sheet-cell"><input data-pfield="vat_pct" type="number" min="0" max="100" step="0.1" value="${isNew ? '0' : (p.vat_pct != null ? p.vat_pct : 0)}" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
       <div class="legal-payment-sheet-cell">
-        <input data-pfield="paid_amount" data-money="1" data-raw-val="${p.paid_amount || ''}" value="${paidFmt}" placeholder="0" oninput="moneyInputFmt(this)" onblur="legalPaymentCommitRow(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})">
+        <input data-pfield="paid_amount" data-money="1" data-raw-val="${p.paid_amount || ''}" value="${paidFmt}" placeholder="0" oninput="moneyInputFmt(this)" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})">
         ${cashHint}
       </div>
-      <div class="legal-payment-sheet-cell"><input type="date" data-pfield="paid_date" value="${escHtml(p.paid_date || '')}" onblur="legalPaymentCommitRow(event, ${commitId})"></div>
-      <div class="legal-payment-sheet-cell"><input data-pfield="invoice_number" value="${escHtml(p.invoice_number || '')}" placeholder="Số HĐ" onblur="legalPaymentCommitRow(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
+      <div class="legal-payment-sheet-cell"><input type="date" data-pfield="paid_date" value="${escHtml(p.paid_date || '')}" onblur="legalPaymentCommitDebounced(event, ${commitId})"></div>
+      <div class="legal-payment-sheet-cell"><input data-pfield="invoice_number" value="${escHtml(p.invoice_number || '')}" placeholder="Số HĐ" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
       <div class="legal-payment-sheet-cell">${bookedCell}</div>
       <div class="legal-payment-sheet-actions legal-payment-sheet-cell">${delBtn}</div>
     </div>`
