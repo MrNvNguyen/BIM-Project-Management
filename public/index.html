@@ -793,6 +793,14 @@
     .legal-checklist-title-done { text-decoration: line-through; opacity: 0.75; }
     .legal-checklist-inline-title { outline: none; border-radius: 4px; padding: 2px 4px; min-width: 80px; }
     .legal-checklist-inline-title:focus { background: var(--shell-input-bg); outline: 2px solid rgba(0, 166, 81, 0.35); outline-offset: 1px; }
+    .legal-checklist-row.legal-checklist-add-row { cursor: default; background: var(--shell-input-bg); }
+    .legal-checklist-row.legal-checklist-add-row:hover { background: var(--shell-input-bg); }
+    .legal-checklist-inline-add {
+      flex: 1; min-width: 0; font-size: 13px; padding: 6px 10px; border-radius: 6px;
+      border: 1px dashed var(--shell-border); background: transparent; color: var(--shell-text);
+    }
+    .legal-checklist-inline-add::placeholder { color: var(--shell-text-muted); opacity: 0.85; }
+    .legal-checklist-inline-add:focus { outline: 2px solid rgba(0, 166, 81, 0.35); outline-offset: 1px; border-color: rgba(0, 166, 81, 0.45); background: var(--shell-surface); }
     .legal-checklist-inline-date { font-size: 11px; font-weight: 600; color: var(--shell-text); padding: 5px 8px; border-radius: 6px; background: var(--shell-input-bg); border: 1px solid var(--shell-border); flex-shrink: 0; min-width: 118px; color-scheme: light dark; }
     .legal-checklist-inline-date:focus { outline: 2px solid rgba(0, 166, 81, 0.35); outline-offset: 1px; border-color: rgba(0, 166, 81, 0.45); }
     .legal-checklist-row.is-overdue .legal-checklist-inline-date { color: #dc2626; border-color: rgba(248, 113, 113, 0.45); }

@@ -18985,6 +18985,196 @@ function _legalPaymentNormPackageKey(key) {
   return Number.isFinite(n) ? n : 0
 }
 
+function _legalPackageIdEq(a, b) {
+  return _legalPaymentNormPackageKey(a) === _legalPaymentNormPackageKey(b)
+}
+
+/** Resolve checklist item from overview (avoids fragile inline JSON in HTML handlers). */
+function _legalFindItemInOverview(itemId) {
+  const id = Number(itemId)
+  if (!Number.isFinite(id) || !_legalOverviewData) return null
+  const scanItems = (items) => {
+    for (const it of items || []) {
+      if (Number(it.id) === id) return it
+      for (const ch of it.children || []) {
+        if (Number(ch.id) === id) return ch
+      }
+    }
+    return null
+  }
+  for (const pkg of _legalOverviewData.packages || []) {
+    for (const stage of pkg.stages || []) {
+      const hit = scanItems(stage.items)
+      if (hit) return hit
+    }
+  }
+  for (const stage of _legalOverviewData.stages || []) {
+    const hit = scanItems(stage.items)
+    if (hit) return hit
+  }
+  return null
+}
+
+function _legalParseItemArg(item) {
+  if (item == null) return null
+  if (typeof item === 'object') return item
+  if (typeof item === 'string') {
+    try {
+      return JSON.parse(item.replace(/&quot;/g, '"'))
+    } catch (_) {
+      return null
+    }
+  }
+  return null
+}
+
+function _legalImeBlocksEnter(ev) {
+  return !!(ev && (ev.isComposing || ev.keyCode === 229))
+}
+
+let _legalChecklistAddBusy = false
+
+function _legalPushOverviewItem(stageId, parentId, item) {
+  if (!_legalOverviewData || !item) return
+  const sid = Number(stageId)
+  const pid = parentId != null && parentId !== '' ? Number(parentId) : null
+  const inject = (stages) => {
+    for (const st of stages || []) {
+      if (Number(st.id) !== sid) continue
+      st.items = st.items || []
+      if (!pid) {
+        st.items.push(item)
+        return true
+      }
+      for (const it of st.items) {
+        if (Number(it.id) === pid) {
+          it.children = it.children || []
+          it.children.push(item)
+          return true
+        }
+      }
+    }
+    return false
+  }
+  const pkgStages = (_legalOverviewData.packages || []).flatMap(p => p.stages || [])
+  if (inject(pkgStages)) return
+  inject(_legalOverviewData.stages || [])
+}
+
+function _legalChecklistStageRowsEl(stageId) {
+  const sid = String(stageId)
+  const add = document.querySelector(`.legal-checklist-add-row[data-stage-id="${sid}"]`)
+  if (add?.parentElement?.classList?.contains('legal-checklist-rows')) return add.parentElement
+  const host = document.querySelector('.legal-checklist-host')
+  if (!host) return null
+  for (const stageEl of host.querySelectorAll('.legal-checklist-stage')) {
+    const head = stageEl.querySelector(`[data-legal-stage-drop="${sid}"]`)
+    if (head) return stageEl.querySelector('.legal-checklist-rows')
+  }
+  return null
+}
+
+function _legalBumpStageCountUI(stageId, delta) {
+  const sid = String(stageId)
+  const host = document.querySelector('.legal-checklist-host')
+  if (!host || !delta) return
+  for (const stageEl of host.querySelectorAll('.legal-checklist-stage')) {
+    const head = stageEl.querySelector(`[data-legal-stage-drop="${sid}"]`)
+    if (!head) continue
+    const countEl = stageEl.querySelector('.legal-checklist-stage-count')
+    if (!countEl) return
+    const m = countEl.textContent.match(/(\d+)/)
+    const n = (m ? parseInt(m[1], 10) : 0) + delta
+    countEl.textContent = `${Math.max(0, n)} hạng mục`
+    return
+  }
+}
+
+function renderLegalChecklistStageInlineAdd(stage, parentId) {
+  const pid = parentId != null && parentId !== '' ? Number(parentId) : null
+  const stageName = escHtml(stage.name || stage.code || 'giai đoạn')
+  const ph = pid
+    ? `+ Thêm dòng con… (Enter)`
+    : `+ Thêm vào ${stageName}… (Enter)`
+  const parentAttr = pid != null ? String(pid) : ''
+  return `
+    <div class="legal-checklist-row legal-checklist-add-row${pid ? ' is-child' : ''}" data-stage-id="${stage.id}" data-parent-id="${parentAttr}">
+      <input type="text" class="legal-checklist-inline-add"
+        placeholder="${ph}"
+        data-stage-id="${stage.id}"
+        data-parent-id="${parentAttr}"
+        aria-label="Thêm hạng mục"
+        onkeydown="legalChecklistInlineAddKeydown(event, ${stage.id}, ${pid != null ? pid : 'null'})" />
+    </div>`
+}
+
+function legalChecklistInlineAddKeydown(ev, stageId, parentId) {
+  if (ev.key === 'Escape') {
+    ev.preventDefault()
+    ev.target.value = ''
+    return
+  }
+  if (ev.key !== 'Enter') return
+  if (_legalImeBlocksEnter(ev)) return
+  ev.preventDefault()
+  legalChecklistInlineAddCommit(stageId, parentId, ev.target)
+}
+
+async function legalChecklistInlineAddCommit(stageId, parentId, inputEl) {
+  if (_legalChecklistAddBusy || !inputEl) return
+  const title = (inputEl.value || '').trim()
+  if (!title) return
+  const projectId = _legalCurrentProjectId
+  if (!projectId) {
+    toast('Vui lòng chọn dự án trước', 'warning')
+    return
+  }
+  _legalChecklistAddBusy = true
+  inputEl.disabled = true
+  try {
+    const res = await api(`/legal/${projectId}/items`, {
+      method: 'POST',
+      data: {
+        stage_id: stageId,
+        parent_id: parentId || null,
+        title,
+        item_type: 'task',
+        status: 'pending',
+      }
+    })
+    const newItem = {
+      id: res.id,
+      stt: res.stt,
+      stage_id: stageId,
+      parent_id: parentId || null,
+      title,
+      item_type: 'task',
+      status: 'pending',
+      due_date: null,
+      actual_completion_date: null,
+      notes: null,
+      children: [],
+    }
+    _legalPushOverviewItem(stageId, parentId, newItem)
+    const rowsEl = _legalChecklistStageRowsEl(stageId)
+    const addRow = rowsEl?.querySelector('.legal-checklist-add-row')
+    if (rowsEl && addRow) {
+      addRow.insertAdjacentHTML('beforebegin', renderLegalChecklistDisplayRow(newItem, stageId, !!parentId))
+      _legalBumpStageCountUI(stageId, 1)
+    } else {
+      await loadLegalProject(projectId)
+    }
+    inputEl.value = ''
+    toast(`✓ Đã thêm: ${title}`, 'success', 2500)
+    inputEl.focus()
+  } catch (err) {
+    toast('Lỗi thêm hạng mục: ' + err.message, 'error')
+  } finally {
+    inputEl.disabled = false
+    _legalChecklistAddBusy = false
+  }
+}
+
 function _legalPaymentRebuildItemPackageMap() {
   const map = new Map()
   if (!_legalOverviewData) {
@@ -19259,9 +19449,10 @@ async function loadLegalProject(projectId) {
 
     // Render KPI — tính tổng qua packages → stages → items
     let totalItems = 0, doneItems = 0
-    const allStages = (data.packages || []).flatMap(pkg => pkg.stages || [])
+    let allStages = (data.packages || []).flatMap(pkg => pkg.stages || [])
+    if (!allStages.length && (data.stages || []).length) allStages = data.stages
     allStages.forEach(stage => {
-      stage.items.forEach(item => {
+      ;(stage.items || []).forEach(item => {
         totalItems++
         if (item.status === 'completed') doneItems++
         ;(item.children || []).forEach(ch => {
@@ -19710,7 +19901,7 @@ function renderCompletedItemsTab() {
                     ${item.notes ? `<span title="${item.notes}">${item.notes.length > 38 ? item.notes.substring(0,38)+'…' : item.notes}</span>` : '<span class="text-gray-300">—</span>'}
                   </td>
                   <td class="py-2 px-3 text-center">
-                    <button onclick="openEditLegalItem(${JSON.stringify(item).replace(/"/g,'&quot;')})" class="text-primary hover:text-green-700 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>
+                    <button onclick="openEditLegalItemById(${item.id})" class="text-primary hover:text-green-700 p-1" title="Sửa"><i class="fas fa-edit text-xs"></i></button>
                   </td>
                 </tr>`
       })
@@ -19837,7 +20028,7 @@ function _toggleCompletedStage(stageId) {
 const _pkgCollapseState = {}
 
 function switchLegalPackageTab(pkgId) {
-  _legalActivePackageId = pkgId
+  _legalActivePackageId = _legalPaymentNormPackageKey(pkgId)
   if (_legalOverviewData) {
     renderLegalPackages(_legalOverviewData.packages || [], _legalOverviewData.stages || [])
   }
@@ -20075,7 +20266,8 @@ function legalChecklistApplyRowStatusUI(row, status) {
 async function legalChecklistStatusRingClick(e, id, item) {
   e.preventDefault()
   e.stopPropagation()
-  if (typeof item === 'string') item = JSON.parse(item.replace(/&quot;/g, '"'))
+  item = _legalParseItemArg(item) || _legalFindItemInOverview(id)
+  if (!item) return
   const cur = item.status || 'pending'
   const next = legalChecklistRingNextStatus(cur)
   if (next === cur) return
@@ -20091,7 +20283,6 @@ function renderLegalChecklistDisplayRow(item, stageId, isChild) {
   const ringClass = isDone ? 'done' : isInprog ? 'progress' : isNa ? 'na' : 'pending'
   const ringLabel = isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'
   const dueOverdue = item.due_date && new Date(item.due_date) < new Date() && !isDone
-  const itemArg = JSON.stringify(item).replace(/"/g, '&quot;')
   const statusKey = item.status && LEGAL_STATUS_LABELS[item.status] ? item.status : 'pending'
   const statusClass = `legal-status-${statusKey}`
   const titleClass = isDone ? ' legal-checklist-title-done' : ''
@@ -20115,31 +20306,31 @@ function renderLegalChecklistDisplayRow(item, stageId, isChild) {
       <button type="button" class="legal-checklist-status-ring ${ringClass}"
         aria-label="${escHtml(ringLabel)}" aria-pressed="${isDone ? 'true' : 'false'}"
         title="${escHtml(ringLabel)}"
-        onclick="legalChecklistStatusRingClick(event, ${item.id}, ${itemArg})"></button>
+        onclick="legalChecklistStatusRingClick(event, ${item.id})"></button>
       <span class="legal-checklist-title legal-checklist-inline-title${titleClass}"
             contenteditable="true"
             spellcheck="false"
             data-field="title"
             data-item-id="${item.id}"
             onclick="event.stopPropagation()"
-            onkeydown="legalChecklistTitleKeydown(event, ${item.id}, ${itemArg})"
-            oninput="legalInlineSaveDebounced(${item.id}, 'title', this.innerText.trim(), ${itemArg})"
-            onblur="legalInlineSaveFlush(${item.id}, 'title', this.innerText.trim(), ${itemArg})"
+            onkeydown="legalChecklistTitleKeydown(event, ${item.id})"
+            oninput="legalInlineSaveDebounced(${item.id}, 'title', this.innerText.trim())"
+            onblur="legalInlineSaveFlush(${item.id}, 'title', this.innerText.trim())"
             role="textbox"
             aria-label="Tên hạng mục">${escHtml(item.title || '')}</span>
       <input type="date"
         class="legal-checklist-inline-date"
         value="${item.due_date || ''}"
         onclick="event.stopPropagation()"
-        onchange="legalInlineSave(${item.id}, 'due_date', this.value, ${itemArg})"
+        onchange="legalInlineSave(${item.id}, 'due_date', this.value)"
         title="Hạn thực hiện"
         aria-label="Hạn thực hiện" />
       <select class="legal-checklist-inline-status ${statusClass}"
         onclick="event.stopPropagation()"
-        onchange="legalInlineSaveStatus(${item.id}, this.value, ${itemArg})"
+        onchange="legalInlineSaveStatus(${item.id}, this.value)"
         aria-label="Trạng thái">${statusOptions}</select>
       <button type="button" class="btn-secondary text-xs legal-checklist-overflow-btn"
-        onclick="event.stopPropagation();openEditLegalItem(${itemArg})"
+        onclick="event.stopPropagation();openEditLegalItemById(${item.id})"
         title="Chi tiết (loại, ngày hoàn thành, ghi chú)"><i class="fas fa-ellipsis-h"></i></button>
     </div>`
 }
@@ -20151,16 +20342,13 @@ function renderLegalChecklistStageGroup(stage) {
   const stageName = (stage.name || stage.code || '').replace(/'/g, '\\&apos;')
 
   let rows = ''
-  if (totalCount === 0) {
-    rows = '<div class="legal-checklist-row" style="cursor:default;opacity:.7"><span class="legal-checklist-title">Chưa có hạng mục</span></div>'
-  } else {
-    items.forEach(item => {
-      rows += renderLegalChecklistDisplayRow(item, stage.id, false)
-      ;(item.children || []).forEach(child => {
-        rows += renderLegalChecklistDisplayRow(child, stage.id, true)
-      })
+  items.forEach(item => {
+    rows += renderLegalChecklistDisplayRow(item, stage.id, false)
+    ;(item.children || []).forEach(child => {
+      rows += renderLegalChecklistDisplayRow(child, stage.id, true)
     })
-  }
+  })
+  rows += renderLegalChecklistStageInlineAdd(stage, null)
 
   return `
     <div class="legal-checklist-stage">
@@ -20207,7 +20395,7 @@ function renderLegalPackages(packages, flatStages) {
     return
   }
 
-  const activePkg = packages.find(p => p.id === _legalActivePackageId) || packages[0]
+  const activePkg = packages.find(p => _legalPackageIdEq(p.id, _legalActivePackageId)) || packages[0]
   _legalActivePackageId = activePkg.id
   const stageCount = packages.reduce((a, p) => a + (p.stages || []).length, 0)
 
@@ -20223,7 +20411,7 @@ function renderLegalPackages(packages, flatStages) {
     <div class="legal-package-subtabs" role="tablist">`
 
   packages.forEach(pkg => {
-    const isActive = pkg.id === _legalActivePackageId
+    const isActive = _legalPackageIdEq(pkg.id, _legalActivePackageId)
     const label = escHtml(pkg.name || `Gói #${pkg.id}`)
     html += `<button type="button" role="tab" aria-selected="${isActive}" class="legal-package-subtab${isActive ? ' active' : ''}" onclick="switchLegalPackageTab(${pkg.id})">${label}</button>`
   })
@@ -21132,7 +21320,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
       <input type="checkbox"
         style="${cbStyle}"
         ${isDone ? 'checked' : ''}
-        onchange="legalToggleComplete(${item.id}, this.checked, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        onchange="legalToggleComplete(${item.id}, this.checked)"
         title="${isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'}"
       />
     </td>
@@ -21151,7 +21339,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
           data-field="title"
           data-item-id="${item.id}"
           data-original="${item.title.replace(/"/g,'&quot;')}"
-          onblur="legalInlineSave(${item.id}, 'title', this.innerText.trim(), ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+          onblur="legalInlineSave(${item.id}, 'title', this.innerText.trim())"
           onkeydown="legalItemKeydown(event, ${item.id}, ${stageId}, ${_legalCurrentProjectId}, ${item.parent_id||'null'}, ${isChild?'true':'false'})"
           style="${titleStyle};outline:none;border-radius:4px;padding:2px 4px;min-width:100px;display:block;flex:1;word-break:break-word"
           onfocus="this.style.background='#f0fdf4';this.style.outline='1px solid #6ee7b7'"
@@ -21166,7 +21354,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
       <input type="date"
         value="${item.due_date || ''}"
         style="${dueDateStyle}"
-        onchange="legalInlineSave(${item.id}, 'due_date', this.value, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        onchange="legalInlineSave(${item.id}, 'due_date', this.value)"
         title="Ngày hết hạn — click để thay đổi"
         onfocus="this.style.border='1px solid #6ee7b7';this.style.background='#f0fdf4'"
         onblur="this.style.border='1px solid ${dueDateIsOverdue?'#fca5a5':'transparent'}';this.style.background='${dueDateIsOverdue?'#fef2f2':'transparent'}'"
@@ -21178,7 +21366,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
       <input type="date"
         value="${item.actual_completion_date || ''}"
         style="${actualDateStyle}"
-        onchange="legalInlineSave(${item.id}, 'actual_completion_date', this.value, ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        onchange="legalInlineSave(${item.id}, 'actual_completion_date', this.value)"
         title="Ngày hoàn thành thực tế — click để thay đổi"
         onfocus="this.style.border='1px solid #6ee7b7';this.style.background='#f0fdf4'"
         onblur="this.style.border='1px solid transparent';this.style.background='transparent'"
@@ -21191,7 +21379,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
         contenteditable="true"
         data-field="notes"
         data-item-id="${item.id}"
-        onblur="legalInlineSave(${item.id}, 'notes', this.innerText.trim(), ${JSON.stringify(item).replace(/"/g,'&quot;')})"
+        onblur="legalInlineSave(${item.id}, 'notes', this.innerText.trim())"
         onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
         style="font-size:12px;color:#6b7280;font-style:italic;outline:none;border-radius:4px;padding:2px 4px;display:block;word-break:break-word;min-height:18px"
         onfocus="this.style.background='#f0fdf4';this.style.outline='1px solid #6ee7b7';this.style.fontStyle='normal'"
@@ -21417,8 +21605,18 @@ function _previewAutoStt(stageId, parentId) {
   }
 }
 
+function openEditLegalItemById(itemId) {
+  const item = _legalFindItemInOverview(itemId)
+  if (!item) {
+    toast('Không tìm thấy hạng mục trong bộ nhớ — thử tải lại trang', 'warning')
+    return
+  }
+  openEditLegalItem(item)
+}
+
 function openEditLegalItem(item) {
-  if (typeof item === 'string') item = JSON.parse(item)
+  item = _legalParseItemArg(item)
+  if (!item) return
   $('legalItemId').value = item.id
   $('legalItemStageId').value = item.stage_id
   $('legalItemParentId').value = item.parent_id || ''
@@ -21487,7 +21685,8 @@ async function deleteLegalItem(id) {
 
 // ── Inline Edit: toggle hoàn thành bằng checkbox ─────────────────────────────
 async function legalToggleComplete(id, isChecked, item) {
-  if (typeof item === 'string') item = JSON.parse(item)
+  item = _legalParseItemArg(item) || _legalFindItemInOverview(id)
+  if (!item) return
   const newStatus = isChecked ? 'completed' : 'pending'
 
   // Cập nhật giao diện tức thì (optimistic UI)
@@ -21526,7 +21725,7 @@ function legalInlineSaveDebounced(id, field, value, item, delayMs = 550) {
   if (_legalInlineSaveTimers[key]) clearTimeout(_legalInlineSaveTimers[key])
   _legalInlineSaveTimers[key] = setTimeout(() => {
     delete _legalInlineSaveTimers[key]
-    legalInlineSave(id, field, value, item)
+    legalInlineSave(id, field, value, item ?? _legalFindItemInOverview(id))
   }, delayMs)
 }
 
@@ -21536,30 +21735,42 @@ function legalInlineSaveFlush(id, field, value, item) {
     clearTimeout(_legalInlineSaveTimers[key])
     delete _legalInlineSaveTimers[key]
   }
-  legalInlineSave(id, field, value, item)
+  legalInlineSave(id, field, value, item ?? _legalFindItemInOverview(id))
 }
 
 function legalChecklistTitleKeydown(e, itemId, item) {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    const it = _legalParseItemArg(item) || _legalFindItemInOverview(itemId)
+    const el = e.target
+    if (el && it) el.innerText = it.title || ''
+    el?.blur()
+    return
+  }
   if (e.key === 'Enter') {
+    if (_legalImeBlocksEnter(e)) return
     e.preventDefault()
     const el = e.target
     if (el) {
-      legalInlineSaveFlush(itemId, 'title', el.innerText.trim(), item)
+      legalInlineSaveFlush(itemId, 'title', el.innerText.trim(), item ?? _legalFindItemInOverview(itemId))
       el.blur()
     }
   }
 }
 
 async function legalInlineSaveStatus(id, value, item) {
-  if (typeof item === 'string') item = JSON.parse(item)
+  item = _legalParseItemArg(item) || _legalFindItemInOverview(id)
+  if (!item) return
   if (value === (item.status || 'pending')) return
+  const row = document.querySelector(`.legal-checklist-row[data-legal-item-id="${id}"]`)
+  if (row) legalChecklistApplyRowStatusUI(row, value)
   await legalInlineSave(id, 'status', value, item)
-  if (_legalCurrentProjectId) await loadLegalProject(_legalCurrentProjectId)
 }
 
 // ── Inline Edit: lưu trực tiếp từ contenteditable / date input ───────────────
 async function legalInlineSave(id, field, value, item) {
-  if (typeof item === 'string') item = JSON.parse(item.replace(/&quot;/g, '"'))
+  item = _legalParseItemArg(item) || _legalFindItemInOverview(id)
+  if (!item) return
 
   // Không lưu nếu không thay đổi
   const oldVal = (item[field] || '').toString().trim()
@@ -21594,12 +21805,13 @@ async function legalInlineSave(id, field, value, item) {
 // Cập nhật item trong _legalOverviewData mà không reload
 function _legalUpdateLocalItem(id, field, value) {
   if (!_legalOverviewData) return
+  const nid = Number(id)
   const updateInList = (items) => {
     for (const it of items || []) {
-      if (it.id === id) { it[field] = value; return true }
+      if (Number(it.id) === nid) { it[field] = value; return true }
       if (it.children) {
         for (const ch of it.children) {
-          if (ch.id === id) { ch[field] = value; return true }
+          if (Number(ch.id) === nid) { ch[field] = value; return true }
         }
       }
     }
@@ -22035,7 +22247,7 @@ function _legalPaymentItemOptionsHtml(selectedId, packageKey) {
   }
   const packages = _legalOverviewData.packages || []
   if (packageKey && packageKey !== 0) {
-    const pkg = packages.find(p => p.id === packageKey)
+    const pkg = packages.find(p => _legalPackageIdEq(p.id, packageKey))
     if (pkg) {
       for (const stage of pkg.stages || []) {
         for (const item of stage.items || []) {
@@ -22043,10 +22255,21 @@ function _legalPaymentItemOptionsHtml(selectedId, packageKey) {
         }
       }
     }
-  } else if (_legalOverviewData.stages) {
-    _legalOverviewData.stages.forEach(stage => {
-      stage.items.forEach(item => appendItem(item, stage, `[${stage.code}] `))
-    })
+  } else {
+    const flat = _legalOverviewData.stages || []
+    if (flat.length) {
+      flat.forEach(stage => {
+        ;(stage.items || []).forEach(item => appendItem(item, stage, `[${stage.code}] `))
+      })
+    } else {
+      for (const pkg of packages) {
+        for (const stage of pkg.stages || []) {
+          for (const item of stage.items || []) {
+            appendItem(item, stage, `[${stage.code}] `)
+          }
+        }
+      }
+    }
   }
   return html
 }
@@ -22167,9 +22390,12 @@ async function legalPaymentCommitRow(ev, paymentId) {
   const rowData = _legalPaymentReadRow(row)
   const payload = buildPaymentPayloadFromRow(rowData)
   if (!payload.description) {
-    if (!paymentId) return
-    toast('Mô tả không được để trống', 'error')
-    return
+    if (!paymentId) {
+      if (!(payload.amount > 0)) return
+    } else {
+      toast('Mô tả không được để trống', 'error')
+      return
+    }
   }
   if (!paymentId && _legalPaymentActivePackageId !== 0 && !payload.legal_item_id) {
     toast('Chọn hạng mục thuộc gói', 'error')
@@ -22203,6 +22429,7 @@ async function legalPaymentCommitRow(ev, paymentId) {
 
 function legalPaymentRowKeydown(ev, paymentId) {
   if (ev.key === 'Enter') {
+    if (_legalImeBlocksEnter(ev)) return
     ev.preventDefault()
     legalPaymentCommitFlush(ev, paymentId || null)
   }
