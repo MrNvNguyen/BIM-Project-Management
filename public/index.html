@@ -756,6 +756,34 @@
     .legal-checklist-status-ring.na {
       opacity: 0.85;
     }
+    .task-grid-row.is-new { background: rgba(0, 166, 81, 0.06); }
+    html[data-theme="dark"] .task-grid-row.is-new { background: rgba(0, 166, 81, 0.1); }
+    .task-grid-row.is-overdue { background: rgba(248, 113, 113, 0.08); }
+    html[data-theme="dark"] .task-grid-row.is-overdue { background: rgba(248, 113, 113, 0.12); }
+    .task-grid-title-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .task-grid-status-ring { flex-shrink: 0; }
+    .task-grid-inline-input, .task-grid-inline-select {
+      width: 100%; min-width: 64px; padding: 4px 8px; font-size: 12px;
+      border: 1px solid var(--shell-border); border-radius: 6px;
+      background: var(--shell-input-bg); color: var(--shell-text);
+    }
+    .task-grid-title-input { flex: 1; min-width: 120px; font-weight: 500; }
+    .task-grid-progress-input { max-width: 64px; }
+    .task-grid-due-pill {
+      font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px;
+      border: 1px solid var(--shell-border); background: var(--shell-input-bg); color: var(--shell-text);
+      color-scheme: light dark;
+    }
+    .task-grid-due-pill.is-overdue { color: #dc2626; border-color: rgba(248, 113, 113, 0.45); background: rgba(254, 226, 226, 0.45); }
+    html[data-theme="dark"] .task-grid-due-pill.is-overdue { color: #fca5a5; background: rgba(248, 113, 113, 0.15); }
+    .task-grid-priority-select { max-width: 96px; }
+    .task-grid-cb-host { min-width: 100px; max-width: 160px; }
+    .task-grid-detail-btn {
+      flex-shrink: 0; border: none; background: transparent; color: var(--shell-text-muted);
+      padding: 2px 4px; cursor: pointer; border-radius: 4px;
+    }
+    .task-grid-detail-btn:hover { color: var(--primary); background: var(--shell-row-hover); }
+    .task-grid-title-readonly { font-weight: 500; color: var(--shell-text); }
     .legal-checklist-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; color: var(--shell-text); line-height: 1.35; }
     .legal-checklist-row.is-child .legal-checklist-title { font-size: 12px; font-weight: 400; color: var(--shell-text-muted); }
     .legal-checklist-due { font-size: 11px; font-weight: 600; color: var(--shell-text-muted); padding: 3px 8px; border-radius: 6px; background: var(--shell-input-bg); border: 1px solid var(--shell-border); white-space: nowrap; }
@@ -2003,7 +2031,7 @@
             <h1 class="text-2xl font-bold text-gray-800">Quản lý Công việc</h1>
             <p class="text-gray-500 text-sm">Theo dõi và quản lý task BIM</p>
           </div>
-          <button id="btnNewTask" onclick="openTaskModal()" class="btn-primary flex items-center gap-2">
+          <button id="btnNewTask" type="button" onclick="taskGridFocusNewRow('global')" class="btn-primary flex items-center gap-2">
             <i class="fas fa-plus"></i>Tạo task mới
           </button>
         </div>
