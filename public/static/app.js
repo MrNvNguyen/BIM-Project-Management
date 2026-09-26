@@ -18530,6 +18530,8 @@ let _legalCurrentProjectId = null
 let _legalOverviewData = null
 let _legalCurrentTab = 'stages'
 let _legalTabSetByUser = false
+let _legalProjectSearch = ''
+let _legalActivePackageId = null
 
 const LEGAL_STATUS_LABELS = {
   pending: 'Chưa thực hiện',
@@ -18598,26 +18600,74 @@ const PAYMENT_STATUS_COLORS = {
 }
 
 // ── Navigate to Legal page ───────────────────────────────────────────────────
+function legalOnProjectSearch(q) {
+  _legalProjectSearch = (q || '').trim().toLowerCase()
+  renderLegalProjectList()
+}
+
+function renderLegalProjectList() {
+  const el = $('legalProjectList')
+  if (!el) return
+  const q = _legalProjectSearch
+  const filtered = (allProjects || []).filter(p => {
+    if (!q) return true
+    const hay = `${p.code || ''} ${p.name || ''}`.toLowerCase()
+    return hay.includes(q)
+  })
+  if (!filtered.length) {
+    el.innerHTML = '<div class="legal-project-empty">Không tìm thấy dự án</div>'
+    return
+  }
+  el.innerHTML = filtered.map(p => {
+    const active = _legalCurrentProjectId === p.id
+    return `<button type="button" class="legal-project-card${active ? ' active' : ''}" onclick="selectLegalProject(${p.id})">
+      <div class="legal-project-code">${escHtml(p.code || '—')}</div>
+      <div class="legal-project-name">${escHtml(p.name || '')}</div>
+    </button>`
+  }).join('')
+}
+
+function _legalShowProjectShell(show) {
+  const hint = $('legalPickProjectHint')
+  const content = $('legalRightContent')
+  if (hint) hint.style.display = show ? 'none' : ''
+  if (content) content.style.display = show ? '' : 'none'
+}
+
+async function selectLegalProject(projectId) {
+  if (!projectId) return
+  _legalCurrentProjectId = projectId
+  renderLegalProjectList()
+  await loadLegalProject(projectId)
+  renderLegalProjectList()
+}
+
 async function loadLegal() {
-  // Load projects if needed
   if (allProjects.length === 0) {
     try { allProjects = (await api('/projects')).projects || [] } catch(e) {}
   }
 
-  // Build searchable combobox for project selection
+  renderLegalProjectList()
+
   const items = allProjects.map(p => ({ value: String(p.id), label: `[${p.code}] ${p.name}` }))
   const currentVal = _legalCurrentProjectId ? String(_legalCurrentProjectId) : ''
-  createCombobox('legalProjectSelectCombobox', {
-    placeholder: '-- Chọn dự án --',
-    items,
-    value: currentVal,
-    minWidth: '240px',
-    onchange: (val) => _onLegalProjectComboChange(val)
-  })
+  if ($('legalProjectSelectCombobox')) {
+    createCombobox('legalProjectSelectCombobox', {
+      placeholder: '-- Chọn dự án --',
+      items,
+      value: currentVal,
+      minWidth: '240px',
+      onchange: (val) => _onLegalProjectComboChange(val)
+    })
+  }
 
-  // If project already selected, reload
   if (_legalCurrentProjectId) {
     await loadLegalProject(_legalCurrentProjectId)
+  } else {
+    _legalShowProjectShell(false)
+    $('legalKPIRow').style.display = 'none'
+    $('legalTabs').style.display = 'none'
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel'].forEach(id => { if($(id)) $(id).style.display='none' })
   }
 }
 
@@ -18625,16 +18675,14 @@ async function _onLegalProjectComboChange(val) {
   const projectId = parseInt(val)
   if (!projectId) {
     _legalCurrentProjectId = null
-    $('legalStagesContainer').innerHTML = `<div class="card text-center py-16 text-gray-400">
-      <i class="fas fa-file-contract text-5xl mb-4 opacity-30"></i>
-      <p class="font-medium">Chọn dự án để xem hồ sơ pháp lý</p>
-    </div>`
+    _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
     ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel'].forEach(id => { if($(id)) $(id).style.display='none' })
+    renderLegalProjectList()
     return
   }
-  await loadLegalProject(projectId)
+  await selectLegalProject(projectId)
 }
 
 // Keep backward compat if any inline onchange still references this
@@ -18645,12 +18693,19 @@ async function onLegalProjectChange() {
 
 async function loadLegalProject(projectId) {
   _legalCurrentProjectId = projectId
+  _legalShowProjectShell(true)
   try {
     // Auto-init if first time
     await api(`/legal/init/${projectId}`, { method: 'POST' })
     // Load overview
     const data = await api(`/legal/${projectId}/overview`)
     _legalOverviewData = data
+    _legalActivePackageId = (data.packages && data.packages[0]) ? data.packages[0].id : null
+
+    const comboVal = String(projectId)
+    if ($('legalProjectSelectCombobox') && typeof _cbSetValue === 'function') {
+      try { _cbSetValue('legalProjectSelectCombobox', comboVal) } catch (_) {}
+    }
 
     // ── Kiểm tra quyền của user trong dự án này ──
     // Member chỉ được xem + tạo văn bản gửi đi
@@ -19112,12 +19167,81 @@ function _toggleCompletedStage(stageId) {
 // ── Package collapse state ────────────────────────────────────────────────────
 const _pkgCollapseState = {}
 
-// ── Render Packages (3-level: Package → Stage A-D → Items) ───────────────────
+function switchLegalPackageTab(pkgId) {
+  _legalActivePackageId = pkgId
+  if (_legalOverviewData) {
+    renderLegalPackages(_legalOverviewData.packages || [], _legalOverviewData.stages || [])
+  }
+}
+
+function renderLegalChecklistDisplayRow(item, stageId, isChild) {
+  const isDone = item.status === 'completed'
+  const isInprog = item.status === 'in_progress'
+  const ringClass = isDone ? 'done' : isInprog ? 'progress' : 'pending'
+  const dueOverdue = item.due_date && new Date(item.due_date) < new Date() && !isDone
+  const itemArg = JSON.stringify(item).replace(/"/g, '&quot;')
+  const dueLabel = item.due_date ? fmtDate(item.due_date) : '—'
+  const statusLabel = LEGAL_STATUS_LABELS[item.status] || item.status
+  const statusClass = LEGAL_STATUS_COLORS[item.status] || 'badge-todo'
+  const titleClass = isDone ? ' legal-checklist-title-done' : ''
+  return `
+    <div class="legal-checklist-row${isChild ? ' is-child' : ''}${dueOverdue ? ' is-overdue' : ''}"
+         role="button" tabindex="0"
+         onclick="openEditLegalItem(${itemArg})"
+         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openEditLegalItem(${itemArg})}">
+      <span class="legal-checklist-status-ring ${ringClass}" aria-hidden="true"></span>
+      <span class="legal-checklist-title${titleClass}">${escHtml(item.title || '')}</span>
+      <span class="legal-checklist-due">${dueLabel}</span>
+      <span class="badge ${statusClass}">${escHtml(statusLabel)}</span>
+    </div>`
+}
+
+function renderLegalChecklistStageGroup(stage) {
+  const sc = STAGE_COLORS[stage.code] || { bg:'#f9fafb', border:'#6b7280', text:'#374151', icon:'fa-folder' }
+  const items = stage.items || []
+  const totalCount = items.reduce((a, it) => a + 1 + (it.children?.length || 0), 0)
+  const stageName = (stage.name || stage.code || '').replace(/'/g, '\\&apos;')
+
+  let rows = ''
+  if (totalCount === 0) {
+    rows = '<div class="legal-checklist-row" style="cursor:default;opacity:.7"><span class="legal-checklist-title">Chưa có hạng mục</span></div>'
+  } else {
+    items.forEach(item => {
+      rows += renderLegalChecklistDisplayRow(item, stage.id, false)
+      ;(item.children || []).forEach(child => {
+        rows += renderLegalChecklistDisplayRow(child, stage.id, true)
+      })
+    })
+  }
+
+  return `
+    <div class="legal-checklist-stage">
+      <div class="legal-checklist-stage-head">
+        <span class="legal-checklist-stage-ring" style="--stage-color:${sc.border}">${escHtml(stage.code || '?')}</span>
+        <span class="legal-checklist-stage-title">${escHtml(stage.name || stage.code || '')}</span>
+        <span class="legal-checklist-stage-count">${totalCount} hạng mục</span>
+        <div class="legal-checklist-stage-actions">
+          <button type="button" onclick="event.stopPropagation();openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})" class="btn-secondary text-xs" title="Thêm hạng mục"><i class="fas fa-plus"></i></button>
+          <button type="button" onclick="event.stopPropagation();openRenameStageModal(${stage.id}, '${stageName}')" class="btn-secondary text-xs" title="Đổi tên"><i class="fas fa-pen"></i></button>
+          <button type="button" onclick="event.stopPropagation();confirmDeleteStage(${stage.id}, '${stageName}', ${totalCount})" class="btn-secondary text-xs" title="Xóa giai đoạn"><i class="fas fa-trash text-red-500"></i></button>
+        </div>
+      </div>
+      <div class="legal-checklist-rows">${rows}</div>
+    </div>`
+}
+
+function renderLegalChecklistForStages(stages) {
+  if (!stages || !stages.length) {
+    return '<div class="text-center py-8 text-gray-400">Gói thầu chưa có giai đoạn nào</div>'
+  }
+  return `<div class="legal-checklist-host">${stages.map(s => renderLegalChecklistStageGroup(s)).join('')}</div>`
+}
+
+// ── Render Packages — C1: sub-tabs + checklist display face ───────────────────
 function renderLegalPackages(packages, flatStages) {
   const container = $('legalStagesContainer')
   if (!container) return
 
-  // If no packages yet, fall back to flat stages view
   if (!packages || packages.length === 0) {
     if (flatStages && flatStages.length > 0) {
       renderLegalStages(flatStages)
@@ -19135,120 +19259,33 @@ function renderLegalPackages(packages, flatStages) {
     return
   }
 
-  // Colors for packages
-  const PKG_COLORS = [
-    { bg:'#eff6ff', border:'#3b82f6', text:'#1d4ed8', icon:'fa-building' },
-    { bg:'#fdf4ff', border:'#a855f7', text:'#7e22ce', icon:'fa-drafting-compass' },
-    { bg:'#fff7ed', border:'#f97316', text:'#c2410c', icon:'fa-hard-hat' },
-    { bg:'#f0fdf4', border:'#22c55e', text:'#15803d', icon:'fa-check-double' },
-    { bg:'#fefce8', border:'#eab308', text:'#a16207', icon:'fa-star' },
-  ]
+  const activePkg = packages.find(p => p.id === _legalActivePackageId) || packages[0]
+  _legalActivePackageId = activePkg.id
+  const stageCount = packages.reduce((a, p) => a + (p.stages || []).length, 0)
 
   let html = `
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-    <div style="font-size:13px;color:#64748b;font-weight:500">
-      <i class="fas fa-layer-group mr-1 text-indigo-500"></i>
-      ${packages.length} gói thầu · ${packages.reduce((a,p)=>a+(p.stages||[]).length,0)} giai đoạn
-    </div>
-    <div style="display:flex;gap:6px">
-      <button onclick="collapseAllPackages()" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:4px 12px;cursor:pointer">
-        <i class="fas fa-compress-alt" style="font-size:10px"></i> Thu gọn
-      </button>
-      <button onclick="expandAllPackages()" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 12px;cursor:pointer">
-        <i class="fas fa-expand-alt" style="font-size:10px"></i> Mở rộng
-      </button>
-      <button onclick="openAddPackageModal()" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px solid #6ee7b7;border-radius:6px;padding:4px 12px;cursor:pointer">
-        <i class="fas fa-plus" style="font-size:10px"></i> Thêm gói thầu
-      </button>
-    </div>
-  </div>`
-
-  packages.forEach((pkg, pkgIdx) => {
-    const pc = PKG_COLORS[pkgIdx % PKG_COLORS.length]
-    const stages = pkg.stages || []
-    const isOpen = _pkgCollapseState[pkg.id] !== false
-    const pkgBodyId = `pkgBody_${pkg.id}`
-    const pkgChevId = `pkgChev_${pkg.id}`
-
-    // Compute package totals
-    let pkgTotal = 0, pkgDone = 0
-    stages.forEach(s => {
-      ;(s.items || []).forEach(it => {
-        pkgTotal++; if (it.status === 'completed') pkgDone++
-        ;(it.children||[]).forEach(ch => {
-          pkgTotal++; if (ch.status === 'completed') pkgDone++
-        })
-      })
-    })
-    const pkgPct = pkgTotal > 0 ? Math.round(pkgDone/pkgTotal*100) : 0
-    const pkgBarCol = pkgPct === 100 ? '#10b981' : pkgPct >= 50 ? '#6366f1' : pc.border
-
-    html += `
-    <!-- ═══════ PACKAGE CARD ═══════ -->
-    <div class="mb-5" style="border-radius:14px;border:2px solid ${pc.border}55;background:#fff;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
-
-      <!-- Package Header -->
-      <div style="display:flex;align-items:center;gap:12px;padding:14px 18px;background:${pc.bg};cursor:pointer;user-select:none;border-bottom:2px solid ${pc.border}33"
-           onclick="togglePackageCollapse(${pkg.id})">
-
-        <div style="width:44px;height:44px;border-radius:12px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;background:${pc.border};box-shadow:0 2px 6px ${pc.border}55">
-          <i class="fas ${pc.icon}"></i>
-        </div>
-
-        <div style="flex:1;min-width:0">
-          <div style="font-size:15px;font-weight:800;color:${pc.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${pkg.name}</div>
-          <div style="display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap">
-            <div style="width:140px;height:6px;background:#e5e7eb;border-radius:10px;overflow:hidden">
-              <div style="width:${pkgPct}%;height:100%;background:${pkgBarCol};border-radius:10px;transition:width .4s"></div>
-            </div>
-            <span style="font-size:12px;font-weight:700;color:${pkgBarCol}">${pkgPct}%</span>
-            <span style="font-size:11px;color:#9ca3af">${pkgDone}/${pkgTotal} hạng mục</span>
-            <span style="font-size:11px;color:#64748b;background:#f1f5f9;padding:1px 8px;border-radius:8px;border:1px solid #e2e8f0">
-              <i class="fas fa-layer-group mr-1" style="font-size:9px"></i>${stages.length} giai đoạn A–D
-            </span>
-          </div>
-        </div>
-
-        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0" onclick="event.stopPropagation()">
-          <button onclick="openRenamePackageModal(${pkg.id}, '${pkg.name.replace(/'/g,'\\&apos;')}')"
-            style="width:30px;height:30px;border-radius:7px;border:1px solid ${pc.border}66;background:#fff;color:${pc.text};cursor:pointer;display:flex;align-items:center;justify-content:center" title="Đổi tên gói thầu">
-            <i class="fas fa-pen" style="font-size:10px"></i>
-          </button>
-          <button onclick="confirmDeletePackage(${pkg.id}, '${pkg.name.replace(/'/g,'\\&apos;')}', ${pkgTotal})"
-            style="width:30px;height:30px;border-radius:7px;border:1px solid #fecaca;background:#fef2f2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Xóa gói thầu">
-            <i class="fas fa-trash" style="font-size:10px"></i>
-          </button>
-          <button id="${pkgChevId}" onclick="event.stopPropagation();togglePackageCollapse(${pkg.id})"
-            style="width:32px;height:32px;border-radius:8px;border:1px solid ${pc.border}44;background:#fff;color:${pc.text};cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s">
-            <i id="${pkgChevId}_icon" class="fas fa-chevron-up" style="font-size:11px;transition:transform .25s;transform:rotate(${isOpen?'0':'180'}deg)"></i>
-          </button>
-        </div>
+    <div class="legal-stages-toolbar">
+      <span><i class="fas fa-layer-group mr-1 text-primary"></i>${packages.length} gói thầu · ${stageCount} giai đoạn</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button type="button" onclick="openAddPackageModal()" class="btn-secondary text-xs"><i class="fas fa-plus mr-1"></i>Thêm gói thầu</button>
+        <button type="button" onclick="openRenamePackageModal(${activePkg.id}, '${(activePkg.name || '').replace(/'/g, '\\&apos;')}')" class="btn-secondary text-xs" title="Đổi tên gói đang chọn"><i class="fas fa-pen"></i></button>
+        <button type="button" onclick="confirmDeletePackage(${activePkg.id}, '${(activePkg.name || '').replace(/'/g, '\\&apos;')}', 0)" class="btn-secondary text-xs" title="Xóa gói đang chọn"><i class="fas fa-trash text-red-500"></i></button>
       </div>
+    </div>
+    <div class="legal-package-subtabs" role="tablist">`
 
-      <!-- Package Body (stages) -->
-      <div id="${pkgBodyId}" style="display:${isOpen?'block':'none'};padding:12px 16px 16px">
-        ${stages.length === 0 ? `<div style="text-align:center;padding:20px;color:#9ca3af;font-size:13px">Gói thầu chưa có giai đoạn nào</div>` : ''}
-        ${stages.map(stage => renderPackageStageCard(stage, pc)).join('')}
-
-        <!-- Add stage within package -->
-        <div style="display:flex;justify-content:center;margin-top:10px">
-          <button onclick="openAddStageInPackageModal(${pkg.id})"
-            style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#6366f1;background:#eef2ff;border:1.5px dashed #a5b4fc;border-radius:8px;padding:6px 18px;cursor:pointer;width:100%;justify-content:center">
-            <i class="fas fa-plus-circle" style="font-size:11px"></i> Thêm giai đoạn vào gói này
-          </button>
-        </div>
-      </div>
-    </div>`
+  packages.forEach(pkg => {
+    const isActive = pkg.id === _legalActivePackageId
+    const label = escHtml(pkg.name || `Gói #${pkg.id}`)
+    html += `<button type="button" role="tab" aria-selected="${isActive}" class="legal-package-subtab${isActive ? ' active' : ''}" onclick="switchLegalPackageTab(${pkg.id})">${label}</button>`
   })
 
-  // Add package button at bottom
+  html += `</div>`
+  html += renderLegalChecklistForStages(activePkg.stages || [])
   html += `
-  <div style="display:flex;justify-content:center;margin-top:4px">
-    <button onclick="openAddPackageModal()"
-      style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:8px;padding:8px 24px;cursor:pointer;width:100%;justify-content:center">
-      <i class="fas fa-plus-circle" style="font-size:12px"></i> Thêm gói thầu mới (BCNCKT / TKBVTC / Thi công & Hoàn công…)
-    </button>
-  </div>`
+    <div style="display:flex;justify-content:center;margin-top:12px;gap:8px;flex-wrap:wrap">
+      <button type="button" onclick="openAddStageInPackageModal(${activePkg.id})" class="btn-secondary text-sm"><i class="fas fa-plus-circle mr-1"></i>Thêm giai đoạn vào gói này</button>
+    </div>`
 
   container.innerHTML = html
 }
@@ -19516,143 +19553,14 @@ function renderLegalStages(stages) {
     return
   }
 
-  let html = ''
-  stages.forEach(stage => {
-    const sc = STAGE_COLORS[stage.code] || { bg:'#f9fafb', border:'#6b7280', text:'#374151', icon:'fa-folder' }
-    const totalInStage = stage.items.reduce((a, it) => a + 1 + (it.children?.length||0), 0)
-    const doneInStage  = stage.items.reduce((a, it) => {
-      let d = it.status === 'completed' ? 1 : 0
-      d += (it.children||[]).filter(c => c.status === 'completed').length
-      return a + d
-    }, 0)
-    const pct      = totalInStage > 0 ? Math.round(doneInStage/totalInStage*100) : 0
-    const barCol   = pct === 100 ? '#10b981' : pct >= 50 ? '#3b82f6' : sc.border
-    const isOpen   = _stageCollapseState[stage.id] !== false   // mặc định mở
-    const bodyId   = `stageBody_${stage.id}`
-    const chevId   = `stageChev_${stage.id}`
-
-    // Badge tóm tắt khi thu gọn
-    const pendingCount    = totalInStage - doneInStage
-    const inProgressCount = stage.items.reduce((a,it) => {
-      let c = it.status === 'in_progress' ? 1 : 0
-      c += (it.children||[]).filter(ch => ch.status === 'in_progress').length
-      return a + c
-    }, 0)
-
-    html += `
-    <div class="mb-4" style="border-radius:12px;border:1px solid ${isOpen?sc.border+'55':'#e5e7eb'};background:#fff;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);transition:border-color .2s">
-
-      <!-- ══ HEADER (click to collapse) ══ -->
-      <div onclick="toggleStageCollapse(${stage.id})"
-        style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:${isOpen ? sc.bg : '#f9fafb'};cursor:pointer;user-select:none;border-left:4px solid ${sc.border};transition:background .2s">
-
-        <!-- Stage badge -->
-        <div style="width:38px;height:38px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;color:#fff;background:${sc.border}">
-          ${stage.code}
-        </div>
-
-        <!-- Name + progress -->
-        <div style="flex:1;min-width:0">
-          <div style="font-size:14px;font-weight:700;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${stage.name}</div>
-          <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
-            <div style="width:120px;height:5px;background:#e5e7eb;border-radius:10px;overflow:hidden">
-              <div style="width:${pct}%;height:100%;background:${barCol};border-radius:10px;transition:width .4s"></div>
-            </div>
-            <span style="font-size:11px;font-weight:700;color:${barCol}">${pct}%</span>
-            <span style="font-size:11px;color:#9ca3af">${doneInStage}/${totalInStage} hoàn thành</span>
-            ${!isOpen && inProgressCount > 0 ? `<span style="font-size:10px;font-weight:600;color:#2563eb;background:#dbeafe;padding:1px 7px;border-radius:10px">${inProgressCount} đang làm</span>` : ''}
-            ${!isOpen && pendingCount > 0 && pendingCount < totalInStage ? `<span style="font-size:10px;font-weight:600;color:#64748b;background:#f1f5f9;padding:1px 7px;border-radius:10px">${pendingCount} còn lại</span>` : ''}
-          </div>
-        </div>
-
-        <!-- Right controls -->
-        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0" onclick="event.stopPropagation()">
-          <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
-            style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 10px;cursor:pointer" title="Thêm hạng mục">
-            <i class="fas fa-plus" style="font-size:9px"></i> Thêm
-          </button>
-          <button onclick="openRenameStageModal(${stage.id}, '${stage.name.replace(/'/g,'\\&apos;')}')"
-            style="width:30px;height:30px;border-radius:6px;border:1px solid #e5e7eb;background:#f9fafb;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center;" title="Đổi tên giai đoạn">
-            <i class="fas fa-pen" style="font-size:10px"></i>
-          </button>
-          <button onclick="confirmDeleteStage(${stage.id}, '${stage.name.replace(/'/g,'\\&apos;')}', ${totalInStage})"
-            style="width:30px;height:30px;border-radius:6px;border:1px solid #fecaca;background:#fef2f2;color:#ef4444;cursor:pointer;display:flex;align-items:center;justify-content:center;" title="Xóa giai đoạn">
-            <i class="fas fa-trash" style="font-size:10px"></i>
-          </button>
-          <!-- Chevron collapse -->
-          <button id="${chevId}" onclick="event.stopPropagation();toggleStageCollapse(${stage.id})"
-            style="width:32px;height:32px;border-radius:8px;border:1px solid #e5e7eb;background:${isOpen?'#eef2ff':'#f9fafb'};color:${isOpen?'#6366f1':'#9ca3af'};cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s" title="${isOpen?'Thu gọn':'Mở rộng'}">
-            <i id="${chevId}_icon" class="fas fa-chevron-up" style="font-size:11px;transition:transform .25s;transform:rotate(${isOpen?'0':'180'}deg)"></i>
-          </button>
-        </div>
-      </div>
-
-      <!-- ══ BODY (collapsible) ══ -->
-      <div id="${bodyId}" style="display:${isOpen?'block':'none'}">
-        <table class="w-full" style="font-size:13px">
-          <thead>
-            <tr style="background:${sc.bg}">
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:40px" title="Click checkbox để đánh dấu hoàn thành">✓</th>
-              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:60px">STT</th>
-              <th class="py-2 px-3 text-left font-semibold text-gray-600">Hạng mục công việc</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:110px">Hạn</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Ngày HT thực tế</th>
-              <th class="py-2 px-3 text-left font-semibold text-gray-600" style="width:170px">Ghi chú</th>
-              <th class="py-2 px-3 text-center font-semibold text-gray-600" style="width:120px">Thao tác</th>
-            </tr>
-          </thead>
-          <tbody>`
-
-    stage.items.forEach(item => {
-      const rowBg = item.status === 'completed' ? '#f0fdf4' : (item.status === 'in_progress' ? '#eff6ff' : '#fff')
-      html += renderLegalItemRow(item, sc, rowBg, false, stage.id)
-      ;(item.children || []).forEach(child => {
-        html += renderLegalItemRow(child, sc, rowBg, true, stage.id)
-      })
-    })
-    // Quick-add inline row
-    html += renderLegalQuickAddRow(stage.id, _legalCurrentProjectId, null)
-
-    html += `
-          </tbody>
-        </table>
-        <div style="padding:8px 16px;border-top:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
-          <button onclick="legalQuickAddShow(${stage.id})"
-            style="font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:7px;padding:5px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:5px">
-            <i class="fas fa-plus" style="font-size:10px"></i> Thêm dòng
-          </button>
-          <button onclick="openAddLegalItem(${stage.id}, null, ${_legalCurrentProjectId})"
-            style="font-size:11px;color:#6366f1;background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
-            <i class="fas fa-external-link-alt" style="font-size:9px"></i> Nhập chi tiết
-          </button>
-        </div>
-      </div><!-- /body -->
-    </div><!-- /stage card -->`
-  })
-
-  // Nút Để thêm giai đoạn mới
-  html += `
-  <div style="display:flex;justify-content:center;margin-top:8px">
-    <button onclick="openAddStageModal()"
-      style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#10b981;background:#f0fdf4;border:1.5px dashed #6ee7b7;border-radius:8px;padding:7px 20px;cursor:pointer;width:100%;justify-content:center">
-      <i class="fas fa-plus-circle" style="font-size:12px"></i> Thêm giai đoạn hồ sơ mới
-    </button>
-  </div>`
-
-  // Nút expand/collapse tất cả
-  html = `
-  <div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:10px">
-    <button onclick="collapseAllStages()"
-      style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:4px 12px;cursor:pointer">
-      <i class="fas fa-compress-alt" style="font-size:10px"></i> Thu gọn tất cả
-    </button>
-    <button onclick="expandAllStages()"
-      style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:#6366f1;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 12px;cursor:pointer">
-      <i class="fas fa-expand-alt" style="font-size:10px"></i> Mở rộng tất cả
-    </button>
-  </div>` + html
-
-  container.innerHTML = html
+  container.innerHTML = `
+    <div class="legal-stages-toolbar">
+      <span><i class="fas fa-list-ol mr-1 text-primary"></i>${stages.length} giai đoạn hồ sơ</span>
+    </div>
+    ${renderLegalChecklistForStages(stages)}
+    <div style="display:flex;justify-content:center;margin-top:12px">
+      <button type="button" onclick="openAddStageModal()" class="btn-secondary text-sm"><i class="fas fa-plus-circle mr-1"></i>Thêm giai đoạn hồ sơ mới</button>
+    </div>`
 }
 
 // ── Toggle một giai đoạn ──────────────────────────────────────────────────────

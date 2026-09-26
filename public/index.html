@@ -552,6 +552,64 @@
       color: #fca5a5 !important;
     }
 
+    /* HSPL C1 — left/right shell + checklist display (Wave B tokens) */
+    .legal-layout-row { display: flex; gap: 12px; align-items: flex-start; }
+    .legal-left-col { flex-shrink: 0; width: 280px; min-width: 240px; }
+    .legal-right-col { flex: 1; min-width: 0; }
+    .legal-left-panel { padding: 12px; background: var(--shell-surface); border: 1px solid var(--shell-border); border-radius: 12px; box-shadow: 0 1px 4px var(--shell-shadow); }
+    .legal-project-list { max-height: calc(100vh - 220px); overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+    .legal-project-card { width: 100%; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--shell-border); background: var(--shell-input-bg); color: var(--shell-text); cursor: pointer; transition: background .15s, border-color .15s; }
+    .legal-project-card:hover { background: var(--shell-row-hover); border-color: var(--shell-border-strong); }
+    .legal-project-card.active { border-color: var(--primary); background: rgba(0, 166, 81, 0.1); box-shadow: 0 0 0 1px rgba(0, 166, 81, 0.25); }
+    .legal-project-code { font-size: 11px; font-weight: 700; color: var(--shell-text-muted); letter-spacing: 0.02em; }
+    .legal-project-name { font-size: 13px; font-weight: 600; color: var(--shell-text); margin-top: 2px; line-height: 1.35; }
+    .legal-project-empty { font-size: 12px; color: var(--shell-text-muted); text-align: center; padding: 16px 8px; }
+    .legal-combobox-fallback { display: none !important; }
+    #legalTabs.legal-panel-tabs { gap: 0; border-bottom: 1px solid var(--shell-border); margin-bottom: 16px; padding-bottom: 0; }
+    #legalTabs.legal-panel-tabs .tab-btn { border-radius: 6px 6px 0 0; background: transparent; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+    #legalTabs.legal-panel-tabs .tab-btn.active { background: transparent; color: var(--primary); border-bottom-color: var(--primary); box-shadow: none; }
+    .legal-package-subtabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--shell-border); }
+    .legal-package-subtab { font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--shell-border); background: var(--shell-input-bg); color: var(--shell-text-muted); cursor: pointer; }
+    .legal-package-subtab.active { background: rgba(0, 166, 81, 0.12); border-color: rgba(0, 166, 81, 0.45); color: var(--primary); }
+    .legal-package-subtab:hover:not(.active) { background: var(--shell-row-hover); color: var(--shell-text); }
+    .legal-checklist-host { display: flex; flex-direction: column; gap: 14px; }
+    .legal-checklist-stage { border: 1px solid var(--shell-border); border-radius: 10px; overflow: hidden; background: var(--shell-surface); }
+    .legal-checklist-stage-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--shell-table-head-bg); border-bottom: 1px solid var(--shell-border); flex-wrap: wrap; }
+    .legal-checklist-stage-ring { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: #fff; background: var(--stage-color, var(--primary)); }
+    .legal-checklist-stage-title { flex: 1; min-width: 120px; font-size: 13px; font-weight: 700; color: var(--shell-text); }
+    .legal-checklist-stage-count { font-size: 11px; font-weight: 600; color: var(--shell-text-muted); background: var(--shell-input-bg); border: 1px solid var(--shell-border); border-radius: 999px; padding: 2px 10px; }
+    .legal-checklist-stage-actions { display: flex; gap: 4px; flex-shrink: 0; }
+    .legal-checklist-rows { display: flex; flex-direction: column; }
+    .legal-checklist-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--shell-table-row-border); cursor: pointer; background: var(--shell-surface); transition: background .12s; }
+    .legal-checklist-row:last-child { border-bottom: none; }
+    .legal-checklist-row:hover { background: var(--shell-row-hover); }
+    .legal-checklist-row.is-child { padding-left: 28px; }
+    .legal-checklist-row.is-overdue { background: rgba(248, 113, 113, 0.08); }
+    html[data-theme="dark"] .legal-checklist-row.is-overdue { background: rgba(248, 113, 113, 0.12); }
+    .legal-checklist-status-ring { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; border: 2px solid var(--shell-text-faint); }
+    .legal-checklist-status-ring.done { background: var(--primary); border-color: var(--primary); }
+    .legal-checklist-status-ring.progress { border-color: #3b82f6; background: rgba(59, 130, 246, 0.35); }
+    .legal-checklist-status-ring.pending { background: transparent; }
+    .legal-checklist-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; color: var(--shell-text); line-height: 1.35; }
+    .legal-checklist-row.is-child .legal-checklist-title { font-size: 12px; font-weight: 400; color: var(--shell-text-muted); }
+    .legal-checklist-due { font-size: 11px; font-weight: 600; color: var(--shell-text-muted); padding: 3px 8px; border-radius: 6px; background: var(--shell-input-bg); border: 1px solid var(--shell-border); white-space: nowrap; }
+    .legal-checklist-row.is-overdue .legal-checklist-due { color: #dc2626; border-color: rgba(248, 113, 113, 0.45); background: rgba(254, 226, 226, 0.5); }
+    html[data-theme="dark"] .legal-checklist-row.is-overdue .legal-checklist-due { color: #fca5a5; background: rgba(248, 113, 113, 0.15); }
+    .legal-stages-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; font-size: 13px; color: var(--shell-text-muted); }
+    .legal-checklist-title-done { text-decoration: line-through; opacity: 0.75; }
+    html[data-theme="dark"] #legalTabs.legal-panel-tabs .tab-btn {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--shell-nav-inactive);
+    }
+    html[data-theme="dark"] #legalTabs.legal-panel-tabs .tab-btn.active {
+      background: transparent;
+      color: var(--primary);
+      border-color: transparent;
+      border-bottom-color: var(--primary);
+    }
+
     /* Dark — analytics / finance semantic text on shell surfaces */
     html[data-theme="dark"] .text-indigo-700 { color: #a5b4fc !important; }
     html[data-theme="dark"] .text-cyan-700 { color: #67e8f9 !important; }
@@ -4703,28 +4761,44 @@
 
       <!-- ========== HỒ SƠ PHÁP LÝ PAGE ========== -->
       <div id="page-legal" class="page">
-        <!-- Header -->
-        <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
-          <div>
-            <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-file-contract text-primary mr-2"></i>Hồ Sơ Pháp Lý Dự Án</h2>
-            <p class="text-gray-500 text-sm mt-0.5">Theo dõi hợp đồng, phụ lục, nghiệm thu, thanh toán và văn bản gửi đi</p>
-          </div>
-          <div class="flex items-center gap-2 flex-wrap">
-            <div id="legalProjectSelectCombobox" style="min-width:240px"></div>
-            <button onclick="openLegalLetterModal()" id="btnAddLetter" class="btn-accent hidden" style="display:none">
-              <i class="fas fa-paper-plane mr-1"></i>Gửi văn bản
-            </button>
-            <button onclick="openLegalDocModal()" id="btnAddDoc" class="btn-primary hidden" style="display:none">
-              <i class="fas fa-file-plus mr-1"></i>Thêm tài liệu
-            </button>
-            <button onclick="openImportExcelModal()" id="btnImportExcel" class="btn-secondary" title="Import từ file Excel" style="display:none">
-              <i class="fas fa-file-excel mr-1" style="color:#1d6f42"></i>Import Excel
-            </button>
-            <button onclick="openLegalLetterConfig()" id="btnLetterConfig" class="btn-secondary hidden" title="Cấu hình đánh số" style="display:none">
-              <i class="fas fa-cog"></i>
-            </button>
-          </div>
+        <div class="mb-4">
+          <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-file-contract text-primary mr-2"></i>Hồ Sơ Pháp Lý Dự Án</h2>
+          <p class="text-gray-500 text-sm mt-0.5">Theo dõi hợp đồng, phụ lục, nghiệm thu, thanh toán và văn bản gửi đi</p>
         </div>
+
+        <div class="legal-layout-row">
+          <div class="legal-left-col">
+            <div class="legal-left-panel">
+              <input type="text" id="legalProjectSearch" class="input-field" placeholder="🔍 Tìm dự án…" oninput="legalOnProjectSearch(this.value)" autocomplete="off">
+              <div id="legalProjectList" class="legal-project-list">
+                <div class="legal-project-empty"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải…</div>
+              </div>
+            </div>
+            <div id="legalProjectSelectCombobox" class="legal-combobox-fallback" aria-hidden="true"></div>
+          </div>
+
+          <div class="legal-right-col">
+            <div class="flex flex-wrap items-center justify-end gap-2 mb-4" id="legalPanelActions">
+              <button onclick="openLegalLetterModal()" id="btnAddLetter" class="btn-accent hidden" style="display:none">
+                <i class="fas fa-paper-plane mr-1"></i>Gửi văn bản
+              </button>
+              <button onclick="openLegalDocModal()" id="btnAddDoc" class="btn-primary hidden" style="display:none">
+                <i class="fas fa-file-plus mr-1"></i>Thêm tài liệu
+              </button>
+              <button onclick="openImportExcelModal()" id="btnImportExcel" class="btn-secondary" title="Import từ file Excel" style="display:none">
+                <i class="fas fa-file-excel mr-1" style="color:#1d6f42"></i>Import Excel
+              </button>
+              <button onclick="openLegalLetterConfig()" id="btnLetterConfig" class="btn-secondary hidden" title="Cấu hình đánh số" style="display:none">
+                <i class="fas fa-cog"></i>
+              </button>
+            </div>
+
+            <div id="legalPickProjectHint" class="card text-center py-16 text-gray-400">
+              <i class="fas fa-hand-pointer text-4xl mb-4 opacity-30"></i>
+              <p class="font-medium">Chọn dự án ở danh sách bên trái để xem hồ sơ pháp lý</p>
+            </div>
+
+            <div id="legalRightContent" style="display:none">
 
         <!-- KPI Summary -->
         <div id="legalKPIRow" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5" style="display:none">
@@ -4747,7 +4821,7 @@
         </div>
 
         <!-- Tabs -->
-        <div id="legalTabs" class="flex gap-2 mb-4 tabs-scroll-row" style="display:none">
+        <div id="legalTabs" class="flex gap-2 mb-4 tabs-scroll-row legal-panel-tabs" style="display:none">
           <button class="tab-btn active" id="ltab-stages" onclick="switchLegalTab('stages')"><i class="fas fa-list-ol mr-1"></i>Theo dõi hồ sơ</button>
           <button class="tab-btn" id="ltab-letters" onclick="switchLegalTab('letters')"><i class="fas fa-paper-plane mr-1"></i>Văn bản gửi đi</button>
           <button class="tab-btn" id="ltab-minutes" onclick="switchLegalTab('minutes')"><i class="fas fa-clipboard-list mr-1"></i>Biên bản họp</button>
@@ -4826,6 +4900,10 @@
             <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
           </div>
         </div>
+
+            </div><!-- #legalRightContent -->
+          </div><!-- .legal-right-col -->
+        </div><!-- .legal-layout-row -->
       </div>
       <!-- ========== END HỒ SƠ PHÁP LÝ PAGE ========== -->
 
