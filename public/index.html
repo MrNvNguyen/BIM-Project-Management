@@ -4869,6 +4869,9 @@
             <button onclick="openLegalDocModal()" id="btnAddDoc" class="btn-primary hidden" style="display:none">
               <i class="fas fa-file-plus mr-1"></i>Thêm tài liệu
             </button>
+            <button onclick="openLegalCopyFromModal()" id="btnCopyFromLegal" class="btn-secondary" title="Sao chép gói thầu từ dự án khác" style="display:none">
+              <i class="fas fa-copy mr-1"></i>Sao chép từ dự án…
+            </button>
             <button onclick="openImportExcelModal()" id="btnImportExcel" class="btn-secondary" title="Import từ file Excel" style="display:none">
               <i class="fas fa-file-excel mr-1" style="color:#1d6f42"></i>Import Excel
             </button>
@@ -7675,6 +7678,47 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeGuideModal();
 });
 </script>
+
+<!-- ============================================================
+     MODAL: Sao chép HSPL từ dự án khác
+     ============================================================ -->
+<div id="modalLegalCopyFrom" class="modal-overlay hidden" style="z-index:1100">
+  <div class="modal-container" style="max-width:520px">
+    <div class="modal-header">
+      <h3 class="modal-title"><i class="fas fa-copy mr-2"></i>Sao chép từ dự án khác</h3>
+      <button type="button" class="modal-close" onclick="closeLegalCopyFromModal()" aria-label="Đóng">
+        <i class="fas fa-times text-xl"></i>
+      </button>
+    </div>
+    <div class="modal-body p-6">
+      <p class="text-sm text-gray-500 mb-4">Chỉ sao chép gói thầu, giai đoạn và hạng mục. Không sao chép thanh toán, tài liệu R2 hay task.</p>
+      <div class="mb-4">
+        <label class="block text-sm font-semibold mb-2" for="legalCopyFromSource">Dự án nguồn</label>
+        <select id="legalCopyFromSource" class="input-field w-full" onchange="onLegalCopyFromSourceChange()"></select>
+      </div>
+      <div class="mb-4" id="legalCopyFromPkgWrap" style="display:none">
+        <label class="block text-sm font-semibold mb-2">Gói thầu (để trống = tất cả)</label>
+        <div id="legalCopyFromPkgList" class="border rounded-lg p-3 max-h-40 overflow-y-auto space-y-2" style="border-color:var(--shell-border,#e5e7eb)"></div>
+      </div>
+      <div class="mb-4">
+        <span class="block text-sm font-semibold mb-2">Trùng tên gói trên dự án đích</span>
+        <label class="flex items-center gap-2 text-sm mb-1 cursor-pointer">
+          <input type="radio" name="legalCopyNameConflict" value="skip" checked> Bỏ qua (mặc định)
+        </label>
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="radio" name="legalCopyNameConflict" value="overwrite"> Ghi đè gói trùng tên
+        </label>
+      </div>
+      <div id="legalCopyFromResult" class="text-sm hidden mb-3"></div>
+      <div class="flex gap-2 justify-end">
+        <button type="button" class="btn-secondary" onclick="closeLegalCopyFromModal()">Hủy</button>
+        <button type="button" class="btn-primary" id="btnLegalCopyFromSubmit" onclick="executeLegalCopyFrom()">
+          <i class="fas fa-copy mr-1"></i>Sao chép
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ============================================================
      MODAL: Import Excel - Hồ Sơ Pháp Lý

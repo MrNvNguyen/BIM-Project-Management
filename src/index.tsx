@@ -13149,6 +13149,197 @@ app.post('/api/legal/migrate-packages/:projectId', authMiddleware, async (c) => 
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
+async function deleteLegalPackageCascade(db: D1Database, packageId: number) {
+  const stages = await db.prepare('SELECT id FROM legal_stages WHERE package_id = ?').bind(packageId).all()
+  const stageIds = (stages.results as any[]).map((s: any) => s.id)
+  for (const sid of stageIds) {
+    const parents = await db.prepare(
+      'SELECT id FROM legal_items WHERE stage_id = ? AND parent_id IS NULL'
+    ).bind(sid).all()
+    for (const p of parents.results as any[]) {
+      await db.prepare('DELETE FROM legal_items WHERE parent_id = ?').bind(p.id).run()
+    }
+    await db.prepare('DELETE FROM legal_items WHERE stage_id = ?').bind(sid).run()
+  }
+  await db.prepare('DELETE FROM legal_stages WHERE package_id = ?').bind(packageId).run()
+  await db.prepare('DELETE FROM legal_packages WHERE id = ?').bind(packageId).run()
+}
+
+// POST /api/legal/:projectId/copy-from — Sao chép gói thầu / stage / hạng mục từ dự án nguồn
+app.post('/api/legal/:projectId/copy-from', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  const destProjectId = parseInt(c.req.param('projectId'))
+  const db = c.env.DB
+  try {
+    const body = await c.req.json()
+    const sourceProjectId = parseInt(String(body.source_project_id), 10)
+    if (!Number.isFinite(sourceProjectId) || sourceProjectId <= 0) {
+      return c.json({ error: 'source_project_id không hợp lệ' }, 400)
+    }
+    if (sourceProjectId === destProjectId) {
+      return c.json({ error: 'Dự án nguồn và đích phải khác nhau' }, 400)
+    }
+
+    if (!(await isProjectAdminOrAbove(db, user, destProjectId))) {
+      return c.json({ error: 'Không có quyền quản trị HSPL dự án đích' }, 403)
+    }
+    if (!(await isProjectAdminOrAbove(db, user, sourceProjectId))) {
+      return c.json({ error: 'Không có quyền quản trị HSPL dự án nguồn' }, 403)
+    }
+
+    const onNameConflict: 'skip' | 'overwrite' =
+      body.on_name_conflict === 'overwrite' ? 'overwrite' : 'skip'
+    const packageIdsFilter: number[] | null = Array.isArray(body.package_ids)
+      ? body.package_ids.map((x: any) => parseInt(String(x), 10)).filter((n: number) => Number.isFinite(n) && n > 0)
+      : null
+
+    let sourcePkgs = await db.prepare(
+      'SELECT * FROM legal_packages WHERE project_id = ? ORDER BY sort_order, id'
+    ).bind(sourceProjectId).all()
+    let srcList = sourcePkgs.results as any[]
+    if (packageIdsFilter && packageIdsFilter.length > 0) {
+      const idSet = new Set(packageIdsFilter)
+      srcList = srcList.filter((p) => idSet.has(p.id))
+      if (srcList.length === 0) {
+        return c.json({ error: 'Không tìm thấy gói thầu nguồn đã chọn' }, 400)
+      }
+    }
+
+    const destPkgsRes = await db.prepare(
+      'SELECT id, name FROM legal_packages WHERE project_id = ?'
+    ).bind(destProjectId).all()
+    const destByName = new Map<string, any>()
+    for (const p of destPkgsRes.results as any[]) {
+      destByName.set(String(p.name).trim(), p)
+    }
+
+    const destMaxOrderRow = await db.prepare(
+      'SELECT MAX(sort_order) as mo FROM legal_packages WHERE project_id = ?'
+    ).bind(destProjectId).first() as any
+    let destPkgOrder = destMaxOrderRow?.mo || 0
+
+    const nameConflicts: { name: string; source_package_id: number; dest_package_id: number; action: string }[] = []
+    const copiedPackages: { source_package_id: number; dest_package_id: number; name: string }[] = []
+    const recalcStages = new Set<number>()
+
+    for (const srcPkg of srcList) {
+      const pkgName = String(srcPkg.name).trim()
+      const destMatch = destByName.get(pkgName)
+
+      if (destMatch) {
+        if (onNameConflict === 'skip') {
+          nameConflicts.push({
+            name: pkgName,
+            source_package_id: srcPkg.id,
+            dest_package_id: destMatch.id,
+            action: 'skipped',
+          })
+          continue
+        }
+        await deleteLegalPackageCascade(db, destMatch.id)
+        destByName.delete(pkgName)
+        nameConflicts.push({
+          name: pkgName,
+          source_package_id: srcPkg.id,
+          dest_package_id: destMatch.id,
+          action: 'overwritten',
+        })
+      }
+
+      destPkgOrder += 1
+      const pkgIns = await db.prepare(
+        'INSERT INTO legal_packages (project_id, name, package_type, sort_order, notes) VALUES (?,?,?,?,?)'
+      ).bind(
+        destProjectId,
+        pkgName,
+        srcPkg.package_type || 'custom',
+        destPkgOrder,
+        srcPkg.notes || null
+      ).run()
+      const newPkgId = pkgIns.meta.last_row_id as number
+      destByName.set(pkgName, { id: newPkgId, name: pkgName })
+      copiedPackages.push({ source_package_id: srcPkg.id, dest_package_id: newPkgId, name: pkgName })
+
+      const srcStages = await db.prepare(
+        'SELECT * FROM legal_stages WHERE package_id = ? ORDER BY sort_order, id'
+      ).bind(srcPkg.id).all()
+      const stageMap = new Map<number, number>()
+
+      for (const st of srcStages.results as any[]) {
+        const stIns = await db.prepare(
+          'INSERT INTO legal_stages (project_id, package_id, code, name, sort_order) VALUES (?,?,?,?,?)'
+        ).bind(destProjectId, newPkgId, st.code, st.name, st.sort_order).run()
+        const newStageId = stIns.meta.last_row_id as number
+        stageMap.set(st.id, newStageId)
+        recalcStages.add(newStageId)
+      }
+
+      const srcStageIds = [...stageMap.keys()]
+      if (srcStageIds.length === 0) continue
+
+      const placeholders = srcStageIds.map(() => '?').join(',')
+      const itemsRes = await db.prepare(
+        `SELECT * FROM legal_items WHERE stage_id IN (${placeholders}) ORDER BY stage_id, parent_id IS NOT NULL, sort_order, id`
+      ).bind(...srcStageIds).all()
+      const items = itemsRes.results as any[]
+      const itemMap = new Map<number, number>()
+
+      for (const it of items.filter((i) => i.parent_id == null)) {
+        const newStageId = stageMap.get(it.stage_id)!
+        const ins = await db.prepare(
+          `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, 'pending', ?, ?, ?)`
+        ).bind(
+          destProjectId,
+          newStageId,
+          it.stt || '1',
+          it.title,
+          it.item_type || 'task',
+          it.due_date || null,
+          it.notes || null,
+          it.sort_order || 0,
+          user.id
+        ).run()
+        itemMap.set(it.id, ins.meta.last_row_id as number)
+      }
+
+      for (const it of items.filter((i) => i.parent_id != null)) {
+        const newParentId = itemMap.get(it.parent_id)
+        if (!newParentId) continue
+        const newStageId = stageMap.get(it.stage_id)!
+        const ins = await db.prepare(
+          `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?, ?, ?)`
+        ).bind(
+          destProjectId,
+          newStageId,
+          newParentId,
+          it.stt || '1',
+          it.title,
+          it.item_type || 'task',
+          it.due_date || null,
+          it.notes || null,
+          it.sort_order || 0,
+          user.id
+        ).run()
+        itemMap.set(it.id, ins.meta.last_row_id as number)
+      }
+    }
+
+    for (const stageId of recalcStages) {
+      await recalculateSiblingsStt(db, stageId, null)
+    }
+
+    return c.json({
+      success: true,
+      copied_packages: copiedPackages,
+      name_conflicts: nameConflicts,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 // ── Get all packages → stages → items for a project (overview) ───────────────
 app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
   const projectId = parseInt(c.req.param('projectId'))

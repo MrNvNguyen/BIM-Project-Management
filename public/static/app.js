@@ -18667,7 +18667,7 @@ async function loadLegal() {
     _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal'].forEach(id => { if($(id)) $(id).style.display='none' })
   }
 }
 
@@ -18678,7 +18678,7 @@ async function _onLegalProjectComboChange(val) {
     _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal'].forEach(id => { if($(id)) $(id).style.display='none' })
     renderLegalProjectList()
     return
   }
@@ -18713,6 +18713,10 @@ async function loadLegalProject(projectId) {
     const effRole = getEffectiveRoleForProject(projectId)
     // Kiểm tra quyền: chỉ system_admin mới có full quyền
     const isSystemAdmin = effRole === 'system_admin'
+    const isDestLegalAdmin = ['system_admin', 'project_admin'].includes(effRole)
+    if ($('btnCopyFromLegal')) {
+      $('btnCopyFromLegal').style.display = isDestLegalAdmin ? '' : 'none'
+    }
 
     // Show KPI row
     $('legalKPIRow').style.display = ''
@@ -22051,6 +22055,109 @@ async function deleteLegalItemSubtask(subtaskId, taskId) {
 // ============================================================
 
 let _importExcelFile = null
+
+function closeLegalCopyFromModal() {
+  const m = $('modalLegalCopyFrom')
+  if (m) m.classList.add('hidden')
+}
+
+async function onLegalCopyFromSourceChange() {
+  const sel = $('legalCopyFromSource')
+  const wrap = $('legalCopyFromPkgWrap')
+  const list = $('legalCopyFromPkgList')
+  if (!sel || !wrap || !list) return
+  const srcId = parseInt(sel.value, 10)
+  if (!srcId) {
+    wrap.style.display = 'none'
+    list.innerHTML = ''
+    return
+  }
+  try {
+    const data = await api(`/legal/${srcId}/packages`)
+    const pkgs = data.packages || []
+    if (pkgs.length === 0) {
+      list.innerHTML = '<p class="text-gray-400 text-sm">Dự án nguồn chưa có gói thầu.</p>'
+    } else {
+      list.innerHTML = pkgs.map(p => `
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" class="legal-copy-pkg-cb" value="${p.id}">
+          <span>${escHtml(p.name)}</span>
+        </label>`).join('')
+    }
+    wrap.style.display = ''
+  } catch (e) {
+    list.innerHTML = `<p class="text-red-600 text-sm">${escHtml(e.message)}</p>`
+    wrap.style.display = ''
+  }
+}
+
+async function openLegalCopyFromModal() {
+  if (!_legalCurrentProjectId) {
+    toast('Vui lòng chọn dự án đích trước', 'warning')
+    return
+  }
+  if (!canReorderLegalChecklist()) {
+    toast('Chỉ quản trị dự án đích mới được sao chép HSPL', 'error')
+    return
+  }
+  const sel = $('legalCopyFromSource')
+  const result = $('legalCopyFromResult')
+  if (result) { result.classList.add('hidden'); result.innerHTML = '' }
+  if (sel) {
+    const opts = (allProjects || [])
+      .filter(p => p.id !== _legalCurrentProjectId)
+      .map(p => `<option value="${p.id}">${escHtml(p.name || p.code || ('#' + p.id))}</option>`)
+      .join('')
+    sel.innerHTML = `<option value="">— Chọn dự án nguồn —</option>${opts}`
+  }
+  const skipRadio = document.querySelector('input[name="legalCopyNameConflict"][value="skip"]')
+  if (skipRadio) skipRadio.checked = true
+  $('legalCopyFromPkgWrap').style.display = 'none'
+  $('legalCopyFromPkgList').innerHTML = ''
+  $('modalLegalCopyFrom').classList.remove('hidden')
+}
+
+async function executeLegalCopyFrom() {
+  if (!_legalCurrentProjectId) return
+  const srcId = parseInt($('legalCopyFromSource')?.value, 10)
+  if (!srcId) {
+    toast('Chọn dự án nguồn', 'warning')
+    return
+  }
+  const checked = [...document.querySelectorAll('.legal-copy-pkg-cb:checked')].map(el => parseInt(el.value, 10))
+  const conflictMode = document.querySelector('input[name="legalCopyNameConflict"]:checked')?.value || 'skip'
+  const btn = $('btnLegalCopyFromSubmit')
+  if (btn) btn.disabled = true
+  try {
+    const payload = {
+      source_project_id: srcId,
+      on_name_conflict: conflictMode,
+    }
+    if (checked.length) payload.package_ids = checked
+    const res = await api(`/legal/${_legalCurrentProjectId}/copy-from`, { method: 'POST', data: payload })
+    const copied = res.copied_packages || []
+    const conflicts = res.name_conflicts || []
+    let msg = copied.length
+      ? `Đã sao chép ${copied.length} gói thầu.`
+      : 'Không có gói nào được sao chép.'
+    if (conflicts.length) {
+      const skipped = conflicts.filter(c => c.action === 'skipped').map(c => c.name)
+      if (skipped.length) msg += ` Bỏ qua trùng tên: ${skipped.join(', ')}.`
+    }
+    toast(msg, copied.length ? 'success' : 'warning')
+    const result = $('legalCopyFromResult')
+    if (result) {
+      result.classList.remove('hidden')
+      result.innerHTML = `<p class="text-green-700">${escHtml(msg)}</p>`
+    }
+    await loadLegalProject(_legalCurrentProjectId)
+    if (copied.length) closeLegalCopyFromModal()
+  } catch (e) {
+    toast('Sao chép thất bại: ' + e.message, 'error')
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
 
 async function openImportExcelModal() {
   if (!_legalCurrentProjectId) {
