@@ -656,6 +656,33 @@
     }
     .legal-checklist-overflow-btn { flex-shrink: 0; opacity: 0.55; padding: 4px 8px; min-width: 32px; }
     .legal-checklist-row:hover .legal-checklist-overflow-btn { opacity: 1; }
+    .legal-checklist-drag-handle {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      min-height: 44px;
+      padding: 0 8px;
+      margin: -6px 0;
+      border: none;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--shell-text-faint);
+      cursor: grab;
+      touch-action: none;
+    }
+    .legal-checklist-drag-handle:active { cursor: grabbing; }
+    .legal-checklist-drag-handle:hover,
+    .legal-checklist-drag-handle:focus-visible {
+      background: var(--shell-input-bg);
+      color: var(--shell-text-muted);
+      outline: 2px solid rgba(0, 166, 81, 0.35);
+      outline-offset: 1px;
+    }
+    .legal-checklist-row.is-dragging { opacity: 0.55; background: var(--shell-row-hover); }
+    .legal-checklist-row.is-drop-before { box-shadow: inset 0 3px 0 0 var(--primary); }
+    .legal-checklist-stage-head.is-drop-stage { box-shadow: inset 0 0 0 2px rgba(0, 166, 81, 0.45); background: var(--shell-row-hover); }
     html[data-theme="dark"] #legalTabs.legal-panel-tabs .tab-btn {
       background: transparent;
       border: none;

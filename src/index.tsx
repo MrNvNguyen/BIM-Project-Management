@@ -13393,42 +13393,150 @@ async function recalculateSiblingsStt(db: D1Database, stageId: number, parentId:
     `SELECT id, parent_id FROM legal_items WHERE stage_id = ? AND parent_id IS ? ORDER BY sort_order, id`
   ).bind(stageId, parentId).all()
   const arr = siblings.results as any[]
+  let parentSttPrefix: string | null = null
+  if (parentId) {
+    const parent = await db.prepare('SELECT stt FROM legal_items WHERE id = ?').bind(parentId).first() as any
+    parentSttPrefix = parent?.stt || '1'
+  }
+  const stmts: D1PreparedStatement[] = []
   for (let i = 0; i < arr.length; i++) {
     const newSortOrder = i + 1
-    let newStt: string
-    if (!parentId) {
-      newStt = String(newSortOrder)
-    } else {
-      // Lấy stt của parent
-      const parent = await db.prepare('SELECT stt FROM legal_items WHERE id = ?').bind(parentId).first() as any
-      newStt = `${parent?.stt || '1'}.${newSortOrder}`
-    }
-    await db.prepare('UPDATE legal_items SET stt=?, sort_order=? WHERE id=?').bind(newStt, newSortOrder, arr[i].id).run()
-    // Nếu item cha bị renumber, cập nhật cả các item con
+    const newStt = !parentId ? String(newSortOrder) : `${parentSttPrefix}.${newSortOrder}`
+    stmts.push(
+      db.prepare('UPDATE legal_items SET stt=?, sort_order=? WHERE id=?').bind(newStt, newSortOrder, arr[i].id)
+    )
     if (!parentId) {
       const children = await db.prepare(
         `SELECT id FROM legal_items WHERE parent_id = ? ORDER BY sort_order, id`
       ).bind(arr[i].id).all()
       const childArr = children.results as any[]
       for (let j = 0; j < childArr.length; j++) {
-        await db.prepare('UPDATE legal_items SET stt=?, sort_order=? WHERE id=?')
-          .bind(`${newStt}.${j+1}`, j+1, childArr[j].id).run()
+        stmts.push(
+          db.prepare('UPDATE legal_items SET stt=?, sort_order=? WHERE id=?')
+            .bind(`${newStt}.${j + 1}`, j + 1, childArr[j].id)
+        )
       }
     }
   }
+  for (let i = 0; i < stmts.length; i += 50) {
+    await db.batch(stmts.slice(i, i + 50))
+  }
 }
 
-// ── Reorder item (move up / move down) ────────────────────────────────────────
+async function legalStagePackageId(db: D1Database, stageId: number): Promise<number | null> {
+  const row = await db.prepare('SELECT package_id FROM legal_stages WHERE id = ?').bind(stageId).first() as any
+  return row?.package_id ?? null
+}
+
+async function legalItemParentCycle(db: D1Database, itemId: number, newParentId: number | null): Promise<boolean> {
+  if (newParentId == null) return false
+  if (newParentId === itemId) return true
+  let cur: number | null = newParentId
+  while (cur != null) {
+    if (cur === itemId) return true
+    const row = await db.prepare('SELECT parent_id FROM legal_items WHERE id = ?').bind(cur).first() as any
+    if (!row) break
+    cur = row.parent_id ?? null
+  }
+  return false
+}
+
+// ── Reorder item (to_index drop or legacy up/down) ───────────────────────────
 app.post('/api/legal/items/:id/reorder', authMiddleware, async (c) => {
+  const user = c.get('user') as any
   const id = parseInt(c.req.param('id'))
-  const { direction } = await c.req.json()  // 'up' | 'down'
+  const body = await c.req.json()
+  const db = c.env.DB
   try {
-    const item = await c.env.DB.prepare(
-      'SELECT id, stage_id, parent_id, sort_order FROM legal_items WHERE id = ?'
+    const item = await db.prepare(
+      'SELECT id, project_id, stage_id, parent_id, sort_order FROM legal_items WHERE id = ?'
     ).bind(id).first() as any
     if (!item) return c.json({ error: 'Not found' }, 404)
 
-    const siblings = await c.env.DB.prepare(
+    if (!(await isProjectAdminOrAbove(db, user, item.project_id))) {
+      return c.json({ error: 'Không có quyền sắp xếp hạng mục HSPL' }, 403)
+    }
+
+    if (typeof body.to_index === 'number') {
+      const toIndex = body.to_index
+      if (!Number.isInteger(toIndex) || toIndex < 0) {
+        return c.json({ error: 'to_index không hợp lệ' }, 400)
+      }
+
+      const oldStageId = item.stage_id as number
+      const oldParentId: number | null = item.parent_id ?? null
+      const newStageId = body.stage_id != null ? parseInt(String(body.stage_id), 10) : oldStageId
+      let newParentId: number | null = oldParentId
+      if (body.parent_id !== undefined) {
+        newParentId = body.parent_id == null ? null : parseInt(String(body.parent_id), 10)
+      }
+
+      if (newParentId === id) {
+        return c.json({ error: 'Không thể đặt hạng mục làm cha của chính nó' }, 400)
+      }
+
+      const oldPkg = await legalStagePackageId(db, oldStageId)
+      const newPkg = await legalStagePackageId(db, newStageId)
+      if (oldPkg !== newPkg) {
+        return c.json({ error: 'Không thể kéo sang gói thầu khác' }, 400)
+      }
+
+      const newStage = await db.prepare('SELECT id, project_id FROM legal_stages WHERE id = ?').bind(newStageId).first() as any
+      if (!newStage || newStage.project_id !== item.project_id) {
+        return c.json({ error: 'Giai đoạn đích không hợp lệ' }, 400)
+      }
+
+      if (newParentId != null) {
+        const parentRow = await db.prepare(
+          'SELECT id, stage_id, parent_id FROM legal_items WHERE id = ?'
+        ).bind(newParentId).first() as any
+        if (!parentRow || parentRow.stage_id !== newStageId) {
+          return c.json({ error: 'Hạng mục cha đích không hợp lệ' }, 400)
+        }
+        if (await legalItemParentCycle(db, id, newParentId)) {
+          return c.json({ error: 'Thao tác tạo vòng lặp parent' }, 400)
+        }
+      }
+
+      const stageChanged = newStageId !== oldStageId
+      const parentChanged = newParentId !== oldParentId
+      if (stageChanged || parentChanged) {
+        await db.prepare('UPDATE legal_items SET stage_id = ?, parent_id = ? WHERE id = ?')
+          .bind(newStageId, newParentId, id).run()
+        if (stageChanged) {
+          await db.prepare('UPDATE legal_items SET stage_id = ? WHERE parent_id = ?')
+            .bind(newStageId, id).run()
+        }
+      }
+
+      const siblings = await db.prepare(
+        `SELECT id FROM legal_items WHERE stage_id = ? AND parent_id IS ? AND id != ? ORDER BY sort_order, id`
+      ).bind(newStageId, newParentId, id).all()
+      const orderedIds = (siblings.results as any[]).map((s) => s.id)
+      const insertAt = Math.min(toIndex, orderedIds.length)
+      orderedIds.splice(insertAt, 0, id)
+
+      const sortStmts = orderedIds.map((sid, i) =>
+        db.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(i + 1, sid)
+      )
+      for (let i = 0; i < sortStmts.length; i += 50) {
+        await db.batch(sortStmts.slice(i, i + 50))
+      }
+
+      await recalculateSiblingsStt(db, newStageId, newParentId)
+      if (stageChanged || parentChanged) {
+        await recalculateSiblingsStt(db, oldStageId, oldParentId)
+      }
+
+      return c.json({ success: true })
+    }
+
+    const { direction } = body  // legacy table path: 'up' | 'down'
+    if (direction !== 'up' && direction !== 'down') {
+      return c.json({ error: 'Thiếu to_index hoặc direction' }, 400)
+    }
+
+    const siblings = await db.prepare(
       `SELECT id, sort_order FROM legal_items WHERE stage_id = ? AND parent_id IS ? ORDER BY sort_order, id`
     ).bind(item.stage_id, item.parent_id).all()
     const arr = siblings.results as any[]
@@ -13438,14 +13546,14 @@ app.post('/api/legal/items/:id/reorder', authMiddleware, async (c) => {
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1
     if (swapIdx < 0 || swapIdx >= arr.length) return c.json({ success: true, noChange: true })
 
-    // Swap sort_order giữa 2 items
-    const aId = arr[idx].id,  bId = arr[swapIdx].id
+    const aId = arr[idx].id, bId = arr[swapIdx].id
     const aOrd = arr[idx].sort_order, bOrd = arr[swapIdx].sort_order
-    await c.env.DB.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(bOrd, aId).run()
-    await c.env.DB.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(aOrd, bId).run()
+    await db.batch([
+      db.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(bOrd, aId),
+      db.prepare('UPDATE legal_items SET sort_order=? WHERE id=?').bind(aOrd, bId),
+    ])
 
-    // Recalculate stt cho toàn bộ siblings sau khi swap
-    await recalculateSiblingsStt(c.env.DB, item.stage_id, item.parent_id)
+    await recalculateSiblingsStt(db, item.stage_id, item.parent_id)
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)

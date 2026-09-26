@@ -19174,6 +19174,201 @@ function switchLegalPackageTab(pkgId) {
   }
 }
 
+function canReorderLegalChecklist() {
+  if (!_legalCurrentProjectId || !currentUser) return false
+  const eff = getEffectiveRoleForProject(_legalCurrentProjectId)
+  return ['system_admin', 'project_admin'].includes(eff)
+}
+
+let _legalDndActive = null
+let _legalDndBoundHost = null
+
+function _legalDndRowBlock(rowEl) {
+  if (!rowEl || rowEl.dataset.isChild === '1') return [rowEl]
+  const itemId = rowEl.dataset.legalItemId
+  const rows = rowEl.parentElement ? [...rowEl.parentElement.querySelectorAll('.legal-checklist-row')] : []
+  const block = [rowEl]
+  for (const r of rows) {
+    if (r === rowEl) continue
+    if (r.dataset.isChild === '1' && r.dataset.parentId === itemId) block.push(r)
+    else if (block.length > 1 && r.dataset.isChild !== '1') break
+  }
+  return block
+}
+
+function _legalDndSnapshot(block) {
+  return block.map(el => ({ el, parent: el.parentNode, next: el.nextSibling }))
+}
+
+function _legalDndRevert(snapshot) {
+  if (!snapshot) return
+  for (const { el, parent, next } of snapshot) {
+    if (!parent) continue
+    if (next && next.parentNode === parent) parent.insertBefore(el, next)
+    else parent.appendChild(el)
+  }
+}
+
+function _legalDndTopLevelRows(container, stageId) {
+  return [...container.querySelectorAll('.legal-checklist-row')].filter(r =>
+    String(r.dataset.stageId) === String(stageId) && (r.dataset.parentId || '') === '' && r.dataset.isChild !== '1'
+  )
+}
+
+function _legalDndClearMarks(host) {
+  host.querySelectorAll('.is-drop-before, .is-drop-stage, .is-dragging').forEach(el => {
+    el.classList.remove('is-drop-before', 'is-drop-stage', 'is-dragging')
+  })
+}
+
+function initLegalChecklistDnD() {
+  const host = document.querySelector('.legal-checklist-host')
+  if (!host || !canReorderLegalChecklist()) return
+  if (_legalDndBoundHost === host) return
+  _legalDndBoundHost = host
+
+  host.addEventListener('dragstart', (e) => {
+    const handle = e.target.closest('.legal-checklist-drag-handle')
+    if (!handle) return
+    const row = handle.closest('.legal-checklist-row')
+    if (!row) return
+    e.stopPropagation()
+    const block = _legalDndRowBlock(row)
+    _legalDndActive = {
+      itemId: parseInt(row.dataset.legalItemId, 10),
+      stageId: parseInt(row.dataset.stageId, 10),
+      parentId: row.dataset.parentId ? parseInt(row.dataset.parentId, 10) : null,
+      isChild: row.dataset.isChild === '1',
+      block,
+      snapshot: _legalDndSnapshot(block),
+    }
+    block.forEach(el => el.classList.add('is-dragging'))
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', String(_legalDndActive.itemId))
+    }
+  })
+
+  host.addEventListener('dragend', () => {
+    _legalDndClearMarks(host)
+    _legalDndActive = null
+  })
+
+  host.addEventListener('dragover', (e) => {
+    if (!_legalDndActive) return
+    e.preventDefault()
+    _legalDndClearMarks(host)
+    const stageHead = e.target.closest('[data-legal-stage-drop]')
+    if (stageHead && !e.target.closest('.legal-checklist-row')) {
+      stageHead.classList.add('is-drop-stage')
+      return
+    }
+    const row = e.target.closest('.legal-checklist-row')
+    if (row && !_legalDndActive.block.includes(row)) {
+      row.classList.add('is-drop-before')
+    }
+  })
+
+  host.addEventListener('drop', async (e) => {
+    if (!_legalDndActive) return
+    e.preventDefault()
+    const drag = _legalDndActive
+    _legalDndClearMarks(host)
+
+    let targetStageId = drag.stageId
+    let targetParentId = drag.parentId
+    let toIndex = 0
+    let rowsContainer = null
+    let insertBeforeEl = null
+
+    const stageHead = e.target.closest('[data-legal-stage-drop]')
+    const targetRow = e.target.closest('.legal-checklist-row')
+    const dropOnStageHead = stageHead && (!targetRow || e.target.closest('[data-legal-stage-drop]') === stageHead)
+
+    if (dropOnStageHead) {
+      if (drag.isChild) return
+      targetStageId = parseInt(stageHead.dataset.legalStageDrop, 10)
+      targetParentId = null
+      rowsContainer = stageHead.nextElementSibling
+      insertBeforeEl = rowsContainer?.querySelector('.legal-checklist-row') || null
+      toIndex = 0
+    } else if (targetRow && !drag.block.includes(targetRow)) {
+      targetStageId = parseInt(targetRow.dataset.stageId, 10)
+      rowsContainer = targetRow.closest('.legal-checklist-rows')
+      insertBeforeEl = targetRow
+      const targetIsChild = targetRow.dataset.isChild === '1'
+      const targetItemId = parseInt(targetRow.dataset.legalItemId, 10)
+
+      if (drag.isChild && !targetIsChild) {
+        targetParentId = targetItemId
+        const childSibs = rowsContainer
+          ? [...rowsContainer.querySelectorAll('.legal-checklist-row')].filter(r =>
+            r.dataset.isChild === '1' && String(r.dataset.parentId) === String(targetParentId)
+          )
+          : []
+        toIndex = childSibs.length
+        insertBeforeEl = null
+        const lastChild = childSibs[childSibs.length - 1]
+        if (lastChild && lastChild.nextSibling) insertBeforeEl = lastChild.nextSibling
+        else if (!lastChild) {
+          const parentRow = rowsContainer.querySelector(`.legal-checklist-row[data-legal-item-id="${targetParentId}"]`)
+          insertBeforeEl = parentRow?.nextSibling || targetRow.nextSibling
+        }
+      } else if (targetIsChild) {
+        if (!drag.isChild) {
+          const parentRow = rowsContainer?.querySelector(
+            `.legal-checklist-row[data-legal-item-id="${targetRow.dataset.parentId}"]`
+          )
+          targetParentId = null
+          const topSibs = rowsContainer ? _legalDndTopLevelRows(rowsContainer, targetStageId) : []
+          toIndex = parentRow ? Math.max(0, topSibs.indexOf(parentRow) + 1) : 0
+          insertBeforeEl = parentRow ? parentRow.nextSibling : targetRow
+        } else {
+          targetParentId = parseInt(targetRow.dataset.parentId, 10)
+          const childSibs = rowsContainer
+            ? [...rowsContainer.querySelectorAll('.legal-checklist-row')].filter(r =>
+              r.dataset.isChild === '1' && String(r.dataset.parentId) === String(targetParentId)
+            )
+            : []
+          toIndex = Math.max(0, childSibs.indexOf(targetRow))
+        }
+      } else {
+        targetParentId = null
+        const topSibs = rowsContainer ? _legalDndTopLevelRows(rowsContainer, targetStageId) : []
+        toIndex = Math.max(0, topSibs.indexOf(targetRow))
+      }
+    } else {
+      return
+    }
+
+    if (rowsContainer && drag.block.length) {
+      drag.block.forEach(el => {
+        if (insertBeforeEl) rowsContainer.insertBefore(el, insertBeforeEl)
+        else rowsContainer.appendChild(el)
+      })
+    }
+
+    try {
+      await api(`/legal/items/${drag.itemId}/reorder`, {
+        method: 'POST',
+        data: {
+          to_index: toIndex,
+          stage_id: targetStageId,
+          parent_id: targetParentId,
+        },
+      })
+      drag.block.forEach(el => el.classList.remove('is-dragging'))
+      await loadLegalProject(_legalCurrentProjectId)
+    } catch (err) {
+      _legalDndRevert(drag.snapshot)
+      drag.block.forEach(el => el.classList.remove('is-dragging'))
+      toast('Lỗi đổi thứ tự: ' + err.message, 'error')
+    } finally {
+      _legalDndActive = null
+    }
+  })
+}
+
 function renderLegalChecklistDisplayRow(item, stageId, isChild) {
   const isDone = item.status === 'completed'
   const isInprog = item.status === 'in_progress'
@@ -19187,9 +19382,19 @@ function renderLegalChecklistDisplayRow(item, stageId, isChild) {
     const sel = item.status === k ? ' selected' : ''
     return `<option value="${k}"${sel}>${escHtml(LEGAL_STATUS_LABELS[k])}</option>`
   }).join('')
+  const parentAttr = item.parent_id != null ? String(item.parent_id) : ''
+  const dragHandle = canReorderLegalChecklist()
+    ? `<button type="button" class="legal-checklist-drag-handle" draggable="true"
+         onclick="event.stopPropagation()" aria-label="Kéo để sắp xếp" title="Kéo để sắp xếp">
+         <i class="fas fa-grip-vertical" aria-hidden="true"></i></button>`
+    : ''
   return `
     <div class="legal-checklist-row${isChild ? ' is-child' : ''}${dueOverdue ? ' is-overdue' : ''}"
-         data-legal-item-id="${item.id}">
+         data-legal-item-id="${item.id}"
+         data-stage-id="${stageId}"
+         data-parent-id="${parentAttr}"
+         data-is-child="${isChild ? '1' : '0'}">
+      ${dragHandle}
       <span class="legal-checklist-status-ring ${ringClass}" aria-hidden="true"></span>
       <span class="legal-checklist-title legal-checklist-inline-title${titleClass}"
             contenteditable="true"
@@ -19239,7 +19444,7 @@ function renderLegalChecklistStageGroup(stage) {
 
   return `
     <div class="legal-checklist-stage">
-      <div class="legal-checklist-stage-head">
+      <div class="legal-checklist-stage-head" data-legal-stage-drop="${stage.id}">
         <span class="legal-checklist-stage-ring" style="--stage-color:${sc.border}">${escHtml(stage.code || '?')}</span>
         <span class="legal-checklist-stage-title">${escHtml(stage.name || stage.code || '')}</span>
         <span class="legal-checklist-stage-count">${totalCount} hạng mục</span>
@@ -19311,6 +19516,8 @@ function renderLegalPackages(packages, flatStages) {
     </div>`
 
   container.innerHTML = html
+  _legalDndBoundHost = null
+  initLegalChecklistDnD()
 }
 
 // ── Render a single stage card INSIDE a package ───────────────────────────────
@@ -19584,6 +19791,8 @@ function renderLegalStages(stages) {
     <div style="display:flex;justify-content:center;margin-top:12px">
       <button type="button" onclick="openAddStageModal()" class="btn-secondary text-sm"><i class="fas fa-plus-circle mr-1"></i>Thêm giai đoạn hồ sơ mới</button>
     </div>`
+  _legalDndBoundHost = null
+  initLegalChecklistDnD()
 }
 
 // ── Toggle một giai đoạn ──────────────────────────────────────────────────────
