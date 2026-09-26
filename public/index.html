@@ -592,6 +592,54 @@
     .legal-package-subtab { font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--shell-border); background: var(--shell-input-bg); color: var(--shell-text-muted); cursor: pointer; }
     .legal-package-subtab.active { background: rgba(0, 166, 81, 0.12); border-color: rgba(0, 166, 81, 0.45); color: var(--primary); }
     .legal-package-subtab:hover:not(.active) { background: var(--shell-row-hover); color: var(--shell-text); }
+    .legal-payment-sheet-wrap { margin-top: 4px; }
+    .legal-payment-sheet { overflow-x: auto; border: 1px solid var(--shell-border); border-radius: 10px; background: var(--shell-surface); }
+    .legal-payment-sheet-head,
+    .legal-payment-sheet-row {
+      display: grid;
+      grid-template-columns: 52px minmax(96px, 1.1fr) minmax(120px, 1.25fr) 72px 96px 108px minmax(88px, 0.9fr) 48px minmax(80px, 0.85fr) 96px 76px minmax(76px, 0.8fr) 36px;
+      gap: 4px 6px;
+      align-items: center;
+      min-width: 980px;
+      padding: 6px 8px;
+    }
+    .legal-payment-sheet-head {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color: var(--shell-text-muted);
+      background: var(--shell-table-head-bg);
+      border-bottom: 1px solid var(--shell-border);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .legal-payment-sheet-row { border-bottom: 1px solid var(--shell-table-row-border); font-size: 12px; }
+    .legal-payment-sheet-row:last-child { border-bottom: none; }
+    .legal-payment-sheet-row:hover { background: var(--shell-row-hover); }
+    .legal-payment-sheet-row.is-new { background: rgba(0, 166, 81, 0.04); }
+    html[data-theme="dark"] .legal-payment-sheet-row.is-new { background: rgba(0, 166, 81, 0.08); }
+    .legal-payment-sheet-cell input,
+    .legal-payment-sheet-cell select {
+      width: 100%;
+      box-sizing: border-box;
+      font-size: 12px;
+      padding: 4px 6px;
+      border-radius: 6px;
+      border: 1px solid var(--shell-border);
+      background: var(--shell-input-bg);
+      color: var(--shell-text);
+    }
+    .legal-payment-sheet-cell input:focus,
+    .legal-payment-sheet-cell select:focus {
+      outline: 2px solid rgba(0, 166, 81, 0.35);
+      border-color: rgba(0, 166, 81, 0.45);
+    }
+    .legal-payment-sheet-cell input[type="date"] { padding: 3px 4px; }
+    .legal-payment-sheet-readonly { font-size: 11px; color: var(--shell-text-muted); line-height: 1.25; white-space: nowrap; }
+    .legal-payment-sheet-readonly strong { color: var(--shell-text); font-weight: 600; }
+    .legal-payment-sheet-actions { display: flex; justify-content: center; gap: 2px; }
     .legal-checklist-host { display: flex; flex-direction: column; gap: 14px; }
     .legal-checklist-stage { border: 1px solid var(--shell-border); border-radius: 10px; overflow: hidden; background: var(--shell-surface); }
     .legal-checklist-stage-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--shell-table-head-bg); border-bottom: 1px solid var(--shell-border); flex-wrap: wrap; }
@@ -5065,14 +5113,14 @@
 
         <!-- Tab: E. Tình trạng thanh toán -->
         <div id="legalTabPayments" style="display:none">
-          <div class="card">
-            <div class="flex items-center justify-between mb-4">
+          <div class="card legal-payment-card">
+            <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
               <h3 class="font-semibold text-gray-700"><i class="fas fa-money-check-alt text-emerald-600 mr-2"></i>E. Tình trạng thanh toán</h3>
-              <button onclick="openPaymentModal()" class="btn-primary text-sm"><i class="fas fa-plus mr-1"></i>Thêm đợt thanh toán</button>
+              <button type="button" onclick="openPaymentModal()" class="btn-secondary text-xs" title="Form đầy đủ (tuỳ chọn)"><i class="fas fa-window-restore mr-1"></i>Form chi tiết</button>
             </div>
-            <!-- Summary cards -->
             <div id="paymentSummaryCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
-            <div id="legalPaymentsTable">
+            <div id="legalPaymentPackageSubtabs" role="tablist" class="legal-package-subtabs"></div>
+            <div id="legalPaymentsTable" class="legal-payment-sheet-wrap">
               <div class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải...</div>
             </div>
           </div>
