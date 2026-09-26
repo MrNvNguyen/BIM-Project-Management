@@ -830,6 +830,45 @@
     }
     .legal-checklist-overflow-btn { flex-shrink: 0; opacity: 0.55; padding: 4px 8px; min-width: 32px; }
     .legal-checklist-row:hover .legal-checklist-overflow-btn { opacity: 1; }
+    /* Wave F — Executive PMO shell tokens (scoped) */
+    .exec-shell-card {
+      background: var(--shell-surface);
+      border: 1px solid var(--shell-border);
+      color: var(--shell-text);
+    }
+    .exec-shell-text { color: var(--shell-text); }
+    .exec-shell-muted { color: var(--shell-text-muted); }
+    .exec-shell-tab-bar { border-color: var(--shell-border) !important; }
+    .exec-main-tab { color: var(--shell-text-muted); }
+    .exec-main-tab:hover { color: var(--shell-text); background: var(--shell-row-hover); }
+    .exec-main-tab-active { background: rgba(0, 166, 81, 0.08) !important; }
+    html[data-theme="dark"] .exec-main-tab-active { background: rgba(0, 166, 81, 0.14) !important; }
+    .exec-proj-item.exec-proj-active { background: rgba(0, 166, 81, 0.08); }
+    html[data-theme="dark"] .exec-proj-item.exec-proj-active { background: rgba(0, 166, 81, 0.14); }
+    .exec-legal-subtab-bar { border-bottom: 1.5px solid var(--shell-border); }
+    .exec-legal-subtab {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+      border: none; border-bottom: 2.5px solid transparent;
+      background: transparent; color: var(--shell-text-muted);
+      border-radius: 8px 8px 0 0; transition: all .15s; white-space: nowrap;
+    }
+    .exec-legal-subtab:hover { background: var(--shell-row-hover); color: var(--shell-text); }
+    .exec-legal-subtab-active {
+      border-bottom-color: var(--exec-subtab-accent, var(--primary));
+      background: var(--shell-input-bg);
+      color: var(--exec-subtab-accent, var(--primary));
+    }
+    .exec-legal-stage-head-toggle { cursor: pointer; }
+    .exec-legal-stage-pct { font-size: 12px; font-weight: 700; margin-left: auto; flex-shrink: 0; }
+    .exec-legal-pct-good { color: #16a34a; }
+    .exec-legal-pct-mid { color: #ca8a04; }
+    .exec-legal-pct-low { color: #dc2626; }
+    html[data-theme="dark"] .exec-legal-pct-good { color: #4ade80; }
+    html[data-theme="dark"] .exec-legal-pct-mid { color: #facc15; }
+    html[data-theme="dark"] .exec-legal-pct-low { color: #f87171; }
+    #exec-tab-body .legal-checklist-host,
+    #exec-legal-panel-items .legal-checklist-stage { max-width: 100%; }
     .legal-checklist-drag-handle {
       flex-shrink: 0;
       display: inline-flex;

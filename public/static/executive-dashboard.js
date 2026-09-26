@@ -195,7 +195,7 @@ function exec_highlightProject(projectId) {
     const active = parseInt(el.dataset.id) === projectId
     el.classList.toggle('ring-2', active)
     el.classList.toggle('ring-[#00A651]', active)
-    el.classList.toggle('bg-green-50', active)
+    el.classList.toggle('exec-proj-active', active)
   })
 }
 
@@ -207,7 +207,7 @@ function exec_renderLayout() {
   <div class="exec-layout-row" style="display:flex;gap:12px;align-items:flex-start">
     <!-- CỘT TRÁI: danh sách dự án (cố định 280px desktop) -->
     <div class="exec-left-col" style="flex-shrink:0;width:280px">
-      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-3 mb-3">
+      <div class="exec-shell-card rounded-2xl shadow-sm p-3 mb-3">
         <input id="exec-search" type="text" placeholder="🔍 Tìm dự án..."
           value="${execState.search}" oninput="execOnSearch(this.value)"
           class="w-full text-sm border border-gray-200 rounded-xl px-3 py-2 mb-2 focus:outline-none focus:ring-2 focus:ring-[#00A651]/30">
@@ -248,16 +248,16 @@ function exec_renderLeftPanel() {
     const isActive = p.id === execState.currentProjectId
     const bc = borderMap[p.risk_level] || 'border-l-gray-200'
     return `
-    <div class="exec-proj-item bg-white rounded-xl border border-gray-100 border-l-4 ${bc} p-3 cursor-pointer hover:shadow-md transition-all ${isActive?'ring-2 ring-[#00A651] bg-green-50':''}"
+    <div class="exec-proj-item exec-shell-card rounded-xl border border-l-4 ${bc} p-3 cursor-pointer hover:shadow-md transition-all ${isActive?'exec-proj-active ring-2 ring-[#00A651]':''}"
          data-id="${p.id}" onclick="exec_selectProject(${p.id})">
       <div class="flex items-start justify-between gap-1 mb-1">
         <div class="flex-1 min-w-0">
-          <p class="text-xs text-gray-400 font-mono leading-none mb-0.5">${p.code||''}</p>
-          <p class="text-sm font-bold text-gray-800 leading-snug line-clamp-2">${p.name}</p>
+          <p class="text-xs exec-shell-muted font-mono leading-none mb-0.5">${p.code||''}</p>
+          <p class="text-sm font-bold exec-shell-text leading-snug line-clamp-2">${p.name}</p>
         </div>
         ${p.health_score!=null?`<span class="text-base flex-shrink-0">${exec_healthDot(p.health_score)}</span>`:''}
       </div>
-      <p class="text-xs text-gray-500 truncate mb-2">${p.client||'—'}</p>
+      <p class="text-xs exec-shell-muted truncate mb-2">${p.client||'—'}</p>
       <div class="flex items-center justify-between gap-1">
         ${exec_statusBadge(p.status)}
         ${exec_fmtDaysLeft(p.end_date)}
@@ -274,8 +274,8 @@ function exec_renderRightPanel() {
   // Không có project được chọn
   if (!execState.currentProjectId) {
     el.innerHTML = `
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 flex items-center justify-center" style="min-height:400px">
-      <div class="text-center text-gray-400">
+    <div class="exec-shell-card rounded-2xl shadow-sm flex items-center justify-center" style="min-height:400px">
+      <div class="text-center exec-shell-muted">
         <i class="fas fa-mouse-pointer text-4xl mb-3 block opacity-30"></i>
         <p class="font-medium">Chọn dự án để xem chi tiết</p>
       </div>
@@ -286,10 +286,10 @@ function exec_renderRightPanel() {
   // Đang tải
   if (execState.detailLoading) {
     el.innerHTML = `
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 flex items-center justify-center" style="min-height:400px">
+    <div class="exec-shell-card rounded-2xl shadow-sm flex items-center justify-center" style="min-height:400px">
       <div class="text-center">
         <i class="fas fa-spinner fa-spin text-3xl text-[#00A651] mb-3 block"></i>
-        <p class="text-sm text-gray-400">Đang tải dữ liệu...</p>
+        <p class="text-sm exec-shell-muted">Đang tải dữ liệu...</p>
       </div>
     </div>`
     return
@@ -310,7 +310,7 @@ function exec_renderRightPanel() {
   <div class="space-y-3">
 
     <!-- ── HEADER DỰ ÁN ── -->
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+    <div class="exec-shell-card rounded-2xl shadow-sm p-4">
       <div class="flex items-start justify-between gap-3">
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 flex-wrap mb-1">
@@ -408,9 +408,9 @@ function exec_renderRightPanel() {
     </div>
 
     <!-- ── TAB BAR + CONTENT ── -->
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="exec-shell-card rounded-2xl shadow-sm overflow-hidden">
       <!-- Tab navigation -->
-      <div class="flex border-b border-gray-100">
+      <div class="flex exec-shell-tab-bar border-b">
         ${[
           { id:'overview',   icon:'fa-th-large',      label:'Tổng quan' },
           { id:'legal',      icon:'fa-folder-open',   label:'Hồ sơ pháp lý' },
@@ -418,10 +418,10 @@ function exec_renderRightPanel() {
           { id:'directives', icon:'fa-bullhorn',      label:`Chỉ đạo${openDirectives>0?` <span class="ml-1 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">${openDirectives}</span>`:''}` },
         ].map(tab => `
           <button onclick="exec_switchTab('${tab.id}')" id="exec-tab-btn-${tab.id}"
-            class="flex-1 flex items-center justify-center gap-1.5 px-2 py-3 text-xs font-semibold transition-colors border-b-2
+            class="exec-main-tab flex-1 flex items-center justify-center gap-1.5 px-2 py-3 text-xs font-semibold transition-colors border-b-2
               ${execState.activeTab === tab.id
-                ? 'border-[#00A651] text-[#00A651] bg-green-50'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}">
+                ? 'exec-main-tab-active border-[#00A651] text-[#00A651]'
+                : 'border-transparent exec-shell-muted'}">
             <i class="fas ${tab.icon}"></i>
             <span>${tab.label}</span>
           </button>`).join('')}
@@ -458,12 +458,11 @@ function exec_switchTab(tabId) {
     const btn = document.getElementById(`exec-tab-btn-${id}`)
     if (!btn) return
     if (id === tabId) {
-      btn.className = btn.className.replace('border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50','')
-      btn.classList.add('border-[#00A651]','text-[#00A651]','bg-green-50')
-      btn.classList.remove('border-transparent','text-gray-500','hover:text-gray-700','hover:bg-gray-50')
+      btn.classList.add('exec-main-tab-active','border-[#00A651]','text-[#00A651]')
+      btn.classList.remove('exec-shell-muted','border-transparent')
     } else {
-      btn.classList.remove('border-[#00A651]','text-[#00A651]','bg-green-50')
-      btn.classList.add('border-transparent','text-gray-500','hover:text-gray-700','hover:bg-gray-50')
+      btn.classList.remove('exec-main-tab-active','border-[#00A651]','text-[#00A651]')
+      btn.classList.add('exec-shell-muted','border-transparent')
     }
   })
   // Cập nhật content
@@ -754,90 +753,72 @@ function exec_legal_kpi(packages) {
   </div>`
 }
 
-// ─── Excel-style item row ─────────────────────────
-function exec_legal_row(item, stageId, isChild) {
-  const isDone = item.status === 'completed'
-  const isInprog = item.status === 'in_progress'
-  const cbCls = isDone
-    ? 'w-4 h-4 rounded cursor-pointer accent-green-600'
-    : 'w-4 h-4 rounded cursor-pointer accent-green-600'
-  const rowCls = isDone
-    ? 'bg-green-50 opacity-80'
-    : isInprog
-    ? 'bg-yellow-50'
-    : 'bg-white hover:bg-gray-50'
-  const indentCls = isChild ? 'pl-6' : ''
-  // Status badge small
-  const statusBadge = isDone
-    ? `<span class="text-xs px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-semibold whitespace-nowrap">✓ Xong</span>`
-    : isInprog
-    ? `<span class="text-xs px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-700 font-semibold whitespace-nowrap">⟳ Đang làm</span>`
-    : `<span class="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 font-semibold whitespace-nowrap">○ Chưa</span>`
-
-  return `<tr class="border-b border-gray-100 ${rowCls} group transition-colors" data-item-id="${item.id}">
-    <!-- Checkbox toggle hoàn thành -->
-    <td class="px-2 py-1.5 w-8 text-center align-middle">
-      <input type="checkbox"
-        class="${cbCls}"
-        ${isDone ? 'checked' : ''}
-        onchange="exec_legalToggleStatus(${item.id}, this.checked)"
-        title="${isDone ? 'Bỏ hoàn thành' : 'Đánh dấu hoàn thành'}"
-      />
-    </td>
-    <!-- STT -->
-    <td class="px-2 py-1.5 w-10 text-center align-middle">
-      <span class="text-xs text-gray-400 font-mono ${isChild?'opacity-50':'font-semibold'}">${item.stt||''}</span>
-    </td>
-    <!-- Title inline edit -->
-    <td class="px-2 py-1.5 align-middle ${indentCls}" style="min-width:180px">
-      <span
-        class="text-xs text-gray-800 block w-full focus:outline-none focus:ring-1 focus:ring-green-400 rounded px-1 py-0.5 ${isDone?'line-through text-gray-400':''} cursor-text"
-        contenteditable="true"
-        data-field="title"
-        data-id="${item.id}"
-        onblur="exec_legalSaveCell(${item.id},'title',this.innerText.trim())"
-        onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
-        title="Click để chỉnh sửa tên hồ sơ"
-      >${exec_escapeHtml(item.title||'')}</span>
-    </td>
-    <!-- Due date inline edit -->
-    <td class="px-2 py-1.5 w-28 align-middle">
-      <input type="date"
-        class="text-xs border-0 bg-transparent focus:outline-none focus:ring-1 focus:ring-green-400 rounded px-1 py-0.5 w-full cursor-pointer text-gray-600"
-        value="${item.due_date||''}"
-        onchange="exec_legalSaveCell(${item.id},'due_date',this.value)"
-        title="Ngày hết hạn"
-      />
-    </td>
-    <!-- Actual completion date -->
-    <td class="px-2 py-1.5 w-28 align-middle">
-      <input type="date"
-        class="text-xs border-0 bg-transparent focus:outline-none focus:ring-1 focus:ring-green-400 rounded px-1 py-0.5 w-full cursor-pointer text-gray-600"
-        value="${item.actual_completion_date||''}"
-        onchange="exec_legalSaveCell(${item.id},'actual_completion_date',this.value)"
-        title="Ngày hoàn thành thực tế"
-      />
-    </td>
-    <!-- Notes inline edit -->
-    <td class="px-2 py-1.5 align-middle" style="min-width:120px">
-      <span
-        class="text-xs text-gray-500 block w-full focus:outline-none focus:ring-1 focus:ring-green-400 rounded px-1 py-0.5 cursor-text italic"
-        contenteditable="true"
-        data-field="notes"
-        data-id="${item.id}"
-        onblur="exec_legalSaveCell(${item.id},'notes',this.innerText.trim())"
-        onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
-        title="Click để thêm ghi chú"
-      >${exec_escapeHtml(item.notes||'')}</span>
-    </td>
-    <!-- Status badge -->
-    <td class="px-2 py-1.5 w-24 text-center align-middle">
-      ${statusBadge}
-    </td>
-  </tr>`
+const EXEC_LEGAL_STATUS_LABELS = {
+  pending: 'Chưa thực hiện',
+  in_progress: 'Đang thực hiện',
+  completed: 'Đã hoàn thành',
+  na: 'Không áp dụng',
 }
 
-// ─── Stage table block ────────────────────────────
+function exec_legalRingNextStatus(status) {
+  const s = status || 'pending'
+  if (s === 'completed') return 'pending'
+  if (s === 'na') return 'pending'
+  return 'completed'
+}
+
+// ─── Wave C checklist row (exec PMO — no app.js coupling) ───
+function exec_legal_checklistRow(item, stageId, isChild) {
+  const isDone = item.status === 'completed'
+  const isInprog = item.status === 'in_progress'
+  const isNa = item.status === 'na'
+  const ringClass = isDone ? 'done' : isInprog ? 'progress' : isNa ? 'na' : 'pending'
+  const ringLabel = isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'
+  const dueOverdue = item.due_date && new Date(item.due_date) < new Date() && !isDone
+  const statusKey = item.status && EXEC_LEGAL_STATUS_LABELS[item.status] ? item.status : 'pending'
+  const statusClass = `legal-status-${statusKey}`
+  const titleClass = isDone ? ' legal-checklist-title-done' : ''
+  const statusOptions = Object.keys(EXEC_LEGAL_STATUS_LABELS).map(k => {
+    const sel = item.status === k ? ' selected' : ''
+    return `<option value="${k}"${sel}>${exec_escapeHtml(EXEC_LEGAL_STATUS_LABELS[k])}</option>`
+  }).join('')
+  const parentAttr = item.parent_id != null ? String(item.parent_id) : ''
+
+  return `
+    <div class="legal-checklist-row${isChild ? ' is-child' : ''}${dueOverdue ? ' is-overdue' : ''}"
+         data-legal-item-id="${item.id}"
+         data-stage-id="${stageId}"
+         data-parent-id="${parentAttr}"
+         data-is-child="${isChild ? '1' : '0'}">
+      <button type="button" class="legal-checklist-status-ring ${ringClass}"
+        aria-label="${exec_escapeHtml(ringLabel)}" aria-pressed="${isDone ? 'true' : 'false'}"
+        title="${exec_escapeHtml(ringLabel)}"
+        onclick="event.stopPropagation();exec_legalStatusRingClick(${item.id})"></button>
+      <span class="legal-checklist-title legal-checklist-inline-title${titleClass}"
+            contenteditable="true"
+            spellcheck="false"
+            data-field="title"
+            data-item-id="${item.id}"
+            onclick="event.stopPropagation()"
+            onblur="exec_legalSaveCell(${item.id},'title',this.innerText.trim())"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
+            role="textbox"
+            aria-label="Tên hạng mục">${exec_escapeHtml(item.title || '')}</span>
+      <input type="date"
+        class="legal-checklist-inline-date"
+        value="${item.due_date || ''}"
+        onclick="event.stopPropagation()"
+        onchange="exec_legalSaveCell(${item.id},'due_date',this.value)"
+        title="Hạn thực hiện"
+        aria-label="Hạn thực hiện" />
+      <select class="legal-checklist-inline-status ${statusClass}"
+        onclick="event.stopPropagation()"
+        onchange="exec_legalSaveStatus(${item.id}, this.value)"
+        aria-label="Trạng thái">${statusOptions}</select>
+    </div>`
+}
+
+// ─── Stage block (checklist rows, collapsible) ───
 function exec_legal_stageTable(stage, pkgId) {
   const collapseKey = `${pkgId}_${stage.id}`
   const isCollapsed = !!execState.legalCollapsed[collapseKey]
@@ -848,45 +829,31 @@ function exec_legal_stageTable(stage, pkgId) {
   }, 0)
   const totalCount = stage.items.reduce((n,item) => n + 1 + (item.children||[]).length, 0)
   const pct = totalCount > 0 ? Math.round(doneCount/totalCount*100) : 0
-  const pctCls = pct>=80?'text-green-600':pct>=50?'text-yellow-600':'text-red-500'
+  const pctCls = pct>=80?'exec-legal-pct-good':pct>=50?'exec-legal-pct-mid':'exec-legal-pct-low'
+  const stageColor = 'var(--primary)'
 
-  return `<div class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden mb-3">
-    <!-- Stage header (collapsible) -->
-    <div class="flex items-center justify-between px-4 py-2 bg-gray-50 border-b border-gray-100 cursor-pointer select-none"
+  let rows = ''
+  if (totalCount === 0) {
+    rows = '<div class="legal-checklist-row" style="cursor:default;opacity:.7"><span class="legal-checklist-title">Chưa có hạng mục</span></div>'
+  } else {
+    stage.items.forEach(item => {
+      rows += exec_legal_checklistRow(item, stage.id, false)
+      ;(item.children || []).forEach(ch => {
+        rows += exec_legal_checklistRow(ch, stage.id, true)
+      })
+    })
+  }
+
+  return `<div class="legal-checklist-stage exec-legal-stage-block mb-3">
+    <div class="legal-checklist-stage-head exec-legal-stage-head-toggle cursor-pointer select-none"
          onclick="exec_legalToggleCollapse('${collapseKey}')">
-      <div class="flex items-center gap-2">
-        <i class="fas fa-chevron-${isCollapsed?'right':'down'} text-gray-400 text-xs w-3"></i>
-        <span class="text-xs font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">${exec_escapeHtml(stage.code||'')}</span>
-        <span class="text-sm font-semibold text-gray-800">${exec_escapeHtml(stage.name||'')}</span>
-        <span class="text-xs text-gray-400">(${doneCount}/${totalCount})</span>
-      </div>
-      <span class="text-sm font-bold ${pctCls}">${pct}%</span>
+      <i class="fas fa-chevron-${isCollapsed?'right':'down'} exec-shell-muted text-xs" style="width:12px;flex-shrink:0"></i>
+      <span class="legal-checklist-stage-ring" style="--stage-color:${stageColor}">${exec_escapeHtml(stage.code || '?')}</span>
+      <span class="legal-checklist-stage-title">${exec_escapeHtml(stage.name || stage.code || '')}</span>
+      <span class="legal-checklist-stage-count">${doneCount}/${totalCount}</span>
+      <span class="exec-legal-stage-pct ${pctCls}">${pct}%</span>
     </div>
-    ${isCollapsed ? '' : `
-    <!-- Excel-style table -->
-    <div class="overflow-x-auto">
-      <table class="w-full text-left border-collapse">
-        <thead>
-          <tr class="bg-gray-50 text-gray-500 text-xs border-b border-gray-200">
-            <th class="px-2 py-1.5 w-8 text-center font-medium">✓</th>
-            <th class="px-2 py-1.5 w-10 text-center font-medium">STT</th>
-            <th class="px-2 py-1.5 font-medium">Tên hồ sơ / hạng mục</th>
-            <th class="px-2 py-1.5 w-28 font-medium whitespace-nowrap">Hạn nộp</th>
-            <th class="px-2 py-1.5 w-28 font-medium whitespace-nowrap">Ngày XH</th>
-            <th class="px-2 py-1.5 font-medium">Ghi chú</th>
-            <th class="px-2 py-1.5 w-24 text-center font-medium">Trạng thái</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${stage.items.length === 0
-            ? `<tr><td colspan="7" class="text-center text-xs text-gray-300 italic py-4">Chưa có hạng mục</td></tr>`
-            : stage.items.map(item => `
-              ${exec_legal_row(item, stage.id, false)}
-              ${(item.children||[]).map(ch => exec_legal_row(ch, stage.id, true)).join('')}
-            `).join('')}
-        </tbody>
-      </table>
-    </div>`}
+    ${isCollapsed ? '' : `<div class="legal-checklist-rows">${rows}</div>`}
   </div>`
 }
 
@@ -912,10 +879,10 @@ function exec_renderLegalDetail(data) {
       ${packages.length === 0
         ? `<div style="text-align:center;padding:32px;color:#9ca3af;font-size:13px"><i class="fas fa-folder-open" style="font-size:24px;display:block;margin-bottom:8px;opacity:.3"></i>Chưa có hạng mục hồ sơ</div>`
         : packages.map(pkg => `
-          <div style="margin-bottom:10px">
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-              <i class="fas fa-folder" style="color:#00A651;font-size:12px"></i>
-              <span style="font-weight:700;color:#1e293b;font-size:13px">${exec_escapeHtml(pkg.name||'Gói hồ sơ')}</span>
+          <div class="exec-legal-pkg-block" style="margin-bottom:10px">
+            <div class="exec-legal-pkg-head" style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <i class="fas fa-folder" style="color:var(--primary);font-size:12px"></i>
+              <span class="exec-shell-text" style="font-weight:700;font-size:13px">${exec_escapeHtml(pkg.name||'Gói hồ sơ')}</span>
             </div>
             ${(pkg.stages||[]).map(st => exec_legal_stageTable(st, pkg.id)).join('')}
           </div>`).join('')
@@ -950,19 +917,11 @@ function exec_renderLegalDetail(data) {
 
   const tabNav = tabs.map(t => {
     const isActive = activeTab === t.id
-    return `<button
+    return `<button type="button"
+      class="exec-legal-subtab${isActive ? ' exec-legal-subtab-active' : ''}"
       onclick="exec_legalSwitchSubTab('${t.id}')"
-      style="
-        display:inline-flex;align-items:center;gap:6px;
-        padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;
-        border:none;border-bottom:2.5px solid ${isActive ? t.color : 'transparent'};
-        background:${isActive ? t.activeBg : 'transparent'};
-        color:${isActive ? t.color : '#6b7280'};
-        border-radius:8px 8px 0 0;
-        transition:all .15s;white-space:nowrap;
-      "
-      onmouseover="if('${activeTab}'!=='${t.id}'){this.style.background='#f9fafb';this.style.color='#374151'}"
-      onmouseout="if('${activeTab}'!=='${t.id}'){this.style.background='transparent';this.style.color='#6b7280'}"
+      data-subtab="${t.id}"
+      style="--exec-subtab-accent:${t.color}"
     >
       <i class="fas ${t.icon}" style="font-size:11px"></i>
       ${t.label}
@@ -975,7 +934,7 @@ function exec_renderLegalDetail(data) {
     ${kpiBar}
 
     <!-- Tab navigation -->
-    <div style="border-bottom:1.5px solid #e5e7eb;margin-bottom:14px;display:flex;gap:2px;flex-wrap:wrap">
+    <div class="exec-legal-subtab-bar" style="margin-bottom:14px;display:flex;gap:2px;flex-wrap:wrap">
       ${tabNav}
     </div>
 
@@ -1005,33 +964,57 @@ function exec_legalToggleCollapse(key) {
   }
 }
 
-// ─── Toggle item status via checkbox ─────────────
-async function exec_legalToggleStatus(itemId, isChecked) {
-  const newStatus = isChecked ? 'completed' : 'pending'
+async function exec_legalSetStatus(itemId, newStatus) {
+  const item = exec_legalFindItem(itemId)
+  if (!item) return
+  const oldStatus = item.status
+  if (newStatus === oldStatus) return
   try {
-    // Optimistically update local data
     exec_legalUpdateItemField(itemId, 'status', newStatus)
-    // Save to server
+    const updated = exec_legalFindItem(itemId)
+    if (!updated) return
     await execFetch(`/api/legal/items/${itemId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus })
+      body: JSON.stringify({
+        title: updated.title,
+        item_type: updated.item_type,
+        due_date: updated.due_date || null,
+        actual_completion_date: updated.actual_completion_date || null,
+        status: newStatus,
+        notes: updated.notes || null,
+      }),
     })
-    // Re-render to reflect status badge change
     const bodyEl = document.getElementById('exec-tab-body')
     if (bodyEl && execState.legalDetail) {
       bodyEl.innerHTML = exec_renderLegalDetail(execState.legalDetail)
     }
   } catch (e) {
-    console.error('exec_legalToggleStatus:', e)
+    console.error('exec_legalSetStatus:', e)
     alert('Lỗi khi cập nhật trạng thái. Vui lòng thử lại.')
-    // Revert checkbox
-    exec_legalUpdateItemField(itemId, 'status', isChecked ? 'pending' : 'completed')
+    exec_legalUpdateItemField(itemId, 'status', oldStatus)
     const bodyEl = document.getElementById('exec-tab-body')
     if (bodyEl && execState.legalDetail) {
       bodyEl.innerHTML = exec_renderLegalDetail(execState.legalDetail)
     }
   }
+}
+
+async function exec_legalStatusRingClick(itemId) {
+  const item = exec_legalFindItem(itemId)
+  if (!item) return
+  const next = exec_legalRingNextStatus(item.status)
+  if (next === item.status) return
+  await exec_legalSetStatus(itemId, next)
+}
+
+async function exec_legalSaveStatus(itemId, newStatus) {
+  await exec_legalSetStatus(itemId, newStatus)
+}
+
+// Legacy checkbox hook (unused after checklist rows; kept for compat)
+async function exec_legalToggleStatus(itemId, isChecked) {
+  await exec_legalSetStatus(itemId, isChecked ? 'completed' : 'pending')
 }
 
 // ─── Save inline cell edit ────────────────────────
@@ -1748,4 +1731,6 @@ window.exec_deleteDirective       = exec_deleteDirective
 // Legal inline editing exports
 window.exec_legalToggleCollapse   = exec_legalToggleCollapse
 window.exec_legalToggleStatus     = exec_legalToggleStatus
+window.exec_legalStatusRingClick  = exec_legalStatusRingClick
+window.exec_legalSaveStatus       = exec_legalSaveStatus
 window.exec_legalSaveCell         = exec_legalSaveCell
