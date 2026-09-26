@@ -113,6 +113,101 @@ let allDisciplines = []
 let currentCostTab = 'costs'
 let charts = {}
 
+// ── Theme (Wave B): bim_theme light|dark ─────────────────────────────────────
+const BIM_THEME_STORAGE_KEY = 'bim_theme'
+
+function resolveBimTheme() {
+  const stored = localStorage.getItem(BIM_THEME_STORAGE_KEY)
+  if (stored === 'light' || stored === 'dark') return stored
+  if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark'
+  return 'light'
+}
+
+function getBimTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'
+}
+
+function updateThemeToggleUI(mode) {
+  document.querySelectorAll('.theme-toggle-btn').forEach((btn) => {
+    const active = btn.dataset.themeChoice === mode
+    btn.classList.toggle('active', active)
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false')
+  })
+}
+
+function getChartThemeColors() {
+  const dark = getBimTheme() === 'dark'
+  return {
+    grid: dark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(0, 0, 0, 0.06)',
+    tick: dark ? '#94a3b8' : '#6b7280',
+    legend: dark ? '#e2e8f0' : '#374151',
+  }
+}
+
+function mergeChartThemeOptions(options) {
+  const c = getChartThemeColors()
+  const o = options ? { ...options } : {}
+  o.plugins = { ...(o.plugins || {}) }
+  o.plugins.legend = { ...(o.plugins.legend || {}) }
+  o.plugins.legend.labels = { ...(o.plugins.legend.labels || {}), color: c.legend }
+  if (o.scales && typeof o.scales === 'object') {
+    o.scales = { ...o.scales }
+    Object.keys(o.scales).forEach((axisKey) => {
+      const scale = o.scales[axisKey]
+      if (!scale || typeof scale !== 'object') return
+      o.scales[axisKey] = {
+        ...scale,
+        grid: { ...(scale.grid || {}), color: c.grid },
+        ticks: { ...(scale.ticks || {}), color: c.tick },
+      }
+    })
+  }
+  return o
+}
+
+function refreshChartsForTheme() {
+  const c = getChartThemeColors()
+  Object.values(charts).forEach((ch) => {
+    if (!ch?.options) return
+    try {
+      if (ch.options.plugins?.legend?.labels) ch.options.plugins.legend.labels.color = c.legend
+      if (ch.options.scales) {
+        Object.keys(ch.options.scales).forEach((axisKey) => {
+          const scale = ch.options.scales[axisKey]
+          if (!scale) return
+          if (scale.grid) scale.grid.color = c.grid
+          if (scale.ticks) scale.ticks.color = c.tick
+        })
+      }
+      ch.update('none')
+    } catch (_) { /* ignore stale chart refs */ }
+  })
+}
+
+function applyBimTheme(mode, persist) {
+  const m = mode === 'dark' ? 'dark' : 'light'
+  document.documentElement.setAttribute('data-theme', m)
+  if (persist) localStorage.setItem(BIM_THEME_STORAGE_KEY, m)
+  updateThemeToggleUI(m)
+  const metaTheme = document.querySelector('meta[name="theme-color"]')
+  if (metaTheme) metaTheme.setAttribute('content', m === 'dark' ? '#0f1729' : '#00A651')
+  refreshChartsForTheme()
+}
+
+function setBimTheme(mode) {
+  applyBimTheme(mode, true)
+}
+
+function initBimTheme() {
+  applyBimTheme(resolveBimTheme(), false)
+}
+
+window.setBimTheme = setBimTheme
+
+document.addEventListener('DOMContentLoaded', () => {
+  initBimTheme()
+})
+
 // ── Chart.js global safety wrapper ──────────────────────────────────────────
 // Intercept every new Chart() call to auto-destroy existing instance on same canvas
 // This prevents "Canvas is already in use" errors when re-rendering charts
@@ -140,7 +235,10 @@ function safeChart(ctx, config) {
       const existing = Chart.getChart(canvasEl)
       if (existing) { try { existing.destroy() } catch(e){} }
     }
-    return new Chart(ctx, config)
+    const cfg = config
+      ? { ...config, options: mergeChartThemeOptions(config.options) }
+      : config
+    return new Chart(ctx, cfg)
   } catch(e) {
     console.error('safeChart error:', e)
     return null
@@ -17095,9 +17193,8 @@ function renderTsTaskPage(page) {
     const diff = (t.ts_actual_hours||0) - (t.planned_hours||0)
     const diffColor = t.planned_hours > 0 ? (diff > 0 ? '#ef4444' : '#00A651') : '#9ca3af'
     const diffText  = t.planned_hours > 0 ? `${diff >= 0 ? '+' : ''}${diff.toFixed(1)}h` : '—'
-    const rowBg = t.pct_used > 120 ? 'background:#fff5f5' : t.pct_used > 100 ? 'background:#fff8f0' : ''
-    const rowAlt = (start + idx) % 2 === 1 ? 'background:#f9fafb' : ''
-    return `<tr class="border-b border-gray-100 hover:bg-gray-50 transition" style="${rowBg || rowAlt}">
+    const rowTint = t.pct_used > 120 ? 'an-row-over' : t.pct_used > 100 ? 'an-row-warn' : ((start + idx) % 2 === 1 ? 'an-row-zebra' : '')
+    return `<tr class="border-b border-gray-100 hover:bg-gray-50 transition ${rowTint}">
       <td class="py-2 px-3">
         <div class="font-medium text-gray-800" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(t.task_title||'').replace(/"/g,'&quot;')}">${t.task_title||'—'}</div>
         ${t.discipline_code ? `<span class="text-gray-400">[${t.discipline_code}]</span>` : ''}
@@ -20130,8 +20227,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
   const isInprog   = item.status === 'in_progress'
   const isPending  = !isDone && !isInprog
 
-  // Màu nền hàng
-  const trBg = isDone ? '#f0fdf4' : isChild ? '#fafafa' : '#fff'
+  const trClass = isDone ? 'legal-tr-done' : isChild ? 'legal-tr-child' : 'legal-tr-default'
 
   // Checkbox
   const cbStyle = `width:16px;height:16px;cursor:pointer;accent-color:#10b981;border-radius:4px;flex-shrink:0`
@@ -20169,7 +20265,7 @@ function renderLegalItemRow(item, sc, rowBg, isChild, stageId) {
     : 'border:1px solid transparent;background:transparent;border-radius:5px;padding:2px 4px;font-size:12px;color:#9ca3af;cursor:pointer;width:100%;text-align:center'
 
   return `
-  <tr id="legal-row-${item.id}" style="background:${trBg};border-bottom:1px solid #f3f4f6;transition:background .2s">
+  <tr id="legal-row-${item.id}" class="${trClass}" style="border-bottom:1px solid #f3f4f6;transition:background .2s">
 
     <!-- ☑ Checkbox hoàn thành -->
     <td style="padding:8px 6px;text-align:center;vertical-align:middle;width:40px">
