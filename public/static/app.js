@@ -22401,6 +22401,9 @@ async function legalPaymentCommitRow(ev, paymentId) {
     toast('Chọn hạng mục thuộc gói', 'error')
     return
   }
+  if (!paymentId && !String(payload.description || '').trim() && (payload.amount || 0) > 0) {
+    payload.description = '(Chưa nhập mô tả)'
+  }
   if (paymentId && _legalPaymentPayloadUnchanged(paymentId, payload)) return
   _legalPaymentInlineBusy = true
   const willSync = _legalPaymentSyncToast(payload.status, payload.amount)
