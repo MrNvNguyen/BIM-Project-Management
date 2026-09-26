@@ -32,3 +32,8 @@ lerna-debug.log*
 # misc
 .DS_Store
 scripts/.tmp-icons/
+
+# Local QA spot harnesses (fixture passwords — regenerate locally, do not commit)
+scripts/*qa-spot*.mjs
+docs/evidence/**/*qa-spot*.mjs
+wave-c4-copy-from-qa-spot.mjs
