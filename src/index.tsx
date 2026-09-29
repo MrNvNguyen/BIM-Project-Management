@@ -13279,24 +13279,39 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
     }
 
     // Không auto-migrate trên GET (Wave 4) — dùng POST /api/legal/:projectId/migrate-packages
+    const shell = c.req.query('view') === 'shell'
 
-    // Lấy packages
-    const pkgs = await db.prepare(
-      'SELECT * FROM legal_packages WHERE project_id = ? ORDER BY sort_order'
-    ).bind(projectId).all()
-
-    // Lấy tất cả stages
-    const stages = await db.prepare(
-      'SELECT * FROM legal_stages WHERE project_id = ? ORDER BY sort_order'
-    ).bind(projectId).all()
-
-    // Lấy tất cả items
-    const items = await db.prepare(
-      `SELECT li.*, u.full_name as created_by_name
-       FROM legal_items li
-       LEFT JOIN users u ON u.id = li.created_by
-       WHERE li.project_id = ? ORDER BY li.stage_id, li.sort_order`
-    ).bind(projectId).all()
+    const core = await db.batch([
+      db.prepare(
+        `SELECT id, project_id, name, package_type, sort_order, code, start_date, end_date, contract_value, notes
+         FROM legal_packages WHERE project_id = ? ORDER BY sort_order`
+      ).bind(projectId),
+      db.prepare(
+        `SELECT id, project_id, package_id, code, name, sort_order
+         FROM legal_stages WHERE project_id = ? ORDER BY sort_order`
+      ).bind(projectId),
+      db.prepare(
+        `SELECT id, project_id, stage_id, parent_id, stt, title, item_type, due_date, actual_completion_date, status, notes, sort_order
+         FROM legal_items WHERE project_id = ? ORDER BY stage_id, sort_order, id`
+      ).bind(projectId),
+      db.prepare(
+        `SELECT id, name, code, contract_value, management_fee_pct, vat_pct FROM projects WHERE id = ?`
+      ).bind(projectId),
+      db.prepare(`SELECT COUNT(*) AS n FROM outgoing_letters WHERE project_id = ?`).bind(projectId),
+      db.prepare(`SELECT COUNT(*) AS n FROM legal_documents WHERE project_id = ?`).bind(projectId),
+      db.prepare(
+        `SELECT COALESCE(SUM(paid_amount), 0) AS paid
+         FROM payment_requests
+         WHERE project_id = ? AND ${paymentOnPackageSql('payment_requests')}`
+      ).bind(projectId),
+    ])
+    const pkgs = core[0]
+    const stages = core[1]
+    const items = core[2]
+    const projectRow = (core[3].results?.[0] || null) as any
+    const letterCount = Number((core[4].results?.[0] as any)?.n || 0)
+    const documentCount = Number((core[5].results?.[0] as any)?.n || 0)
+    const paidOnPackage = Number((core[6].results?.[0] as any)?.paid || 0)
 
     // Build tree: package → stages → items
     const packagesWithStages = (pkgs.results as any[]).map(pkg => {
@@ -13324,79 +13339,80 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
       return { ...stage, items: tree }
     })
 
-    // Letters summary
-    const letters = await db.prepare(
-      `SELECT ol.*, li.title as item_title, li.stt as item_stt,
-              ls.code as stage_code, ls.name as stage_name,
-              lp.name as package_name
-       FROM outgoing_letters ol
-       LEFT JOIN legal_items li ON li.id = ol.legal_item_id
-       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
-       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
-       LEFT JOIN users u ON u.id = ol.created_by
-       WHERE ol.project_id = ? ORDER BY ol.letter_year DESC, ol.letter_seq DESC`
-    ).bind(projectId).all()
+    let letters: { results?: any[] } = { results: [] }
+    let docs: { results?: any[] } = { results: [] }
+    let payments: { results?: any[] } = { results: [] }
+    let minutes: { results?: any[] } = { results: [] }
+    let config: any = null
+    if (!shell) {
+      const extra = await db.batch([
+        db.prepare(
+          `SELECT ol.id, ol.project_id, ol.legal_item_id, ol.letter_number, ol.letter_seq, ol.letter_year,
+                  ol.letter_type, ol.letter_type_seq, ol.subject, ol.recipient, ol.sent_date, ol.status, ol.notes,
+                  ol.created_by, ol.created_at,
+                  li.title as item_title, li.stt as item_stt,
+                  ls.code as stage_code, ls.name as stage_name,
+                  lp.name as package_name
+           FROM outgoing_letters ol
+           LEFT JOIN legal_items li ON li.id = ol.legal_item_id
+           LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+           LEFT JOIN legal_packages lp ON lp.id = ls.package_id
+           WHERE ol.project_id = ? ORDER BY ol.letter_year DESC, ol.letter_seq DESC`
+        ).bind(projectId),
+        db.prepare(
+          `SELECT ld.id, ld.project_id, ld.legal_item_id, ld.doc_type, ld.title,
+                  ld.file_name, ld.signed_date, ld.notes,
+                  ld.created_by, ld.created_at, ld.updated_at,
+                  ld.byte_length, ld.content_type, ld.r2_key,
+                  CASE
+                    WHEN ld.file_url IS NULL OR ld.file_url = '' THEN NULL
+                    WHEN ld.file_url LIKE 'data:%' THEN NULL
+                    WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN NULL
+                    ELSE ld.file_url
+                  END AS file_url,
+                  CASE
+                    WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN 1
+                    WHEN ld.file_url IS NOT NULL AND ld.file_url != '' THEN 1
+                    ELSE 0
+                  END AS has_file_flag,
+                  li.title as item_title, li.stt as item_stt,
+                  ls.code as stage_code, ls.name as stage_name,
+                  lp.name as package_name
+           FROM legal_documents ld
+           LEFT JOIN legal_items li ON li.id = ld.legal_item_id
+           LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+           LEFT JOIN legal_packages lp ON lp.id = ls.package_id
+           WHERE ld.project_id = ? ORDER BY ld.created_at DESC`
+        ).bind(projectId),
+        db.prepare('SELECT * FROM legal_letter_config WHERE project_id = ?').bind(projectId),
+        db.prepare(
+          `SELECT pr.*, u.full_name as created_by_name,
+                  li.stt as item_stt, li.title as item_title,
+                  ls.code as stage_code, lp.name as package_name,
+                  CASE WHEN pr.revenue_id IS NOT NULL THEN 1 ELSE 0 END as revenue_synced
+           FROM payment_requests pr
+           LEFT JOIN users u ON u.id = pr.created_by
+           LEFT JOIN legal_items li ON li.id = pr.legal_item_id
+           LEFT JOIN legal_stages ls ON ls.id = li.stage_id
+           LEFT JOIN legal_packages lp ON lp.id = ls.package_id
+           WHERE pr.project_id = ? ORDER BY pr.created_at DESC`
+        ).bind(projectId),
+        db.prepare(
+          `SELECT mm.*, u.full_name as created_by_name,
+                  li.title as legal_item_title
+           FROM meeting_minutes mm
+           LEFT JOIN users u ON u.id = mm.created_by
+           LEFT JOIN legal_items li ON li.id = mm.legal_item_id
+           WHERE mm.project_id = ? ORDER BY mm.meeting_date DESC, mm.created_at DESC`
+        ).bind(projectId),
+      ])
+      letters = extra[0]
+      docs = extra[1]
+      config = extra[2].results?.[0] || null
+      payments = extra[3]
+      minutes = extra[4]
+    }
 
-    // Documents summary — cột đúng schema; không trả base64 file_url
-    const docs = await db.prepare(
-      `SELECT ld.id, ld.project_id, ld.legal_item_id, ld.doc_type, ld.title,
-              ld.file_name, ld.signed_date, ld.notes,
-              ld.created_by, ld.created_at, ld.updated_at,
-              ld.byte_length, ld.content_type, ld.r2_key,
-              CASE
-                WHEN ld.file_url IS NULL OR ld.file_url = '' THEN NULL
-                WHEN ld.file_url LIKE 'data:%' THEN NULL
-                WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN NULL
-                ELSE ld.file_url
-              END AS file_url,
-              CASE
-                WHEN ld.r2_key IS NOT NULL AND ld.r2_key != '' THEN 1
-                WHEN ld.file_url IS NOT NULL AND ld.file_url != '' THEN 1
-                ELSE 0
-              END AS has_file_flag,
-              li.title as item_title, li.stt as item_stt,
-              ls.code as stage_code, ls.name as stage_name,
-              lp.name as package_name
-       FROM legal_documents ld
-       LEFT JOIN legal_items li ON li.id = ld.legal_item_id
-       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
-       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
-       WHERE ld.project_id = ? ORDER BY ld.created_at DESC`
-    ).bind(projectId).all()
-
-    // Config
-    const config = await db.prepare(
-      'SELECT * FROM legal_letter_config WHERE project_id = ?'
-    ).bind(projectId).first()
-
-    // Payments
-    const payments = await db.prepare(
-      `SELECT pr.*, u.full_name as created_by_name,
-              li.stt as item_stt, li.title as item_title,
-              ls.code as stage_code, lp.name as package_name,
-              CASE WHEN pr.revenue_id IS NOT NULL THEN 1 ELSE 0 END as revenue_synced
-       FROM payment_requests pr
-       LEFT JOIN users u ON u.id = pr.created_by
-       LEFT JOIN legal_items li ON li.id = pr.legal_item_id
-       LEFT JOIN legal_stages ls ON ls.id = li.stage_id
-       LEFT JOIN legal_packages lp ON lp.id = ls.package_id
-       WHERE pr.project_id = ? ORDER BY pr.created_at DESC`
-    ).bind(projectId).all()
-
-    // Meeting Minutes
-    const minutes = await db.prepare(
-      `SELECT mm.*, u.full_name as created_by_name,
-              li.title as legal_item_title
-       FROM meeting_minutes mm
-       LEFT JOIN users u ON u.id = mm.created_by
-       LEFT JOIN legal_items li ON li.id = mm.legal_item_id
-       WHERE mm.project_id = ? ORDER BY mm.meeting_date DESC, mm.created_at DESC`
-    ).bind(projectId).all()
-
-    // Project info — budget SSOT từ computeProjectBudget (finance.ts)
-    const projectRow = await db.prepare(
-      `SELECT id, name, code, contract_value, management_fee_pct, vat_pct FROM projects WHERE id = ?`
-    ).bind(projectId).first() as any
     const projectInfo = projectRow ? {
       ...projectRow,
       project_budget: computeProjectBudget(projectRow.contract_value, projectRow.management_fee_pct),
@@ -13404,16 +13420,19 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
 
     return c.json({
       packages: packagesWithStages,
-      stages: allStagesFlat,  // backward-compat
-      letters: letters.results,
-      documents: (docs.results as any[]).map(publicLegalDocument),
+      stages: allStagesFlat,
+      letters: shell ? null : letters.results,
+      documents: shell ? null : (docs.results as any[]).map(publicLegalDocument),
+      letter_count: letterCount,
+      document_count: documentCount,
+      paid_on_package: paidOnPackage,
       config,
-      payments: (payments.results as any[]).map(pr => ({
+      payments: shell ? null : (payments.results as any[]).map(pr => ({
         ...pr,
         ...enrichPaymentMetrics(pr, (projectInfo as any)?.management_fee_pct || 0),
       })),
-      minutes: minutes.results,
-      project: projectInfo   // thêm project info để frontend tính % phí QL
+      minutes: shell ? null : minutes.results,
+      project: projectInfo
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -15430,12 +15449,7 @@ app.get('/api/meeting-minutes/:projectId', authMiddleware, async (c) => {
     const projectId = parseInt(c.req.param('projectId'))
     const user = c.get('user') as any
 
-    // Kiểm tra quyền truy cập dự án (member có thể xem như văn bản gửi đi)
-    const member = await db.prepare(
-      'SELECT role FROM project_members WHERE project_id = ? AND user_id = ?'
-    ).bind(projectId, user.id).first() as any
-
-    if (!member && user.role !== 'system_admin') {
+    if (!(await canAccessProject(db, user, projectId))) {
       return c.json({ error: 'Bạn không có quyền truy cập dự án này' }, 403)
     }
 

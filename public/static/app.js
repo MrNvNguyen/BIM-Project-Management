@@ -3033,19 +3033,20 @@ async function openProjectDetail(id, openChatTab = false) {
   try {
     const project = await api(`/projects/${id}`)
     const pid = parseInt(id)
-    let categories, tasks
+    const modelsPromise = api(`/projects/${id}/models`).catch(() => [])
+    let categories, tasks, projectModels
     if (_projectDetailFetchCache.projectId === pid) {
       categories = _projectDetailFetchCache.categories
       tasks = _projectDetailFetchCache.tasks
+      projectModels = await modelsPromise
     } else {
-      ;[categories, tasks] = await Promise.all([
+      ;[categories, tasks, projectModels] = await Promise.all([
         api(`/projects/${id}/categories`),
-        api(`/tasks?project_id=${id}&limit=${TASK_PROJECT_LIMIT}`)
+        api(`/tasks?project_id=${id}&limit=${TASK_PROJECT_LIMIT}`),
+        modelsPromise
       ])
       _projectDetailFetchCache = { projectId: pid, categories, tasks }
     }
-    let projectModels = []
-    try { projectModels = await api(`/projects/${id}/models`) } catch(_) {}
     _taskFilenameCache[id] = (projectModels || []).map(m => ({ value: m.name, label: m.name }))
 
     $('projectDetailName').textContent = project.name
@@ -19992,11 +19993,7 @@ async function loadLegalProject(projectId) {
   _legalRememberProject(requestedId)
   _legalShowProjectShell(true)
   try {
-    // Auto-init if first time
-    await api(`/legal/init/${requestedId}`, { method: 'POST' })
-    if (seq !== _legalProjectLoadSeq) return
-    // Load overview
-    const data = await api(`/legal/${requestedId}/overview`)
+    const data = await api(`/legal/${requestedId}/overview?view=shell`)
     if (seq !== _legalProjectLoadSeq) return
     _legalOverviewData = data
     _legalPaymentRebuildItemPackageMap()
@@ -20098,8 +20095,8 @@ async function loadLegalProject(projectId) {
     })
     $('legalKpiTotal').textContent = totalItems
     $('legalKpiDone').textContent = doneItems
-    $('legalKpiLetters').textContent = (data.letters || []).length
-    $('legalKpiDocs').textContent = (data.documents || []).length
+    $('legalKpiLetters').textContent = data.letter_count ?? (data.letters || []).length
+    $('legalKpiDocs').textContent = data.document_count ?? (data.documents || []).length
 
     // Sync tab UI rồi render
     switchLegalTab(_legalCurrentTab)
@@ -20139,9 +20136,11 @@ function renderLegalProjectInfo() {
   const apiProj = _legalOverviewData.project || {}
   const packages = _legalOverviewData.packages || []
   const contractTotal = packages.reduce((s, p) => s + (Number(p.contract_value) || 0), 0)
-  const paidTotal = (_legalOverviewData.payments || [])
-    .filter(p => _legalPaymentResolvePackageId(p))
-    .reduce((s, p) => s + (Number(p.paid_amount) || 0), 0)
+  const paidTotal = Array.isArray(_legalOverviewData.payments)
+    ? _legalOverviewData.payments
+      .filter(p => _legalPaymentResolvePackageId(p))
+      .reduce((s, p) => s + (Number(p.paid_amount) || 0), 0)
+    : (Number(_legalOverviewData.paid_on_package) || 0)
   const dong = (n) => fmt(n) + ' đ'
   const rows = packages.map(pkg => {
     const start = pkg.start_date ? fmtDate(pkg.start_date) : 'Chưa chọn'
@@ -20441,13 +20440,61 @@ function renderLegalTab(tab) {
     return
   }
   if (!_legalOverviewData) return
-  if (tab === 'info') renderLegalProjectInfo()
-  else if (tab === 'stages') renderLegalPackages(_legalOverviewData.packages || [], _legalOverviewData.stages || [])
-  else if (tab === 'letters') renderLegalLetters(_legalOverviewData.letters || [])
-  else if (tab === 'minutes') renderMeetingMinutes(_legalOverviewData.minutes || [])
-  else if (tab === 'docs') renderLegalDocs(_legalOverviewData.documents || [])
-  else if (tab === 'payments') renderPaymentStatus(_legalOverviewData.payments || [])
-  else if (tab === 'contacts') loadLegalContacts()
+  if (tab === 'info') { renderLegalProjectInfo(); return }
+  if (tab === 'stages') {
+    renderLegalPackages(_legalOverviewData.packages || [], _legalOverviewData.stages || [])
+    return
+  }
+  if (tab === 'contacts') { loadLegalContacts(); return }
+  ensureLegalSlice(tab).then(() => {
+    if (!_legalOverviewData || _legalSliceSeq !== _legalProjectLoadSeq) return
+    if (tab === 'letters') renderLegalLetters(_legalOverviewData.letters || [])
+    else if (tab === 'minutes') renderMeetingMinutes(_legalOverviewData.minutes || [])
+    else if (tab === 'docs') renderLegalDocs(_legalOverviewData.documents || [])
+    else if (tab === 'payments') renderPaymentStatus(_legalOverviewData.payments || [])
+  })
+}
+
+let _legalSliceSeq = 0
+const _legalSliceJobs = {}
+
+function ensureLegalSlice(tab) {
+  const data = _legalOverviewData
+  const projectId = _legalCurrentProjectId
+  const seq = _legalProjectLoadSeq
+  _legalSliceSeq = seq
+  if (!data || !projectId) return Promise.resolve()
+  const field = tab === 'letters' ? 'letters' : tab === 'docs' ? 'documents' : tab === 'payments' ? 'payments' : tab === 'minutes' ? 'minutes' : ''
+  if (!field || data[field]) return Promise.resolve()
+  const key = projectId + ':' + field
+  if (_legalSliceJobs[key]) return _legalSliceJobs[key]
+  const job = (async () => {
+    try {
+    if (tab === 'letters') {
+      const res = await api(`/legal/${projectId}/letters`)
+      if (seq !== _legalProjectLoadSeq) return
+      data.letters = res.letters || []
+      if ($('legalKpiLetters')) $('legalKpiLetters').textContent = data.letters.length
+    } else if (tab === 'docs') {
+      const res = await api(`/legal/${projectId}/documents`)
+      if (seq !== _legalProjectLoadSeq) return
+      data.documents = res.documents || []
+      if ($('legalKpiDocs')) $('legalKpiDocs').textContent = data.documents.length
+    } else if (tab === 'payments') {
+      const res = await api(`/legal/${projectId}/payments`)
+      if (seq !== _legalProjectLoadSeq) return
+      data.payments = res.payments || []
+    } else if (tab === 'minutes') {
+      const res = await api(`/meeting-minutes/${projectId}`)
+      if (seq !== _legalProjectLoadSeq) return
+      data.minutes = Array.isArray(res) ? res : (res.minutes || [])
+    }
+    } catch (e) {
+      if (seq === _legalProjectLoadSeq) toast(e.response?.data?.error || e.message || 'Không tải được', 'error')
+    }
+  })().finally(() => { delete _legalSliceJobs[key] })
+  _legalSliceJobs[key] = job
+  return job
 }
 
 async function loadLegalCostA() {
