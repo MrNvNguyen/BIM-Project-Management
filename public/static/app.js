@@ -20227,20 +20227,7 @@ function openLegalPackageForm(pkgId) {
   }
   const seedWrap = $('legalPkgSeedWrap')
   if (seedWrap) seedWrap.style.display = pkg ? 'none' : ''
-  const templateRadio = document.querySelector('input[name="legalPkgSeed"][value="template"]')
-  if (templateRadio) templateRadio.checked = true
-  syncLegalPkgSeedHint()
   openModal('legalPackageModal')
-}
-
-function syncLegalPkgSeedHint() {
-  const blank = document.querySelector('input[name="legalPkgSeed"]:checked')?.value === 'blank'
-  const hint = $('legalPkgSeedHint')
-  if (hint) {
-    hint.textContent = blank
-      ? 'Gói trống, không tạo giai đoạn hay hạng mục mẫu. Bạn tự thêm ở tab Theo dõi hồ sơ.'
-      : 'Gói mới xuất hiện ở tab Theo dõi hồ sơ, kèm 4 giai đoạn A–D.'
-  }
 }
 
 async function submitLegalPackageForm(ev) {
@@ -20254,9 +20241,7 @@ async function submitLegalPackageForm(ev) {
     start_date: $('legalPkgStart').value,
     end_date: $('legalPkgEnd').value,
     contract_value: parseMoneyVal('legalPkgValue') || 0,
-    package_type: !id && document.querySelector('input[name="legalPkgSeed"]:checked')?.value === 'blank'
-      ? 'blank'
-      : 'contract',
+    package_type: 'blank',
   }
   try {
     let saved
@@ -20266,9 +20251,7 @@ async function submitLegalPackageForm(ev) {
     closeModal('legalPackageModal')
     toast(id
       ? 'Đã cập nhật gói thầu'
-      : (data.package_type === 'blank'
-        ? 'Đã thêm gói trống. Hãy tự khai báo giai đoạn ở tab Theo dõi hồ sơ.'
-        : 'Đã thêm gói thầu. Tab Theo dõi hồ sơ đã có gói này.'))
+      : 'Đã thêm gói trống. Hãy tự nhập hồ sơ hoặc sao chép từ dự án khác.')
     await loadLegalPackageCounts()
     renderLegalProjectList()
     await loadLegalProject(_legalCurrentProjectId)
@@ -20684,6 +20667,12 @@ function canReorderLegalChecklist() {
   return ['system_admin', 'project_admin'].includes(eff)
 }
 
+function canDeleteLegalChecklist() {
+  if (!_legalCurrentProjectId || !currentUser) return false
+  const eff = getEffectiveRoleForProject(_legalCurrentProjectId)
+  return ['system_admin', 'project_admin', 'project_leader'].includes(eff)
+}
+
 let _legalDndActive = null
 let _legalDndBoundHost = null
 
@@ -21071,9 +21060,14 @@ function renderLegalChecklistDisplayRow(item, stageId, isChild) {
         onclick="event.stopPropagation(); legalChecklistStatusMenuToggle(event, ${item.id})"
         aria-haspopup="listbox"
         aria-label="Trạng thái">${escHtml(LEGAL_STATUS_LABELS[statusKey])}</button>
-      <button type="button" class="btn-secondary text-xs legal-checklist-overflow-btn"
-        onclick="event.stopPropagation();openEditLegalItemById(${item.id})"
-        title="Chỉnh sửa hạng mục"><i class="fas fa-pen"></i></button>
+      <span class="legal-checklist-row-actions">
+        <button type="button" class="btn-secondary text-xs legal-checklist-overflow-btn"
+          onclick="event.stopPropagation();openEditLegalItemById(${item.id})"
+          title="Chỉnh sửa hạng mục"><i class="fas fa-pen"></i></button>
+        ${canDeleteLegalChecklist() ? `<button type="button" class="btn-secondary text-xs legal-checklist-overflow-btn"
+          onclick="event.stopPropagation();deleteLegalItem(${item.id})"
+          title="Xóa hồ sơ"><i class="fas fa-trash text-red-500"></i></button>` : ''}
+      </span>
     </div>`
 }
 
@@ -21174,7 +21168,7 @@ function renderLegalPackages(packages, flatStages) {
       <div class="card text-center py-10 text-gray-400">
         <i class="fas fa-folder-open text-4xl mb-3 block text-gray-300"></i>
         <div class="font-semibold mb-1">Chưa có gói thầu nào</div>
-        <div class="text-sm mb-4">Tạo gói thầu để bắt đầu theo dõi hồ sơ dự án</div>
+        <div class="text-sm mb-4">Tạo gói trống rồi tự nhập hồ sơ, hoặc sao chép từ dự án khác</div>
         <button onclick="openAddPackageModal()" class="btn-accent text-sm mx-auto" style="width:auto;padding:6px 20px">
           <i class="fas fa-plus mr-1"></i> Tạo gói thầu mới
         </button>
@@ -21349,91 +21343,43 @@ function expandAllPackages() {
 
 // ── Package Management ────────────────────────────────────────────────────────
 
-// Package type options
-const PACKAGE_TYPE_OPTIONS = [
-  { value: 'bcnckt',       label: 'Gói BCNCKT (Báo cáo nghiên cứu khả thi)' },
-  { value: 'tkbvtc',       label: 'Gói TKBVTC (Thiết kế bản vẽ thi công)' },
-  { value: 'construction', label: 'Gói Thi công & Hoàn công' },
-  { value: 'custom',       label: 'Gói tùy chỉnh (nhập tên riêng)' },
-]
-
 function openAddPackageModal() {
-  const typeOpts = PACKAGE_TYPE_OPTIONS.map(o =>
-    `<option value="${o.value}">${o.label}</option>`
-  ).join('')
-
   const modalHtml = `
   <div id="addPkgModal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9000;display:flex;align-items:center;justify-content:center;padding:16px">
     <div style="background:#fff;border-radius:16px;width:100%;max-width:480px;box-shadow:0 20px 60px rgba(0,0,0,.25);overflow:hidden">
       <div style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:20px 24px;display:flex;align-items:center;justify-content:space-between">
         <div>
           <div style="font-size:16px;font-weight:700;color:#fff"><i class="fas fa-folder-plus mr-2"></i>Thêm gói thầu</div>
-          <div style="font-size:12px;color:#e0e7ff;margin-top:2px" id="addPkgSubtitle">Mỗi gói thầu sẽ có 4 giai đoạn A–B–C–D tự động</div>
+          <div style="font-size:12px;color:#e0e7ff;margin-top:2px">Gói để trống. Tự nhập hồ sơ hoặc sao chép từ dự án khác.</div>
         </div>
         <button onclick="document.getElementById('addPkgModal').remove()" style="color:#e0e7ff;background:none;border:none;cursor:pointer;font-size:18px">&times;</button>
       </div>
       <div style="padding:24px">
-        <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Loại gói thầu</label>
-        <select id="addPkgType" onchange="onAddPkgTypeChange()" style="width:100%;padding:8px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:14px">
-          ${typeOpts}
-        </select>
-
         <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Tên gói thầu</label>
-        <input id="addPkgName" type="text" placeholder="VD: Gói BCNCKT dự án..." value="${PACKAGE_TYPE_OPTIONS[0].label}"
-          style="width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:6px">
-        <div id="addPkgHint" style="font-size:11px;color:#6b7280;margin-bottom:18px">
-          <i class="fas fa-info-circle mr-1 text-blue-400"></i>
-          Hệ thống sẽ tự động tạo 4 giai đoạn: A. Chuẩn bị &amp; Dự thầu · B. Ký hợp đồng · C. Thực hiện &amp; Sản phẩm BIM · D. Nghiệm thu &amp; Thanh toán
-        </div>
-
+        <input id="addPkgName" type="text" placeholder="VD: Gói thiết kế..."
+          style="width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:18px">
         <div style="display:flex;gap:10px;justify-content:flex-end">
           <button onclick="document.getElementById('addPkgModal').remove()"
-            style="padding:9px 20px;border:1px solid #d1d5db;border-radius:8px;background:#fff;color:#374151;font-size:13px;cursor:pointer">
-            Hủy
-          </button>
+            style="padding:9px 18px;border-radius:8px;border:1.5px solid #d1d5db;background:#fff;color:#374151;font-size:13px;font-weight:600;cursor:pointer">Hủy</button>
           <button onclick="submitAddPackage()"
-            style="padding:9px 20px;border:none;border-radius:8px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:13px;font-weight:600;cursor:pointer">
-            <i class="fas fa-plus mr-1"></i> Tạo gói thầu
-          </button>
+            style="padding:9px 18px;border-radius:8px;border:none;background:#6366f1;color:#fff;font-size:13px;font-weight:600;cursor:pointer">Tạo gói trống</button>
         </div>
       </div>
     </div>
   </div>`
   document.body.insertAdjacentHTML('beforeend', modalHtml)
-}
-
-function onAddPkgTypeChange() {
-  const sel = document.getElementById('addPkgType')
-  const inp = document.getElementById('addPkgName')
-  const hint = document.getElementById('addPkgHint')
-  const sub = document.getElementById('addPkgSubtitle')
-  const opt = PACKAGE_TYPE_OPTIONS.find(o => o.value === sel.value)
-  const custom = sel.value === 'custom'
-  if (opt && !custom) inp.value = opt.label
-  else {
-    inp.value = ''
-    inp.focus()
-  }
-  if (hint) {
-    hint.innerHTML = custom
-      ? '<i class="fas fa-info-circle mr-1 text-blue-400"></i>Gói tùy chỉnh để trống, không dùng mẫu. Bạn tự nhập giai đoạn và hạng mục.'
-      : '<i class="fas fa-info-circle mr-1 text-blue-400"></i>Hệ thống sẽ tự động tạo 4 giai đoạn: A. Chuẩn bị &amp; Dự thầu · B. Ký hợp đồng · C. Thực hiện &amp; Sản phẩm BIM · D. Nghiệm thu &amp; Thanh toán'
-  }
-  if (sub) sub.textContent = custom ? 'Tờ trắng — không tạo hạng mục mẫu' : 'Mỗi gói thầu sẽ có 4 giai đoạn A–B–C–D tự động'
+  document.getElementById('addPkgName')?.focus()
 }
 
 async function submitAddPackage() {
-  const type = document.getElementById('addPkgType')?.value || 'custom'
   const name = document.getElementById('addPkgName')?.value?.trim()
   if (!name) { toast('Vui lòng nhập tên gói thầu', 'warning'); return }
   try {
-    const res = await api(`/legal/${_legalCurrentProjectId}/packages`, {
-      method: 'POST', data: { name, package_type: type }
+    await api(`/legal/${_legalCurrentProjectId}/packages`, {
+      method: 'POST', data: { name, package_type: 'blank' }
     })
     document.getElementById('addPkgModal')?.remove()
-    toast(type === 'custom'
-      ? `Đã tạo gói trống "${name}". Hãy nhập giai đoạn và hạng mục.`
-      : `Đã tạo gói thầu "${name}" với 4 giai đoạn A–D`, 'success', 4000)
+    toast(`Đã tạo gói trống "${name}". Hãy tự nhập hồ sơ hoặc sao chép từ dự án khác.`, 'success', 4000)
     loadLegalProject(_legalCurrentProjectId)
   } catch(err) {
     toast('Lỗi: ' + err.message, 'error')
@@ -21497,8 +21443,8 @@ function _legalInlineRename(anchorEl, current, onSave) {
 async function confirmDeletePackage(pkgId, pkgName, itemCount) {
   const hasItems = itemCount > 0
   const msg = hasItems
-    ? `Xóa gói thầu "${pkgName}"?\n\n⚠️ Gói này còn ${itemCount} hạng mục — tất cả sẽ bị xóa vĩnh viễn cùng với 4 giai đoạn A–D.\n\nHành động này KHÔNG THỂ hoàn tác.`
-    : `Xóa gói thầu "${pkgName}"?\nTất cả 4 giai đoạn A–D trong gói sẽ bị xóa.\nHành động này không thể hoàn tác.`
+    ? `Xóa gói thầu "${pkgName}"?\n\nGói này còn ${itemCount} hạng mục — giai đoạn và hạng mục trong gói cũng bị xóa.\n\nHành động này không hoàn tác được.`
+    : `Xóa gói thầu "${pkgName}"?\nGiai đoạn và hạng mục trong gói cũng bị xóa.`
   if (!confirm(msg)) return
   try {
     await api(`/legal/packages/${pkgId}`, { method: 'DELETE' })

@@ -12705,229 +12705,17 @@ app.get('/api/analytics/project-health', authMiddleware, adminOnly, async (c) =>
 // MODULE: HỒ SƠ PHÁP LÝ DỰ ÁN (Legal Documents)
 // ===================================================
 
-// ── Default stages & items template ─────────────────────────────────────────
-const DEFAULT_LEGAL_STAGES = [
-  {
-    code: 'A', name: 'Hồ sơ BCNCKT (Báo cáo nghiên cứu khả thi)', sort_order: 1,
-    items: [
-      { stt: '1', title: 'Hồ sơ nhiệm vụ và dự toán', item_type: 'group', children: [
-        { stt: '1.1', title: 'Đề cương nhiệm vụ', item_type: 'document' },
-        { stt: '1.2', title: 'Dự toán chi phí tư vấn', item_type: 'document' },
-        { stt: '1.3', title: 'Phê duyệt đề cương và dự toán', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Sản phẩm BIM giai đoạn BCNCKT', item_type: 'group', children: [
-        { stt: '2.1', title: 'Mô hình BIM BCNCKT', item_type: 'document' },
-        { stt: '2.2', title: 'Báo cáo kết quả BCNCKT', item_type: 'document' },
-        { stt: '2.3', title: 'Nộp và bàn giao sản phẩm', item_type: 'task' },
-      ]},
-    ]
-  },
-  {
-    code: 'B', name: 'Hồ sơ GĐTK (Thiết kế kỹ thuật)', sort_order: 2,
-    items: [
-      { stt: '1', title: 'Hồ sơ hợp đồng tư vấn', item_type: 'group', children: [
-        { stt: '1.1', title: 'Hợp đồng tư vấn thiết kế', item_type: 'document' },
-        { stt: '1.2', title: 'Phụ lục hợp đồng (nếu có)', item_type: 'document' },
-        { stt: '1.3', title: 'Kế hoạch thực hiện BIM (BEP)', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Hồ sơ thiết kế kỹ thuật', item_type: 'group', children: [
-        { stt: '2.1', title: 'Báo cáo triển khai BIM định kỳ', item_type: 'task' },
-        { stt: '2.2', title: 'Mô hình BIM GĐTK', item_type: 'document' },
-        { stt: '2.3', title: 'Hồ sơ thiết kế bản vẽ kỹ thuật', item_type: 'document' },
-        { stt: '2.4', title: 'Dự toán công trình', item_type: 'document' },
-      ]},
-      { stt: '3', title: 'Nghiệm thu và bàn giao GĐTK', item_type: 'group', children: [
-        { stt: '3.1', title: 'Biên bản nghiệm thu sản phẩm tư vấn', item_type: 'document' },
-        { stt: '3.2', title: 'Phê duyệt thiết kế kỹ thuật', item_type: 'document' },
-        { stt: '3.3', title: 'Đề nghị thanh toán', item_type: 'document' },
-      ]},
-    ]
-  },
-  {
-    code: 'C', name: 'Hồ sơ Thi công', sort_order: 3,
-    items: [
-      { stt: '1', title: 'Hồ sơ hợp đồng tư vấn thi công', item_type: 'group', children: [
-        { stt: '1.1', title: 'Hợp đồng tư vấn thi công', item_type: 'document' },
-        { stt: '1.2', title: 'Phụ lục hợp đồng (nếu có)', item_type: 'document' },
-        { stt: '1.3', title: 'BEP giai đoạn thi công', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Hồ sơ bản vẽ thi công', item_type: 'group', children: [
-        { stt: '2.1', title: 'Bản vẽ thi công chi tiết', item_type: 'document' },
-        { stt: '2.2', title: 'Mô hình BIM thi công', item_type: 'document' },
-        { stt: '2.3', title: 'Bảng thống kê khối lượng', item_type: 'document' },
-        { stt: '2.4', title: 'Báo cáo giám sát thi công định kỳ', item_type: 'task' },
-      ]},
-      { stt: '3', title: 'Nghiệm thu và thanh toán', item_type: 'group', children: [
-        { stt: '3.1', title: 'Biên bản nghiệm thu từng đợt', item_type: 'document' },
-        { stt: '3.2', title: 'Xác nhận khối lượng hoàn thành (Mẫu 3A)', item_type: 'document' },
-        { stt: '3.3', title: 'Giấy đề nghị thanh toán', item_type: 'document' },
-      ]},
-    ]
-  },
-  {
-    code: 'D', name: 'Hồ sơ Hoàn công', sort_order: 4,
-    items: [
-      { stt: '1', title: 'Hồ sơ hoàn công BIM', item_type: 'group', children: [
-        { stt: '1.1', title: 'Mô hình BIM hoàn công (As-built)', item_type: 'document' },
-        { stt: '1.2', title: 'Bản vẽ hoàn công', item_type: 'document' },
-        { stt: '1.3', title: 'Báo cáo tổng kết triển khai BIM', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Nghiệm thu hoàn công và thanh lý', item_type: 'group', children: [
-        { stt: '2.1', title: 'Biên bản nghiệm thu hoàn thành toàn bộ', item_type: 'document' },
-        { stt: '2.2', title: 'Mẫu số 3A - Xác nhận khối lượng hoàn thành', item_type: 'document' },
-        { stt: '2.3', title: 'Giấy đề nghị thanh toán lần cuối', item_type: 'document' },
-        { stt: '2.4', title: 'Thanh lý hợp đồng', item_type: 'document' },
-      ]},
-    ]
-  },
-]
+// Gói thầu mẫu đã chuyển sang docs/backup/legal-package-templates.ts và không còn được tạo sẵn.
 
-// ── Template 4 giai đoạn A-B-C-D cho mỗi gói thầu ──────────────────────────
-// Dùng khi tạo gói thầu mới. Tên giai đoạn có thể đổi tùy dự án.
-const DEFAULT_STAGES_FOR_PACKAGE = [
-  {
-    code: 'A', name: 'A. Chuẩn bị & Dự thầu', sort_order: 1,
-    items: [
-      { stt: '1', title: 'Hồ sơ năng lực dự thầu', item_type: 'group', children: [
-        { stt: '1.1', title: 'Đề cương nhiệm vụ & Dự toán chi phí', item_type: 'document' },
-        { stt: '1.2', title: 'Thư ngỏ / Thư cam kết thực hiện', item_type: 'document' },
-        { stt: '1.3', title: 'Hồ sơ năng lực nhà thầu', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Phê duyệt chủ trương & Kế hoạch lựa chọn nhà thầu', item_type: 'document', children: [] },
-    ]
-  },
-  {
-    code: 'B', name: 'B. Ký hợp đồng', sort_order: 2,
-    items: [
-      { stt: '1', title: 'Thương thảo và ký hợp đồng', item_type: 'group', children: [
-        { stt: '1.1', title: 'Công văn tham gia thương thảo hợp đồng', item_type: 'document' },
-        { stt: '1.2', title: 'Biên bản thương thảo hợp đồng', item_type: 'document' },
-        { stt: '1.3', title: 'Hợp đồng kinh tế', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Hồ sơ sau ký hợp đồng', item_type: 'group', children: [
-        { stt: '2.1', title: 'Bảo lãnh tạm ứng (nếu có)', item_type: 'document' },
-        { stt: '2.2', title: 'Đơn đề nghị tạm ứng', item_type: 'document' },
-        { stt: '2.3', title: 'Quyết định thành lập tổ chuyên gia', item_type: 'document' },
-        { stt: '2.4', title: 'Kế hoạch thực hiện BIM (BEP)', item_type: 'document' },
-      ]},
-    ]
-  },
-  {
-    code: 'C', name: 'C. Thực hiện & Sản phẩm BIM', sort_order: 3,
-    items: [
-      { stt: '1', title: 'Triển khai thực hiện', item_type: 'group', children: [
-        { stt: '1.1', title: 'Báo cáo triển khai BIM định kỳ', item_type: 'task' },
-        { stt: '1.2', title: 'Họp phối hợp BIM', item_type: 'task' },
-        { stt: '1.3', title: 'Phụ lục hợp đồng (nếu phát sinh)', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Nộp sản phẩm', item_type: 'group', children: [
-        { stt: '2.1', title: 'Mô hình BIM và hồ sơ thiết kế', item_type: 'document' },
-        { stt: '2.2', title: 'Báo cáo tổng kết & Bàn giao sản phẩm', item_type: 'document' },
-      ]},
-    ]
-  },
-  {
-    code: 'D', name: 'D. Nghiệm thu & Thanh toán', sort_order: 4,
-    items: [
-      { stt: '1', title: 'Nghiệm thu', item_type: 'group', children: [
-        { stt: '1.1', title: 'Biên bản nghiệm thu sản phẩm tư vấn', item_type: 'document' },
-        { stt: '1.2', title: 'Mẫu 3A - Xác nhận khối lượng hoàn thành', item_type: 'document' },
-      ]},
-      { stt: '2', title: 'Thanh toán', item_type: 'group', children: [
-        { stt: '2.1', title: 'Giấy đề nghị thanh toán', item_type: 'document' },
-        { stt: '2.2', title: 'Hóa đơn tài chính', item_type: 'document' },
-        { stt: '2.3', title: 'Thanh lý hợp đồng', item_type: 'document' },
-      ]},
-    ]
-  },
-]
-
-// Tên package mặc định theo loại
-const DEFAULT_PACKAGE_NAMES: Record<string, string> = {
-  bcnckt:       'Gói BCNCKT (Báo cáo nghiên cứu khả thi)',
-  tkbvtc:       'Gói TKBVTC (Thiết kế bản vẽ thi công)',
-  construction: 'Gói Thi công & Hoàn công',
-  custom:       'Gói thầu tùy chỉnh',
-}
-
-// ── Helper: tạo stages A-B-C-D cho 1 package ────────────────────────────────
-async function initStagesForPackage(db: D1Database, projectId: number, packageId: number, createdBy: number) {
-  for (const stage of DEFAULT_STAGES_FOR_PACKAGE) {
-    const stageResult = await db.prepare(
-      'INSERT INTO legal_stages (project_id, package_id, code, name, sort_order) VALUES (?,?,?,?,?)'
-    ).bind(projectId, packageId, stage.code, stage.name, stage.sort_order).run()
-    const stageId = stageResult.meta.last_row_id
-
-    let sortOrder = 0
-    for (const item of stage.items) {
-      sortOrder++
-      const parentResult = await db.prepare(
-        `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, sort_order, created_by)
-         VALUES (?,?,NULL,?,?,?,?,?)`
-      ).bind(projectId, stageId, item.stt, item.title, item.item_type, sortOrder, createdBy).run()
-      const parentId = parentResult.meta.last_row_id
-      if (item.children && item.children.length > 0) {
-        let childSort = 0
-        for (const child of item.children) {
-          childSort++
-          await db.prepare(
-            `INSERT INTO legal_items (project_id, stage_id, parent_id, stt, title, item_type, sort_order, created_by)
-             VALUES (?,?,?,?,?,?,?,?)`
-          ).bind(projectId, stageId, parentId, child.stt, child.title, child.item_type, childSort, createdBy).run()
-        }
-      }
-    }
-  }
-}
-
-// ── Helper: init legal cho project mới (tạo 3 gói thầu mặc định) ────────────
-async function initLegalStagesForProject(db: D1Database, projectId: number, createdBy: number) {
-  // Check if already initialized (có package hoặc stage cũ)
-  const existingPkg = await db.prepare('SELECT id FROM legal_packages WHERE project_id = ?').bind(projectId).first()
-  const existingStage = await db.prepare('SELECT id FROM legal_stages WHERE project_id = ?').bind(projectId).first()
-  if (existingPkg || existingStage) return { skipped: true }
-
-  // Tạo 3 gói thầu mặc định
-  const defaultPackages = [
-    { name: DEFAULT_PACKAGE_NAMES.bcnckt,       package_type: 'bcnckt',       sort_order: 1 },
-    { name: DEFAULT_PACKAGE_NAMES.tkbvtc,       package_type: 'tkbvtc',       sort_order: 2 },
-    { name: DEFAULT_PACKAGE_NAMES.construction,  package_type: 'construction', sort_order: 3 },
-  ]
-
-  for (const pkg of defaultPackages) {
-    const pkgResult = await db.prepare(
-      'INSERT INTO legal_packages (project_id, name, package_type, sort_order) VALUES (?,?,?,?)'
-    ).bind(projectId, pkg.name, pkg.package_type, pkg.sort_order).run()
-    const packageId = pkgResult.meta.last_row_id
-    await initStagesForPackage(db, projectId, packageId as number, createdBy)
-  }
-
-  // Default letter config
+async function initLegalStagesForProject(db: D1Database, projectId: number, _createdBy: number) {
   await db.prepare(
     `INSERT OR IGNORE INTO legal_letter_config (project_id, prefix) VALUES (?,?)`
   ).bind(projectId, 'OC').run()
-
-  return { initialized: true }
+  return { initialized: false, empty: true }
 }
 
-// ── Helper: migrate dự án cũ (stages không có package_id) → xóa và reinit 3 gói mặc định ──
-async function migrateOldProjectToPackages(db: D1Database, projectId: number, createdBy: number) {
-  const orphanStages = await db.prepare(
-    'SELECT id FROM legal_stages WHERE project_id = ? AND package_id IS NULL'
-  ).bind(projectId).all()
-  if (!orphanStages.results || orphanStages.results.length === 0) return { skipped: true }
-
-  // Xóa items và stages cũ không có package (dữ liệu cũ trước khi có cấu trúc gói thầu)
-  const orphanIds = (orphanStages.results as any[]).map((s: any) => s.id)
-  for (const sid of orphanIds) {
-    await db.prepare('DELETE FROM legal_items WHERE stage_id = ?').bind(sid).run()
-  }
-  await db.prepare('DELETE FROM legal_stages WHERE project_id = ? AND package_id IS NULL').bind(projectId).run()
-
-  // Reinit với 3 gói thầu mặc định
-  await initLegalStagesForProject(db, projectId, createdBy)
-
-  return { migrated: true }
+async function migrateOldProjectToPackages(_db: D1Database, _projectId: number, _createdBy: number) {
+  return { skipped: true }
 }
 
 // ── Mã hiệu loại văn bản (dùng trong số văn bản) ────────────────────────────
@@ -13176,7 +12964,7 @@ app.get('/api/legal/:projectId/packages', authMiddleware, async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
-// POST /api/legal/:projectId/packages — Thêm gói thầu mới (kèm 4 stages A-D)
+// POST /api/legal/:projectId/packages — Thêm gói thầu trống (không hồ sơ mẫu)
 app.post('/api/legal/:projectId/packages', authMiddleware, async (c) => {
   const user = c.get('user') as any
   if (!['system_admin','project_admin','project_leader'].includes(user.role))
@@ -13199,17 +12987,8 @@ app.post('/api/legal/:projectId/packages', authMiddleware, async (c) => {
       contract.code, contract.start_date, contract.end_date, contract.contract_value
     ).run()
     const packageId = pkgResult.meta.last_row_id as number
-    if (package_type === 'blank') {
-      // Gói trống: không giai đoạn, không hạng mục mẫu.
-    } else if (package_type === 'custom') {
-      await c.env.DB.prepare(
-        'INSERT INTO legal_stages (project_id, package_id, code, name, sort_order) VALUES (?,?,?,?,?)'
-      ).bind(projectId, packageId, 'A', name.trim(), 1).run()
-    } else {
-      await initStagesForPackage(c.env.DB, projectId, packageId, user.id)
-    }
     const synced = await syncProjectContractFromPackages(c.env.DB, projectId)
-    return c.json({ success: true, id: packageId, name: name.trim(), blank: package_type === 'blank', ...synced })
+    return c.json({ success: true, id: packageId, name: name.trim(), blank: true, ...synced })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -18122,10 +17901,10 @@ function todayInVietnam(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date())
 }
 
-async function projectsVisibleTo(db: D1Database, user: any): Promise<Array<{ id: number, code: string, name: string }>> {
+async function projectsVisibleTo(db: D1Database, user: any): Promise<Array<{ id: number, code: string, name: string, status?: string }>> {
   const isAdmin = user.role === 'system_admin' ? 1 : 0
   const rows = await db.prepare(`
-    SELECT DISTINCT p.id, p.code, p.name
+    SELECT DISTINCT p.id, p.code, p.name, p.status
     FROM projects p
     LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?
     WHERE (p.status IS NULL OR p.status != 'cancelled')
@@ -18296,6 +18075,231 @@ JSON: {"kind":"answer","reply":"","project_code":"","work_date":"","regular_hour
   return JSON.parse(text)
 }
 
+function foldAssistantText(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase()
+}
+
+function assistantLookupTopic(question: string): 'money' | 'people' | 'timesheet' | 'task' | 'legal' | 'leave' | 'project' | null {
+  const q = foldAssistantText(question)
+  if (/quy trinh|cach |lam sao|huong dan/.test(q)) return null
+  if (/doanh thu|chi phi|thanh toan|ngan sach|vat|phi quan ly/.test(q)) return 'money'
+  if (/nghi phep|ngay phep|phep nam|leave/.test(q)) return 'leave'
+  if (/nhan su|nguoi dung|thanh vien|ai phu trach|ai trong/.test(q)) return 'people'
+  if (/cham cong|timesheet|gio cong/.test(q)) return 'timesheet'
+  if (/task|cong viec|qua han|tre han|viec cua/.test(q)) return 'task'
+  if (/ho so|goi thau|phap ly|hop dong/.test(q)) return 'legal'
+  if (/du an|project/.test(q)) return 'project'
+  return null
+}
+
+function matchVisibleProject(projects: Array<{ id: number, code: string, name: string }>, question: string) {
+  const q = foldAssistantText(question)
+  const hits = projects.filter(p => {
+    const code = foldAssistantText(p.code || '')
+    return code.length >= 4 && q.includes(code)
+  })
+  return hits.length === 1 ? hits[0] : null
+}
+
+function assistantMoney(amount: number): string {
+  return Math.round(Number(amount) || 0).toLocaleString('vi-VN') + ' đ'
+}
+
+const ASSISTANT_PROJECT_STATUS: Record<string, string> = {
+  planning: 'Lên kế hoạch',
+  active: 'Đang chạy',
+  on_hold: 'Tạm dừng',
+  completed: 'Hoàn thành',
+  cancelled: 'Đã hủy',
+}
+
+const ASSISTANT_TASK_STATUS: Record<string, string> = {
+  todo: 'Chưa làm',
+  in_progress: 'Đang làm',
+  review: 'Chờ duyệt',
+  completed: 'Xong',
+  cancelled: 'Hủy',
+}
+
+async function lookupAssistantFacts(db: D1Database, user: any, question: string): Promise<string | null> {
+  if (wantsAssistantWrite(question)) return null
+  const topic = assistantLookupTopic(question)
+  const projects = await projectsVisibleTo(db, user)
+  const named = matchVisibleProject(projects, question)
+  if (!topic && !named) return null
+  const scope = named ? [named] : projects
+  const ids = scope.map(p => p.id)
+  const inProjects = ids.length
+    ? `IN (${ids.map(() => '?').join(',')})`
+    : 'IN (NULL)'
+  const q = foldAssistantText(question)
+  const scopeLine = named ? `${named.code} — ${named.name}` : 'các dự án bạn vào được'
+
+  if (topic === 'money') {
+    if (user.role !== 'system_admin') {
+      return 'Doanh thu, chi phí và thanh toán chỉ System Admin xem được.'
+    }
+    if (!ids.length) return 'Không có dự án nào để tính tiền.'
+    const booked = await db.prepare(`
+      SELECT COUNT(*) AS n, COALESCE(SUM(project_revenues.amount), 0) AS booked
+      FROM project_revenues
+      WHERE project_id ${inProjects}
+        AND ${revenueFromPackagePaymentSql('project_revenues')}
+    `).bind(...ids).first() as { n?: number, booked?: number } | null
+    const pays = await db.prepare(`
+      SELECT COUNT(*) AS n
+      FROM payment_requests
+      WHERE project_id ${inProjects}
+        AND status != 'rejected'
+        AND ${paymentOnPackageSql('payment_requests')}
+    `).bind(...ids).first() as { n?: number } | null
+    return `Doanh thu vào sổ trên ${scopeLine}: ${assistantMoney(booked?.booked || 0)} (${booked?.n || 0} dòng, chỉ đợt đang gắn gói). Đợt thanh toán gắn gói: ${pays?.n || 0}.`
+  }
+
+  if (!ids.length) return 'Bạn chưa thuộc dự án nào.'
+
+  if (topic === 'leave') {
+    const year = Number(todayInVietnam().slice(0, 4))
+    let targetId = user.id
+    let targetName = user.full_name || 'bạn'
+    const nameHint = q.replace(/nghi phep|ngay phep|phep nam|leave|cua toi|cua minh|cua|nam|nay|bao nhieu|con|ngay/g, ' ').replace(/\s+/g, ' ').trim()
+    if (user.role === 'system_admin' && nameHint.length >= 3) {
+      const users = await db.prepare(`SELECT id, full_name FROM users WHERE is_active = 1`).all()
+      const hit = ((users.results || []) as any[]).find(u => foldAssistantText(String(u.full_name || '')).includes(nameHint))
+      if (hit?.id) {
+        targetId = hit.id
+        targetName = hit.full_name
+      }
+    }
+    const row = await db.prepare(
+      `SELECT total_days, used_days FROM leave_balances WHERE user_id = ? AND year = ?`
+    ).bind(targetId, year).first() as { total_days?: number, used_days?: number } | null
+    if (!row) return `${targetName} chưa có quota phép năm ${year}.`
+    const total = Number(row.total_days) || 0
+    const used = Number(row.used_days) || 0
+    return `Phép năm ${year} của ${targetName}: ${total} ngày, đã dùng ${used}, còn ${Math.max(0, total - used)}.`
+  }
+
+  if (topic === 'people') {
+    if (user.role === 'system_admin' && !named) {
+      const rows = await db.prepare(`
+        SELECT full_name, role, department, is_active
+        FROM users
+        ORDER BY full_name COLLATE NOCASE
+        LIMIT 30
+      `).all()
+      const lines = ((rows.results || []) as any[]).map(u =>
+        `- ${u.full_name} — ${assistantRoleLabel(u.role)} — ${u.department || 'chưa có phòng'} — ${u.is_active ? 'đang hoạt động' : 'đã khóa'}`
+      )
+      return lines.length ? `Người dùng trên hệ thống:\n${lines.join('\n')}` : 'Chưa có người dùng.'
+    }
+    const rows = await db.prepare(`
+      SELECT DISTINCT u.full_name, COALESCE(m.role, 'member') AS member_role, p.code
+      FROM projects p
+      JOIN project_members m ON m.project_id = p.id
+      JOIN users u ON u.id = m.user_id
+      WHERE p.id ${inProjects} AND u.is_active = 1
+      ORDER BY p.code, u.full_name COLLATE NOCASE
+      LIMIT 40
+    `).bind(...ids).all()
+    const lines = ((rows.results || []) as any[]).map(r =>
+      `- ${r.full_name} (${assistantRoleLabel(r.member_role)}) — ${r.code}`
+    )
+    return lines.length
+      ? `Thành viên trên ${scopeLine}:\n${lines.join('\n')}`
+      : `Chưa có thành viên trên ${scopeLine}.`
+  }
+
+  if (topic === 'timesheet') {
+    const seeTeam = user.role === 'system_admin' || user.role === 'project_admin'
+    const onlyMine = !seeTeam || /cua toi|cua minh/.test(q)
+    const mineSql = onlyMine ? 'AND t.user_id = ?' : ''
+    const binds = onlyMine ? [...ids, user.id] : ids
+    const rows = await db.prepare(`
+      SELECT t.work_date, t.regular_hours, t.overtime_hours, t.status, p.code, u.full_name
+      FROM timesheets t
+      JOIN users u ON u.id = t.user_id
+      LEFT JOIN projects p ON p.id = t.project_id
+      WHERE (t.project_id ${inProjects} OR (t.project_id IS NULL AND t.user_id = ?))
+        ${mineSql}
+      ORDER BY t.work_date DESC, t.id DESC
+      LIMIT 12
+    `).bind(...ids, user.id, ...binds.slice(ids.length)).all()
+    const lines = ((rows.results || []) as any[]).map(r => {
+      const hours = (Number(r.regular_hours) || 0) + (Number(r.overtime_hours) || 0)
+      return `- ${r.work_date} ${r.code || 'Nghỉ'} — ${hours} giờ — ${r.full_name} — ${r.status || 'draft'}`
+    })
+    const who = onlyMine ? 'của bạn' : 'trên ' + scopeLine
+    return lines.length ? `Chấm công gần nhất ${who}:\n${lines.join('\n')}` : `Chưa có chấm công ${who}.`
+  }
+
+  if (topic === 'task') {
+    const onlyMine = user.role === 'member' || /cua toi|cua minh/.test(q)
+    const onlyOverdue = /tre|qua han/.test(q)
+    const today = todayInVietnam()
+    const mineSql = onlyMine ? 'AND t.assigned_to = ?' : ''
+    const lateSql = onlyOverdue ? `AND t.due_date IS NOT NULL AND t.due_date < ?` : ''
+    const binds = [...ids]
+    if (onlyMine) binds.push(user.id)
+    if (onlyOverdue) binds.push(today)
+    const rows = await db.prepare(`
+      SELECT t.title, t.status, t.due_date, p.code, u.full_name
+      FROM tasks t
+      JOIN projects p ON p.id = t.project_id
+      LEFT JOIN users u ON u.id = t.assigned_to
+      WHERE t.project_id ${inProjects}
+        AND t.status NOT IN ('completed', 'review', 'cancelled')
+        ${mineSql}
+        ${lateSql}
+      ORDER BY CASE WHEN t.due_date IS NOT NULL AND t.due_date < ? THEN 0 ELSE 1 END, t.due_date
+      LIMIT 12
+    `).bind(...binds, today).all()
+    const lines = ((rows.results || []) as any[]).map(r => {
+      const late = r.due_date && r.due_date < today ? ' — trễ' : ''
+      return `- [${r.code}] ${r.title} — ${r.full_name || 'chưa giao'} — ${ASSISTANT_TASK_STATUS[r.status] || r.status}${r.due_date ? ' — hạn ' + r.due_date : ''}${late}`
+    })
+    const label = onlyOverdue ? 'Task trễ hạn' : 'Task đang mở'
+    const who = onlyMine ? 'của bạn' : 'trên ' + scopeLine
+    return lines.length ? `${label} ${who}:\n${lines.join('\n')}` : `Không có ${label.toLowerCase()} ${who}.`
+  }
+
+  if (topic === 'legal') {
+    const showValue = user.role === 'system_admin'
+    const rows = await db.prepare(`
+      SELECT p.code AS project_code, lp.name, lp.code, lp.start_date, lp.end_date, lp.contract_value
+      FROM legal_packages lp
+      JOIN projects p ON p.id = lp.project_id
+      WHERE lp.project_id ${inProjects}
+      ORDER BY p.code, lp.sort_order, lp.id
+      LIMIT 30
+    `).bind(...ids).all()
+    const lines = ((rows.results || []) as any[]).map(r => {
+      const dates = [r.start_date, r.end_date].filter(Boolean).join(' → ')
+      const value = showValue ? ` — ${assistantMoney(r.contract_value || 0)}` : ''
+      return `- [${r.project_code}] ${r.name}${r.code ? ' (' + r.code + ')' : ''}${dates ? ' — ' + dates : ''}${value}`
+    })
+    return lines.length ? `Gói hồ sơ trên ${scopeLine}:\n${lines.join('\n')}` : `Chưa có gói hồ sơ trên ${scopeLine}.`
+  }
+
+  const rows = scope.slice(0, 15).map(p => `- ${p.code} — ${p.name}`)
+  const more = scope.length > 15 ? `\nVà thêm ${scope.length - 15} dự án.` : ''
+  if (!named) return `Bạn vào được ${scope.length} dự án:\n${rows.join('\n')}${more}`
+
+  const counts = await db.prepare(`
+    SELECT
+      SUM(CASE WHEN status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) AS open_n,
+      SUM(CASE WHEN status NOT IN ('completed','review','cancelled') AND due_date < ? THEN 1 ELSE 0 END) AS late_n
+    FROM tasks WHERE project_id = ?
+  `).bind(todayInVietnam(), named.id).first() as { open_n?: number, late_n?: number } | null
+  const packs = await db.prepare(
+    `SELECT name FROM legal_packages WHERE project_id = ? ORDER BY sort_order, id`
+  ).bind(named.id).all()
+  const packNames = ((packs.results || []) as any[]).map(r => r.name).join('; ') || 'chưa có gói'
+  const status = ASSISTANT_PROJECT_STATUS[named.status || ''] || ''
+  const statusLine = status ? `\nTrạng thái: ${status}.` : ''
+  return `${named.code} — ${named.name}.${statusLine}\nTask đang mở: ${counts?.open_n || 0}, trễ hạn: ${counts?.late_n || 0}.\nGói hồ sơ: ${packNames}.`
+}
+
 app.post('/api/assistant/ask', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
@@ -18306,6 +18310,8 @@ app.post('/api/assistant/ask', authMiddleware, async (c) => {
     if (asksOwnAccess(question) && !wantsAssistantWrite(question)) {
       return c.json({ reply: await ownAccessReply(db, user) })
     }
+    const lookedUp = await lookupAssistantFacts(db, user, question)
+    if (lookedUp) return c.json({ reply: lookedUp })
 
     const all = await db.prepare(
       `SELECT id, title, body, kind, audience FROM knowledge_articles`

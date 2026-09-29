@@ -1148,13 +1148,14 @@
       background-color: #fff;
       color: #374151;
     }
+    .legal-checklist-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
     .legal-checklist-overflow-btn { flex-shrink: 0; opacity: 0.55; padding: 4px 8px; min-width: 32px; }
     .legal-checklist-row:hover .legal-checklist-overflow-btn { opacity: 1; }
     .legal-checklist-child-add { flex-shrink: 0; white-space: nowrap; padding: 2px 8px; font-weight: 600; }
     #page-legal .legal-checklist-colhead,
     #page-legal .legal-checklist-row {
       display: grid;
-      grid-template-columns: 28px 28px minmax(0, 1fr) 128px 132px 156px 36px;
+      grid-template-columns: 28px 28px minmax(0, 1fr) 128px 132px 156px 76px;
       gap: 8px;
       align-items: center;
     }
@@ -7420,16 +7421,7 @@
         <input type="text" id="legalPkgValue" class="input-field" inputmode="numeric" placeholder="0" oninput="moneyInputFmt(this)">
       </div>
       <div id="legalPkgSeedWrap">
-        <span class="label">Nội dung ban đầu</span>
-        <div class="space-y-2">
-          <label class="flex items-center gap-2 text-sm cursor-pointer">
-            <input type="radio" name="legalPkgSeed" value="template" checked onchange="syncLegalPkgSeedHint()"> Theo mẫu 4 giai đoạn A–D
-          </label>
-          <label class="flex items-center gap-2 text-sm cursor-pointer">
-            <input type="radio" name="legalPkgSeed" value="blank" onchange="syncLegalPkgSeedHint()"> Gói trống — tự khai báo, không dùng mẫu
-          </label>
-        </div>
-        <p id="legalPkgSeedHint" class="text-xs text-gray-400 mt-2">Gói mới xuất hiện ở tab Theo dõi hồ sơ, kèm 4 giai đoạn A–D.</p>
+        <p class="text-xs text-gray-400">Gói mới để trống. Tự nhập hồ sơ ở tab Theo dõi hồ sơ, hoặc sao chép từ dự án khác.</p>
       </div>
       <div class="flex justify-end gap-3">
         <button type="button" onclick="closeModal('legalPackageModal')" class="btn-secondary">Hủy</button>
@@ -7906,7 +7898,7 @@
     <div id="assistantDocs" class="hidden" hidden></div>
     <div id="assistantThread"></div>
     <form id="assistantComposer" onsubmit="submitAssistantAsk(event)">
-      <textarea id="assistantInput" class="input-field" rows="2" placeholder="Hỏi quy trình, hoặc nhờ chấm công / tạo task"></textarea>
+      <textarea id="assistantInput" class="input-field" rows="2" placeholder="Hỏi dự án, task, chấm công, hồ sơ theo quyền của bạn"></textarea>
       <button type="submit" class="btn-primary" aria-label="Gửi"><i class="fas fa-paper-plane"></i></button>
     </form>
   </div>
@@ -7914,7 +7906,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260929n"></script>
+<script src="/static/app.js?v=20260929q"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
