@@ -4,10 +4,10 @@ overview: Bảng người dùng trong tab Năng suất nhân sự (chỉ system 
 todos:
   - id: analytics-users
     content: "Tab Năng suất nhân sự: bảng người dùng hệ thống từ dữ liệu sẵn, không đổi công thức điểm"
-    status: pending
+    status: completed
   - id: analytics-ai-lookup
     content: "Bong bóng chat mọi trang; tra cứu theo quyền vai trò; AI tạo timesheet và task qua API hiện có, có xác nhận"
-    status: pending
+    status: completed
 isProject: false
 ---
 

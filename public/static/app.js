@@ -819,6 +819,8 @@ function logout() {
   localStorage.removeItem('bim_user')
   $('mainApp').style.display = 'none'
   $('loginPage').style.display = 'flex'
+  const dock = $('assistantDock')
+  if (dock) { dock.classList.add('hidden'); dock.hidden = true }
   toast('Đã đăng xuất thành công', 'info')
 }
 
@@ -1162,6 +1164,7 @@ document.addEventListener('click', (e) => {
 async function initApp() {
   $('loginPage').style.display = 'none'
   $('mainApp').style.display = 'block'
+  mountAssistant()
 
   // Update UI with user info
   const initials = currentUser.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U'
@@ -17897,7 +17900,12 @@ async function renderTeamTab(force = false) {
     const year = getAnalyticsYear()
     const data = await api(`/analytics/team-productivity?year=${year}`)
     const members = data.members || []
-    if (!members.length) { el.innerHTML = `<div class="text-center py-16 text-gray-400"><p>Chưa có dữ liệu</p></div>`; return }
+    const usersHost = currentUser?.role === 'system_admin' ? '<div id="systemUsersHost" class="mt-6"></div>' : ''
+    if (!members.length) {
+      el.innerHTML = `<div class="text-center py-16 text-gray-400"><p>Chưa có dữ liệu năng suất</p></div>${usersHost}`
+      if (usersHost) loadSystemUsersTable()
+      return
+    }
 
     const totalHours = members.reduce((s,m)=>s+(m.total_hours||0),0)
     const totalOT = members.reduce((s,m)=>s+(m.overtime_hours||0),0)
@@ -17949,12 +17957,14 @@ async function renderTeamTab(force = false) {
           <div class="flex items-center gap-1" id="teamProdPageBtns"></div>
         </div>
       </div>
+      ${currentUser?.role === 'system_admin' ? '<div id="systemUsersHost" class="mt-6"></div>' : ''}
     `
 
     // ── Pagination for detail table ──────────────────────────────────
     // Populate global data array, then call the global renderProdTable
     _teamProdData = members.slice().sort((a,b)=>(b.assigned_tasks||0)-(a.assigned_tasks||0))
     renderProdTable(1)
+    if (currentUser?.role === 'system_admin') loadSystemUsersTable()
 
     destroyAnalyticsChart('teamTopHours'); destroyAnalyticsChart('teamTaskRate')
     // Top 10 by hours (chart trái)
@@ -30025,6 +30035,212 @@ function exportHstkExcel(submissionId) {
   const fileName = `Checklist_HSTK_${stageName}_${ver}_${dateStr}.xlsx`
   XS.writeFile(wb, fileName)
   toast(`✅ Đã xuất: ${fileName}`)
+}
+
+let _assistantDraft = null
+
+function mountAssistant() {
+  const dock = $('assistantDock')
+  if (!dock || !currentUser) return
+  dock.classList.remove('hidden')
+  dock.hidden = false
+  const docsBtn = $('assistantDocsBtn')
+  if (docsBtn) {
+    const show = currentUser.role === 'system_admin'
+    docsBtn.classList.toggle('hidden', !show)
+    docsBtn.hidden = !show
+  }
+}
+
+function setAssistantPanelOpen(open) {
+  const panel = $('assistantPanel')
+  if (!panel) return
+  panel.classList.toggle('is-open', open)
+  panel.classList.toggle('hidden', !open)
+  panel.hidden = !open
+  if (open) $('assistantInput')?.focus()
+}
+
+function toggleAssistantPanel() {
+  const panel = $('assistantPanel')
+  if (!panel) return
+  setAssistantPanelOpen(!panel.classList.contains('is-open'))
+}
+
+function closeAssistantPanel() {
+  setAssistantPanelOpen(false)
+}
+
+function appendAssistantBubble(text, mine, extraHtml) {
+  const thread = $('assistantThread')
+  if (!thread) return
+  const html = escHtml(text || '').replace(/\n/g, '<br>')
+  thread.insertAdjacentHTML('beforeend', `
+    <div class="chat-bubble ${mine ? 'me' : 'other'}">
+      <div class="bubble-inner">${html}${extraHtml || ''}</div>
+    </div>`)
+  thread.scrollTop = thread.scrollHeight
+}
+
+async function submitAssistantAsk(ev) {
+  ev.preventDefault()
+  const input = $('assistantInput')
+  const message = (input?.value || '').trim()
+  if (!message) return
+  input.value = ''
+  _assistantDraft = null
+  appendAssistantBubble(message, true)
+  try {
+    const data = await api('/assistant/ask', { method: 'POST', data: { message } })
+    _assistantDraft = data.draft || null
+    const extra = data.draft
+      ? `<div class="assistant-confirm"><button type="button" class="btn-primary text-xs" onclick="confirmAssistantDraft()">Xác nhận</button></div>`
+      : ''
+    appendAssistantBubble(data.reply || 'Chưa có tài liệu.', false, extra)
+  } catch (e) {
+    appendAssistantBubble(e.response?.data?.error || e.message || 'Không gửi được câu hỏi', false)
+  }
+}
+
+async function confirmAssistantDraft() {
+  if (!_assistantDraft) return
+  const draft = _assistantDraft
+  _assistantDraft = null
+  try {
+    const data = await api('/assistant/confirm', { method: 'POST', data: { draft } })
+    appendAssistantBubble(data.reply || data.error || 'Đã ghi.', false)
+  } catch (e) {
+    appendAssistantBubble(e.response?.data?.error || e.message || 'Không ghi được', false)
+  }
+}
+
+function toggleAssistantDocs() {
+  const box = $('assistantDocs')
+  if (!box || currentUser?.role !== 'system_admin') return
+  const open = box.hidden || box.classList.contains('hidden')
+  box.classList.toggle('hidden', !open)
+  box.hidden = !open
+  if (open) renderAssistantDocs()
+}
+
+async function renderAssistantDocs() {
+  const box = $('assistantDocs')
+  if (!box) return
+  box.innerHTML = '<div class="text-xs text-gray-400">Đang tải tài liệu…</div>'
+  try {
+    const rows = await api('/knowledge')
+    const list = (rows || []).map(a => `
+      <div class="flex items-center gap-2 py-1">
+        <button type="button" class="text-left text-xs hover:underline flex-1" onclick="editAssistantArticle(${a.id})">${escHtml(a.title)}</button>
+        <button type="button" class="text-xs text-red-500" onclick="deleteAssistantArticle(${a.id})">Xóa</button>
+      </div>
+    `).join('') || '<div class="text-xs text-gray-400">Chưa có bài.</div>'
+    box.innerHTML = `
+      <div class="text-xs font-semibold mb-1">Bài tra cứu</div>
+      ${list}
+      <button type="button" class="btn-secondary text-xs mt-2" onclick="editAssistantArticle(0)">Thêm bài</button>
+      <form id="assistantArticleForm" class="hidden mt-2" hidden onsubmit="saveAssistantArticle(event)">
+        <input id="assistantArticleId" type="hidden" value="">
+        <input id="assistantArticleTitle" class="input-field text-xs mb-1" placeholder="Tiêu đề" maxlength="200">
+        <select id="assistantArticleKind" class="select-field text-xs mb-1">
+          <option value="workflow">Quy trình</option>
+          <option value="technical">Kỹ thuật</option>
+        </select>
+        <div class="text-xs mb-1">Ai được đọc</div>
+        <label class="text-xs mr-2"><input type="checkbox" name="assistantAudience" value="all" checked> Mọi người</label>
+        <label class="text-xs mr-2"><input type="checkbox" name="assistantAudience" value="member"> Member</label>
+        <label class="text-xs mr-2"><input type="checkbox" name="assistantAudience" value="project_leader"> Leader</label>
+        <label class="text-xs mr-2"><input type="checkbox" name="assistantAudience" value="project_admin"> Project admin</label>
+        <textarea id="assistantArticleBody" class="input-field text-xs mt-1" rows="4" placeholder="Nội dung"></textarea>
+        <button type="submit" class="btn-primary text-xs mt-1">Lưu bài</button>
+      </form>`
+    window._assistantArticles = rows || []
+  } catch (e) {
+    box.innerHTML = `<div class="text-xs text-red-500">${escHtml(e.response?.data?.error || e.message || 'Không tải được')}</div>`
+  }
+}
+
+function editAssistantArticle(id) {
+  const form = $('assistantArticleForm')
+  if (!form) return
+  form.classList.remove('hidden')
+  form.hidden = false
+  const row = (window._assistantArticles || []).find(a => a.id === id)
+  $('assistantArticleId').value = row ? String(row.id) : ''
+  $('assistantArticleTitle').value = row?.title || ''
+  $('assistantArticleKind').value = row?.kind === 'technical' ? 'technical' : 'workflow'
+  $('assistantArticleBody').value = row?.body || ''
+  const audience = row ? String(row.audience || 'all').split(',') : ['all']
+  document.querySelectorAll('input[name="assistantAudience"]').forEach(el => {
+    el.checked = audience.includes(el.value) || (audience.includes('all') && el.value === 'all')
+  })
+}
+
+async function deleteAssistantArticle(id) {
+  try {
+    await api('/knowledge/' + id, { method: 'DELETE' })
+    renderAssistantDocs()
+  } catch (e) {
+    toast(e.response?.data?.error || e.message || 'Không xóa được', 'error')
+  }
+}
+
+async function saveAssistantArticle(ev) {
+  ev.preventDefault()
+  const id = $('assistantArticleId').value
+  const picked = [...document.querySelectorAll('input[name="assistantAudience"]:checked')].map(el => el.value)
+  const audience = picked.includes('all') || !picked.length ? 'all' : picked.filter(v => v !== 'all').join(',')
+  const payload = {
+    title: $('assistantArticleTitle').value.trim(),
+    body: $('assistantArticleBody').value.trim(),
+    kind: $('assistantArticleKind').value,
+    audience,
+  }
+  try {
+    if (id) await api('/knowledge/' + id, { method: 'PUT', data: payload })
+    else await api('/knowledge', { method: 'POST', data: payload })
+    toast('Đã lưu bài tra cứu')
+    renderAssistantDocs()
+  } catch (e) {
+    toast(e.response?.data?.error || e.message || 'Không lưu được', 'error')
+  }
+}
+
+async function loadSystemUsersTable() {
+  const host = document.getElementById('systemUsersHost')
+  if (!host || currentUser?.role !== 'system_admin') return
+  host.innerHTML = '<div class="card text-sm text-gray-400">Đang tải người dùng hệ thống…</div>'
+  try {
+    const rows = await api('/analytics/system-users')
+    const body = (rows || []).map(u => `<tr class="border-b border-gray-100">
+      <td class="py-2 px-3 text-sm">${escHtml(u.full_name || '')}</td>
+      <td class="py-2 px-3 text-xs">${escHtml(getRoleLabel(u.role))}</td>
+      <td class="py-2 px-3 text-xs">${escHtml(u.department || '—')}</td>
+      <td class="py-2 px-3 text-xs">${u.is_active ? 'Có' : 'Không'}</td>
+      <td class="py-2 px-3 text-xs">${escHtml(u.last_work_date || '—')}</td>
+      <td class="py-2 px-3 text-right text-sm">${u.open_tasks || 0}</td>
+      <td class="py-2 px-3 text-right text-sm">${u.overdue_tasks || 0}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="py-6 text-center text-gray-400">Chưa có người dùng</td></tr>'
+    host.innerHTML = `<div class="card">
+      <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-users-cog mr-2"></i>Người dùng hệ thống</h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="border-b text-left text-gray-500 text-xs uppercase bg-gray-50">
+            <th class="py-2 px-3">Họ tên</th>
+            <th class="py-2 px-3">Vai trò</th>
+            <th class="py-2 px-3">Phòng ban</th>
+            <th class="py-2 px-3">Đang hoạt động</th>
+            <th class="py-2 px-3">Chấm công gần nhất</th>
+            <th class="py-2 px-3 text-right">Task mở</th>
+            <th class="py-2 px-3 text-right">Task trễ</th>
+          </tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>`
+  } catch (e) {
+    host.innerHTML = `<div class="card text-sm text-red-500">${escHtml(e.response?.data?.error || e.message || 'Không tải được')}</div>`
+  }
 }
 
 // ═══ END CHECKLIST HSTK MODULE ═══════════════════════════════════════

@@ -63,6 +63,8 @@ type Bindings = {
   /** Optional Pages secrets for Cloudflare Email Sending REST */
   CF_ACCOUNT_ID?: string
   CF_EMAIL_API_TOKEN?: string
+  /** Optional. When set, the assistant may call a model once per question. */
+  AI_API_KEY?: string
 }
 
 // ===================================================
@@ -2691,14 +2693,11 @@ app.get('/api/tasks/:id', authMiddleware, async (c) => {
   }
 })
 
-app.post('/api/tasks', authMiddleware, async (c) => {
+async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: any): Promise<{ status: number, body: any }> {
   try {
-    const db = c.env.DB
-    const user = c.get('user') as any
-    const data = await c.req.json()
     const { project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, start_date, due_date, estimated_hours, task_type, model_filename, cde_report, work_notes, hstk_date } = data
 
-    if (!project_id || !title) return c.json({ error: 'project_id and title required' }, 400)
+    if (!project_id || !title) return { status: 400, body: { error: 'project_id and title required' } }
 
     // RBAC: mọi thành viên project đều được tạo task (kể cả member)
     // system_admin được tạo task ở mọi project
@@ -2709,7 +2708,7 @@ app.post('/api/tasks', authMiddleware, async (c) => {
       const membership = await db.prepare(
         'SELECT id FROM project_members WHERE project_id = ? AND user_id = ?'
       ).bind(project_id, user.id).first()
-      if (!membership) return c.json({ error: 'Bạn không phải thành viên của dự án này' }, 403)
+      if (!membership) return { status: 403, body: { error: 'Bạn không phải thành viên của dự án này' } }
     }
 
     const result = await db.prepare(
@@ -2738,7 +2737,7 @@ app.post('/api/tasks', authMiddleware, async (c) => {
       const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(project_id).first() as any
       if (emailUser) {
         const disciplineInfo = discipline_code ? await db.prepare('SELECT name FROM disciplines WHERE code = ?').bind(discipline_code).first() as any : null
-        await sendEmail(c.env, {
+        await sendEmail(env, {
           to: emailUser.email, toName: emailUser.full_name,
           eventType: 'task_assigned',
           data: { taskTitle: title, projectName: projInfo?.name, discipline: disciplineInfo?.name || discipline_code, priority: priority || 'medium', deadline: due_date, description, assignedBy: user.full_name },
@@ -2747,10 +2746,15 @@ app.post('/api/tasks', authMiddleware, async (c) => {
       }
     }
 
-    return c.json({ success: true, id: taskId }, 201)
+    return { status: 201, body: { success: true, id: taskId } }
   } catch (e: any) {
-    return c.json({ error: e.message }, 500)
+    return { status: 500, body: { error: e.message } }
   }
+}
+
+app.post('/api/tasks', authMiddleware, async (c) => {
+  const result = await createTaskRecord(c.env.DB, c.env, c.get('user'), await c.req.json())
+  return c.json(result.body, result.status as any)
 })
 
 // POST /api/tasks/bulk — tạo nhiều task cùng lúc (admin/leader)
@@ -4044,11 +4048,8 @@ app.get('/api/timesheets/day-budget', authMiddleware, async (c) => {
   }
 })
 
-app.post('/api/timesheets', authMiddleware, async (c) => {
+async function createTimesheetRecord(db: D1Database, user: any, data: any): Promise<{ status: number, body: any }> {
   try {
-    const db = c.env.DB
-    const user = c.get('user') as any
-    const data = await c.req.json()
     const { project_id, task_id, work_date, regular_hours, overtime_hours, description } = data
     const day_type = data.day_type || 'work'
     const category_id = data.category_id || null
@@ -4059,18 +4060,18 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     const taskEntries: Array<{task_id: number|null, regular_hours: number, overtime_hours: number}> = data.task_entries || []
     const isMultiTask = taskEntries.length > 0
 
-    if (!work_date) return c.json({ error: 'work_date required' }, 400)
-    if (!isLeaveDay && !project_id) return c.json({ error: 'project_id required for work day' }, 400)
+    if (!work_date) return { status: 400, body: { error: 'work_date required' } }
+    if (!isLeaveDay && !project_id) return { status: 400, body: { error: 'project_id required for work day' } }
 
     // Lấy role một lần dùng cho cả giới hạn tuần lẫn quyền tạo cho người khác
     const effRoleGlobal = await getEffectiveRole(db, user)
 
     // ── Giới hạn tuần: chỉ system_admin được khai báo timesheet tuần cũ ──
     if (effRoleGlobal !== 'system_admin' && !isWithinCurrentWeek(work_date)) {
-      return c.json({
+      return { status: 422, body: {
         error: 'Chỉ được khai báo timesheet trong tuần làm việc hiện tại (Thứ Hai – Chủ Nhật). Tuần đã qua không thể khai báo lại.',
         week_limit: true
-      }, 422)
+      } }
     }
 
     // Chỉ system_admin / project_admin được tạo timesheet cho người khác
@@ -4088,11 +4089,11 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
       if (targetUserId !== user.id) {
         // Đang tạo timesheet cho người khác → phải là project_admin/system_admin
         if (!canCreateForOthers) {
-          return c.json({ error: 'Bạn không có quyền tạo timesheet cho người khác' }, 403)
+          return { status: 403, body: { error: 'Bạn không có quyền tạo timesheet cho người khác' } }
         }
         if (!isLeaveDay) {
           const allowed = await isProjectAdmin(db, user.id, parseInt(project_id))
-          if (!allowed) return c.json({ error: 'Bạn không có quyền tạo timesheet cho người khác trong dự án này' }, 403)
+          if (!allowed) return { status: 403, body: { error: 'Bạn không có quyền tạo timesheet cho người khác trong dự án này' } }
         }
         // Leave day for others: only project_admin/system_admin (already guarded above)
       } else if (!isLeaveDay) {
@@ -4105,7 +4106,7 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
           `SELECT id FROM projects WHERE id = ? AND (admin_id = ? OR leader_id = ?)`
         ).bind(projIdToCheck, user.id, user.id).first()
         if (!isMember && !isAdminOrLeader) {
-          return c.json({ error: 'Bạn không phải thành viên của dự án này' }, 403)
+          return { status: 403, body: { error: 'Bạn không phải thành viên của dự án này' } }
         }
       }
       // Leave day for self: always allowed
@@ -4132,7 +4133,7 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
       })
       const bad = validateTimesheetHoursAgainstBudget(budget, nReg, nOt)
       if (bad) {
-        return c.json({ error: bad.error, ...bad.payload }, 422)
+        return { status: 422, body: { error: bad.error, ...bad.payload } }
       }
     }
 
@@ -4151,7 +4152,7 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
     if (existing) {
       // Prevent editing approved timesheets (unless system_admin)
       if (existing.status === 'approved' && user.role !== 'system_admin') {
-        return c.json({ error: 'Timesheet ngày này đã được duyệt. Không thể cập nhật.', exists: true, id: existing.id, status: existing.status }, 409)
+        return { status: 409, body: { error: 'Timesheet ngày này đã được duyệt. Không thể cập nhật.', exists: true, id: existing.id, status: existing.status } }
       }
       // Update existing record
       await db.prepare(
@@ -4182,13 +4183,18 @@ app.post('/api/timesheets', authMiddleware, async (c) => {
       }
     }
 
-    return c.json({ success: true, id: timesheetId, action: existing ? 'updated' : 'created' }, existing ? 200 : 201)
+    return { status: existing ? 200 : 201, body: { success: true, id: timesheetId, action: existing ? 'updated' : 'created' } }
   } catch (e: any) {
     if (e.message?.includes('UNIQUE constraint failed')) {
-      return c.json({ error: 'Timesheet cho ngày này đã tồn tại. Vui lòng chỉnh sửa bản ghi hiện có.', duplicate: true }, 409)
+      return { status: 409, body: { error: 'Timesheet cho ngày này đã tồn tại. Vui lòng chỉnh sửa bản ghi hiện có.', duplicate: true } }
     }
-    return c.json({ error: e.message }, 500)
+    return { status: 500, body: { error: e.message } }
   }
+}
+
+app.post('/api/timesheets', authMiddleware, async (c) => {
+  const result = await createTimesheetRecord(c.env.DB, c.get('user'), await c.req.json())
+  return c.json(result.body, result.status as any)
 })
 
 app.put('/api/timesheets/:id', authMiddleware, async (c) => {
@@ -18069,5 +18075,332 @@ app.put('/api/executive/project-health/:id', authMiddleware, pmoAccess, async (c
 
 // ===================================================
 // END EXECUTIVE PMO DASHBOARD API
+
+const ASSISTANT_ROLES = ['member', 'project_leader', 'project_admin', 'system_admin']
+
+function normalizeArticleAudience(raw: unknown): string | null {
+  if (raw == null || String(raw).trim() === '' || String(raw).trim() === 'all') return 'all'
+  const parts = String(raw).split(',').map(s => s.trim()).filter(Boolean)
+  if (parts.includes('all')) return 'all'
+  const unique = [...new Set(parts)]
+  if (!unique.length || unique.some(p => !ASSISTANT_ROLES.includes(p))) return null
+  return unique.join(',')
+}
+
+function articleReadableBy(audience: string, role: string): boolean {
+  if (role === 'system_admin') return true
+  if (!audience || audience === 'all') return true
+  return audience.split(',').includes(role)
+}
+
+function assistantRoleLabel(role: string): string {
+  const map: Record<string, string> = {
+    system_admin: 'System Admin',
+    project_admin: 'Project Admin',
+    project_leader: 'Project Leader',
+    member: 'Member',
+  }
+  return map[role] || role
+}
+
+function todayInVietnam(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date())
+}
+
+async function projectsVisibleTo(db: D1Database, user: any): Promise<Array<{ id: number, code: string, name: string }>> {
+  const isAdmin = user.role === 'system_admin' ? 1 : 0
+  const rows = await db.prepare(`
+    SELECT DISTINCT p.id, p.code, p.name
+    FROM projects p
+    LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?
+    WHERE (p.status IS NULL OR p.status != 'cancelled')
+      AND (? = 1 OR p.admin_id = ? OR p.leader_id = ? OR m.id IS NOT NULL)
+    ORDER BY p.code
+  `).bind(user.id, isAdmin, user.id, user.id).all()
+  return (rows.results || []) as any[]
+}
+
+function rankArticles(articles: any[], question: string) {
+  const tokens = question.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(t => t.length >= 2)
+  return articles
+    .map(a => {
+      const title = String(a.title || '').toLowerCase()
+      const body = String(a.body || '').toLowerCase()
+      const score = tokens.reduce((n, t) => n + (title.includes(t) ? 3 : 0) + (body.includes(t) ? 1 : 0), 0)
+      return { article: a, score }
+    })
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4)
+}
+
+function wantsAssistantWrite(question: string): boolean {
+  const q = question.toLowerCase()
+  if (/tạo task|tao task|tạo công việc|tao cong viec|giao việc/.test(q)) return true
+  const mentionsSheet = /chấm công|cham cong|timesheet|khai báo giờ|khai bao gio/.test(q)
+  const asksToRecord = /\d+\s*giờ|\d+\s*gio|hôm nay|hom nay|ghi giúp|tạo giúp/.test(q)
+  return mentionsSheet && asksToRecord
+}
+
+function asksOwnAccess(question: string): boolean {
+  return /quyền của tôi|quyen cua toi|tôi có quyền|toi co quyen|mình được làm|minh duoc lam|tôi được tạo timesheet cho người khác|toi duoc tao timesheet/i.test(question)
+}
+
+async function ownAccessReply(db: D1Database, user: any): Promise<string> {
+  const projects = await projectsVisibleTo(db, user)
+  const canOthers = user.role === 'system_admin' || user.role === 'project_admin'
+  const projectLine = projects.length
+    ? 'Dự án bạn vào được: ' + projects.map(p => `${p.code} — ${p.name}`).join('; ') + '.'
+    : 'Bạn chưa thuộc dự án nào.'
+  const timesheetLine = canOthers
+    ? 'Bạn có thể tạo timesheet cho người khác trong dự án bạn quản.'
+    : 'Bạn chỉ tạo timesheet cho chính mình, trong tuần hiện tại, trên dự án bạn thuộc.'
+  return `Bạn đang đăng nhập với vai trò ${assistantRoleLabel(user.role)}. ${timesheetLine} ${projectLine}`
+}
+
+app.get('/api/analytics/system-users', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const rows = await db.prepare(`
+      SELECT u.id, u.full_name, u.role, u.department, u.is_active, u.created_at,
+        ts.last_work_date,
+        COALESCE(tk.open_tasks, 0) AS open_tasks,
+        COALESCE(tk.overdue_tasks, 0) AS overdue_tasks
+      FROM users u
+      LEFT JOIN (
+        SELECT user_id, MAX(work_date) AS last_work_date
+        FROM timesheets
+        GROUP BY user_id
+      ) ts ON ts.user_id = u.id
+      LEFT JOIN (
+        SELECT assigned_to,
+          COUNT(DISTINCT CASE WHEN status NOT IN ('completed','review','cancelled') THEN id END) AS open_tasks,
+          COUNT(DISTINCT CASE WHEN due_date < date('now')
+            AND status NOT IN ('completed','review','cancelled') THEN id END) AS overdue_tasks
+        FROM tasks
+        GROUP BY assigned_to
+      ) tk ON tk.assigned_to = u.id
+      ORDER BY u.full_name COLLATE NOCASE
+    `).all()
+    return c.json(rows.results || [])
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.get('/api/knowledge', authMiddleware, adminOnly, async (c) => {
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT id, title, body, kind, audience, updated_at FROM knowledge_articles ORDER BY updated_at DESC, id DESC`
+    ).all()
+    return c.json(rows.results || [])
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.post('/api/knowledge', authMiddleware, adminOnly, async (c) => {
+  try {
+    const data = await c.req.json()
+    const title = String(data.title || '').trim()
+    const body = String(data.body || '').trim()
+    const kind = data.kind === 'technical' ? 'technical' : 'workflow'
+    const audience = normalizeArticleAudience(data.audience)
+    if (!title || !body) return c.json({ error: 'Cần tiêu đề và nội dung' }, 400)
+    if (!audience) return c.json({ error: 'Đối tượng đọc không hợp lệ' }, 400)
+    const result = await c.env.DB.prepare(
+      `INSERT INTO knowledge_articles (title, body, kind, audience) VALUES (?, ?, ?, ?)`
+    ).bind(title.slice(0, 200), body.slice(0, 8000), kind, audience).run()
+    return c.json({ success: true, id: result.meta.last_row_id }, 201)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.put('/api/knowledge/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'))
+    const data = await c.req.json()
+    const title = String(data.title || '').trim()
+    const body = String(data.body || '').trim()
+    const kind = data.kind === 'technical' ? 'technical' : 'workflow'
+    const audience = normalizeArticleAudience(data.audience)
+    if (!title || !body) return c.json({ error: 'Cần tiêu đề và nội dung' }, 400)
+    if (!audience) return c.json({ error: 'Đối tượng đọc không hợp lệ' }, 400)
+    const existing = await c.env.DB.prepare('SELECT id FROM knowledge_articles WHERE id = ?').bind(id).first()
+    if (!existing) return c.json({ error: 'Không tìm thấy bài' }, 404)
+    await c.env.DB.prepare(
+      `UPDATE knowledge_articles SET title = ?, body = ?, kind = ?, audience = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+    ).bind(title.slice(0, 200), body.slice(0, 8000), kind, audience, id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.delete('/api/knowledge/:id', authMiddleware, adminOnly, async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'))
+    await c.env.DB.prepare('DELETE FROM knowledge_articles WHERE id = ?').bind(id).run()
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+async function callAssistantModel(apiKey: string, question: string, passages: any[], projects: any[]): Promise<any> {
+  const today = todayInVietnam()
+  const docs = passages.map((p, i) => `[${i + 1}] ${p.article.title}\n${String(p.article.body).slice(0, 1500)}`).join('\n\n') || '(không có đoạn khớp)'
+  const projectLines = projects.map(p => `${p.code} | ${p.name}`).join('\n') || '(không có dự án)'
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Bạn là trợ lý nội bộ BIM PM. Chỉ trả JSON. kind là answer, timesheet hoặc task.
+Nếu người dùng hỏi quy trình, reply chỉ dựa trên các đoạn tài liệu. Không có trong tài liệu thì reply đúng câu "Chưa có tài liệu." và kind=answer. Không bịa bước.
+Nếu người dùng muốn chấm công hoặc tạo task, kind tương ứng. project_code phải là mã trong danh sách dự án. work_date YYYY-MM-DD. Hôm nay là ${today}. regular_hours là số giờ người dùng nói, để 0 nếu họ không nói giờ. title là tên task họ nói.
+Không nhắc lương, mật khẩu, token, doanh thu.
+JSON: {"kind":"answer","reply":"","project_code":"","work_date":"","regular_hours":0,"description":"","title":"","discipline_code":""}`,
+        },
+        {
+          role: 'user',
+          content: `Tài liệu:\n${docs}\n\nDự án được vào:\n${projectLines}\n\nCâu hỏi:\n${question.slice(0, 2000)}`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) throw new Error('model_http_' + res.status)
+  const data = await res.json() as any
+  const text = data?.choices?.[0]?.message?.content || '{}'
+  return JSON.parse(text)
+}
+
+app.post('/api/assistant/ask', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const data = await c.req.json()
+    const question = String(data.message || '').trim()
+    if (!question) return c.json({ error: 'Cần nội dung câu hỏi' }, 400)
+    if (asksOwnAccess(question) && !wantsAssistantWrite(question)) {
+      return c.json({ reply: await ownAccessReply(db, user) })
+    }
+
+    const all = await db.prepare(
+      `SELECT id, title, body, kind, audience FROM knowledge_articles`
+    ).all()
+    const readable = ((all.results || []) as any[]).filter(a => articleReadableBy(String(a.audience || 'all'), user.role))
+    const ranked = rankArticles(readable, question)
+    const apiKey = c.env.AI_API_KEY
+
+    if (!apiKey) {
+      if (wantsAssistantWrite(question)) {
+        return c.json({ reply: 'Chưa soạn được timesheet hay task vì máy chủ chưa có khóa AI. Tra cứu tài liệu vẫn dùng được.' })
+      }
+      if (!ranked.length) return c.json({ reply: 'Chưa có tài liệu.' })
+      const best = ranked[0].article
+      return c.json({ reply: `${best.title}\n${best.body}` })
+    }
+
+    let model: any
+    try {
+      const projects = await projectsVisibleTo(db, user)
+      model = await callAssistantModel(apiKey, question, ranked, projects)
+    } catch {
+      if (!ranked.length) return c.json({ reply: 'Chưa có tài liệu.' })
+      const best = ranked[0].article
+      return c.json({ reply: `${best.title}\n${best.body}` })
+    }
+
+    const kind = model?.kind === 'timesheet' || model?.kind === 'task' ? model.kind : 'answer'
+    const reply = String(model?.reply || '').trim() || (ranked.length ? `${ranked[0].article.title}\n${ranked[0].article.body}` : 'Chưa có tài liệu.')
+    if (kind === 'answer') return c.json({ reply })
+
+    const projects = await projectsVisibleTo(db, user)
+    const code = String(model.project_code || '').trim().toLowerCase()
+    const project = projects.find(p => String(p.code).toLowerCase() === code)
+      || projects.find(p => String(p.name).toLowerCase() === code)
+    if (!project) {
+      return c.json({ reply: reply || 'Không thấy dự án đó trong các dự án bạn được vào.' })
+    }
+
+    if (kind === 'timesheet') {
+      const hours = Number(model.regular_hours)
+      const workDate = /^\d{4}-\d{2}-\d{2}$/.test(String(model.work_date || '')) ? String(model.work_date) : todayInVietnam()
+      if (!hours || hours <= 0) {
+        return c.json({ reply: 'Cần số giờ chấm công trước khi soạn bản nháp.' })
+      }
+      return c.json({
+        reply: `Bản nháp chấm công cho bạn: ${project.code} — ${project.name}, ngày ${workDate}, ${hours} giờ. Bấm xác nhận để ghi.`,
+        draft: {
+          kind: 'timesheet',
+          payload: {
+            project_id: project.id,
+            work_date: workDate,
+            regular_hours: hours,
+            description: String(model.description || '').slice(0, 500),
+          },
+        },
+      })
+    }
+
+    const title = String(model.title || '').trim()
+    if (!title) return c.json({ reply: 'Cần tên công việc trước khi soạn bản nháp.' })
+    return c.json({
+      reply: `Bản nháp task trong ${project.code} — ${project.name}: ${title}. Bấm xác nhận để tạo.`,
+      draft: {
+        kind: 'task',
+        payload: {
+          project_id: project.id,
+          title: title.slice(0, 200),
+          description: String(model.description || '').slice(0, 1000),
+          discipline_code: String(model.discipline_code || '').slice(0, 20) || null,
+        },
+      },
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.post('/api/assistant/confirm', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user') as any
+    const data = await c.req.json()
+    const kind = data?.draft?.kind
+    const payload = data?.draft?.payload || {}
+    if (kind === 'timesheet') {
+      const result = await createTimesheetRecord(c.env.DB, user, {
+        project_id: payload.project_id,
+        work_date: payload.work_date,
+        regular_hours: payload.regular_hours,
+        overtime_hours: 0,
+        description: payload.description || null,
+        day_type: 'work',
+      })
+      if (result.status >= 400) return c.json(result.body, result.status as any)
+      return c.json({ reply: 'Đã ghi chấm công.', result: result.body })
+    }
+    if (kind === 'task') {
+      const result = await createTaskRecord(c.env.DB, c.env, user, {
+        project_id: payload.project_id,
+        title: payload.title,
+        description: payload.description || null,
+        discipline_code: payload.discipline_code || null,
+      })
+      if (result.status >= 400) return c.json(result.body, result.status as any)
+      return c.json({ reply: 'Đã tạo task.', result: result.body })
+    }
+    return c.json({ error: 'Không có bản nháp để ghi' }, 400)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
 
 export default app

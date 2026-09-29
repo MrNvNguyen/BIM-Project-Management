@@ -322,6 +322,17 @@
     .chat-project-wrap { display:flex; flex-direction:column; height:520px; }
     .msg-delete-btn { opacity:0; transition:opacity .15s; cursor:pointer; background:none; border:none; color:#ef4444; padding:2px 6px; border-radius:4px; font-size:11px; }
     .chat-bubble:hover .msg-delete-btn { opacity:1; }
+    #assistantDock { position:fixed; right:20px; bottom:20px; z-index:80; }
+    #assistantFab { width:52px; height:52px; border-radius:999px; border:0; background:#00A651; color:#fff; box-shadow:0 8px 20px rgba(0,166,81,.35); cursor:pointer; font-size:20px; }
+    #assistantPanel { position:absolute; right:0; bottom:64px; width:min(380px, calc(100vw - 32px)); height:min(520px, calc(100vh - 120px)); display:none; flex-direction:column; background:var(--shell-surface); color:var(--shell-text); border:1px solid var(--shell-border); border-radius:16px; box-shadow:0 16px 40px rgba(0,0,0,.18); overflow:hidden; }
+    #assistantPanel.is-open { display:flex; }
+    #assistantHead { display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--shell-border); font-weight:700; }
+    #assistantThread { flex:1; overflow:auto; padding:12px; }
+    #assistantComposer { display:flex; gap:8px; padding:10px; border-top:1px solid var(--shell-border); }
+    #assistantInput { flex:1; resize:none; min-height:40px; max-height:96px; }
+    #assistantDocs { border-bottom:1px solid var(--shell-border); max-height:220px; overflow:auto; padding:10px 12px; background:var(--shell-bg, transparent); }
+    .assistant-confirm { margin-top:8px; }
+    @media (max-width: 767px) { #assistantDock { bottom:76px; right:12px; } }
     .chat-unread-badge { display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; padding:0 5px; background:#ef4444; color:#fff; font-size:10px; font-weight:700; border-radius:9px; line-height:1; }
     .proj-chat-badge { position:absolute; top:10px; right:10px; display:inline-flex; align-items:center; justify-content:center; min-width:20px; height:20px; padding:0 6px; background:#ef4444; color:#fff; font-size:10px; font-weight:700; border-radius:10px; line-height:1; box-shadow:0 1px 3px rgba(0,0,0,.2); pointer-events:none; }
     .progress-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
@@ -7851,8 +7862,25 @@
   </div>
 </div>
 
+<div id="assistantDock" class="hidden" hidden>
+  <div id="assistantPanel" class="hidden" hidden>
+    <div id="assistantHead">
+      <span>Tra cứu</span>
+      <button type="button" id="assistantDocsBtn" class="btn-secondary text-xs hidden" hidden onclick="toggleAssistantDocs()">Tài liệu</button>
+      <button type="button" class="ml-auto text-gray-400 px-2" onclick="closeAssistantPanel()" aria-label="Đóng">×</button>
+    </div>
+    <div id="assistantDocs" class="hidden" hidden></div>
+    <div id="assistantThread"></div>
+    <form id="assistantComposer" onsubmit="submitAssistantAsk(event)">
+      <textarea id="assistantInput" class="input-field" rows="2" placeholder="Hỏi quy trình, hoặc nhờ chấm công / tạo task"></textarea>
+      <button type="submit" class="btn-primary" aria-label="Gửi"><i class="fas fa-paper-plane"></i></button>
+    </form>
+  </div>
+  <button type="button" id="assistantFab" onclick="toggleAssistantPanel()" aria-label="Tra cứu"><i class="fas fa-comment-dots"></i></button>
+</div>
+
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260929j"></script>
+<script src="/static/app.js?v=20260929l"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
