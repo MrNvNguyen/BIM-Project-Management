@@ -218,6 +218,45 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
       }
     }
 
+    case 'task_reassigned_to': {
+      const metaItems = [
+        { label: 'Dự án', value: data.projectName || 'N/A' },
+        ...(data.previousAssignee ? [{ label: 'Người phụ trách trước', value: data.previousAssignee }] : []),
+        ...(data.deadline ? [{ label: 'Hạn', value: '📅 ' + data.deadline }] : []),
+        { label: 'Người chuyển', value: data.assignedBy || 'N/A' },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Bạn được tiếp nhận một task đã đổi người phụ trách.</p>
+        ${emailCard('Tên Task', '📌 ' + data.taskTitle)}
+        ${emailMeta(metaItems)}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập hệ thống để xem chi tiết và tiếp tục thực hiện task.</p>`
+      return {
+        subject: `[OneCad BIM] Bạn tiếp nhận task: ${data.taskTitle}`,
+        html: emailBase(`Bạn tiếp nhận task`, body)
+      }
+    }
+
+    case 'task_reassigned_from': {
+      const metaItems = [
+        { label: 'Dự án', value: data.projectName || 'N/A' },
+        { label: 'Người tiếp nhận', value: data.newAssignee || 'N/A' },
+        { label: 'Người chuyển', value: data.assignedBy || 'N/A' },
+      ]
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Task bạn đang phụ trách vừa được chuyển sang người khác.</p>
+        ${emailCard('Tên Task', '📌 ' + data.taskTitle)}
+        ${emailMeta(metaItems)}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Bạn không còn là người phụ trách task này.</p>`
+      return {
+        subject: `[OneCad BIM] Task đổi người phụ trách: ${data.taskTitle}`,
+        html: emailBase(`Task đã chuyển người phụ trách`, body)
+      }
+    }
+
     case 'task_status_updated': {
       const metaItems = [
         { label: 'Trạng thái mới', value: statusBadge(data.newStatus) },
@@ -844,6 +883,7 @@ async function sendEmail(env: Bindings, opts: {
   userId?: number
   relatedType?: string
   relatedId?: number
+  skipPush?: boolean
 }): Promise<'sent' | 'failed' | 'skipped'> {
   // ── Bỏ qua email liên quan đến thanh toán và timesheet ──────────────────
   const SKIP_PAYMENT_EVENTS = new Set(['payment_request_new', 'payment_status_changed', 'timesheet_reviewed', 'timesheet_bulk_approved'])
@@ -853,7 +893,7 @@ async function sendEmail(env: Bindings, opts: {
   }
   // ─────────────────────────────────────────────────────────────────────────
 
-  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_overdue', 'project_added', 'chat_mention', 'birthday_wish'])
+  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_reassigned_to', 'task_reassigned_from', 'task_overdue', 'project_added', 'chat_mention', 'birthday_wish'])
 
   if (opts.userId && !MANDATORY_EVENTS.has(opts.eventType)) {
     const pref = await opts.db.prepare(
@@ -981,7 +1021,7 @@ async function sendEmail(env: Bindings, opts: {
     } catch { /* ignore log error */ }
   }
 
-  if (opts.userId) {
+  if (opts.userId && !opts.skipPush) {
     const eventIconMap: Record<string, string> = {
       task_assigned:   '📋',
       task_overdue:    '⏰',
@@ -1005,6 +1045,94 @@ async function sendEmail(env: Bindings, opts: {
 }
 
 // ---- Helper: get user email info ----
+async function notifyTaskAssigneeChange(
+  db: D1Database,
+  env: Bindings,
+  actor: { id: number; full_name?: string },
+  task: { id: number; title: string; project_id: number; priority?: string | null; due_date?: string | null },
+  previousAssigneeId: number | null,
+  nextAssigneeId: number | null,
+) {
+  if (previousAssigneeId === nextAssigneeId) return
+  const proj = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
+  const projectName = proj?.name || ''
+  const nameOf = async (userId: number | null) => {
+    if (!userId) return ''
+    const row = await db.prepare('SELECT full_name FROM users WHERE id = ?').bind(userId).first() as any
+    return String(row?.full_name || '')
+  }
+  const prevName = await nameOf(previousAssigneeId)
+  const nextName = await nameOf(nextAssigneeId)
+
+  const notify = async (
+    userId: number | null,
+    title: string,
+    message: string,
+    eventType: string,
+    data: Record<string, any>,
+  ) => {
+    if (!userId || userId === actor.id) return
+    try {
+      await db.prepare(
+        'INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(userId, title, message, 'info', 'task', task.id).run()
+    } catch { /* bell row is best-effort */ }
+    const info = await getUserEmailInfo(db, userId)
+    if (info?.email) {
+      await sendEmail(env, {
+        to: info.email,
+        toName: info.full_name,
+        eventType,
+        data,
+        db,
+        userId,
+        relatedType: 'task',
+        relatedId: task.id,
+        skipPush: true,
+      })
+    }
+    sendWebPush(db, userId, {
+      title,
+      body: message,
+      tag: `${eventType}-${task.id}`,
+      url: '/',
+      notifId: null,
+      relatedType: 'task',
+      relatedId: task.id,
+    }).catch(() => {})
+  }
+
+  if (previousAssigneeId) {
+    const who = nextName || 'chưa chỉ định'
+    await notify(
+      previousAssigneeId,
+      'Task đã chuyển người phụ trách',
+      `Task "${task.title}" không còn giao cho bạn. Người tiếp nhận: ${who}.`,
+      'task_reassigned_from',
+      { taskTitle: task.title, projectName, newAssignee: who, assignedBy: actor.full_name || '' },
+    )
+  }
+  if (nextAssigneeId) {
+    const takingOver = !!previousAssigneeId
+    await notify(
+      nextAssigneeId,
+      takingOver ? 'Bạn tiếp nhận task' : 'Task mới được giao',
+      takingOver
+        ? `Bạn được tiếp nhận task: ${task.title}${prevName ? ` (trước đó: ${prevName})` : ''}.`
+        : `Bạn được giao task: ${task.title}`,
+      takingOver ? 'task_reassigned_to' : 'task_assigned',
+      {
+        taskTitle: task.title,
+        projectName,
+        priority: task.priority,
+        deadline: task.due_date,
+        assignedBy: actor.full_name || '',
+        previousAssignee: prevName,
+      },
+    )
+  }
+}
+
 async function getUserEmailInfo(db: D1Database, userId: number): Promise<{ email: string; full_name: string } | null> {
   const user = await db.prepare('SELECT email, full_name FROM users WHERE id = ? AND is_active = 1').bind(userId).first() as any
   if (!user?.email) return null
@@ -2927,17 +3055,28 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
       }
     }
 
-    // ── Email: task_assigned (khi đổi người được giao) ──
-    if (data.assigned_to && data.assigned_to !== task.assigned_to) {
-      const emailUser = await getUserEmailInfo(db, data.assigned_to)
-      const projInfo = await db.prepare('SELECT name FROM projects WHERE id = ?').bind(task.project_id).first() as any
-      if (emailUser) {
-        await sendEmail(c.env, {
-          to: emailUser.email, toName: emailUser.full_name,
-          eventType: 'task_assigned',
-          data: { taskTitle: task.title, projectName: projInfo?.name, priority: task.priority, deadline: task.due_date, assignedBy: user.full_name },
-          db, userId: data.assigned_to, relatedType: 'task', relatedId: id
-        })
+    if (fields.includes('assigned_to') && Object.prototype.hasOwnProperty.call(data, 'assigned_to')) {
+      const nextRaw = data.assigned_to ? Number(data.assigned_to) : null
+      const prevRaw = task.assigned_to ? Number(task.assigned_to) : null
+      const nextId = nextRaw && Number.isFinite(nextRaw) ? nextRaw : null
+      const prevId = prevRaw && Number.isFinite(prevRaw) ? prevRaw : null
+      if (nextId !== prevId) {
+        try {
+          await notifyTaskAssigneeChange(
+            db, c.env, user,
+            {
+              id,
+              title: data.title || task.title,
+              project_id: task.project_id,
+              priority: data.priority ?? task.priority,
+              due_date: data.due_date ?? task.due_date,
+            },
+            prevId,
+            nextId,
+          )
+        } catch (err: any) {
+          console.log('[task-assignee] notify failed: ' + (err?.message || err))
+        }
       }
     }
 
