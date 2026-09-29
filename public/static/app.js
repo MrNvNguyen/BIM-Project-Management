@@ -1067,6 +1067,8 @@ function setupMobileViewportGuards() {
     nav.classList.toggle('keyboard-hidden', shrunk)
     const dock = $('assistantDock')
     if (dock) dock.classList.toggle('keyboard-hidden', shrunk)
+    const projNav = $('projectDetailNav')
+    if (projNav) projNav.classList.toggle('keyboard-hidden', shrunk)
   }
   window.visualViewport.addEventListener('resize', sync)
   window.visualViewport.addEventListener('scroll', sync)
@@ -20182,7 +20184,7 @@ function renderLegalProjectInfo() {
   const contractTotal = packages.reduce((s, p) => s + (Number(p.contract_value) || 0), 0)
   const paidTotal = Array.isArray(_legalOverviewData.payments)
     ? _legalOverviewData.payments
-      .filter(p => _legalPaymentResolvePackageId(p))
+      .filter(p => _legalPaymentResolvePackageId(p) && (p.status === 'paid' || p.status === 'partial'))
       .reduce((s, p) => s + (Number(p.paid_amount) || 0), 0)
     : (Number(_legalOverviewData.paid_on_package) || 0)
   const dong = (n) => fmt(n) + ' đ'
@@ -23248,48 +23250,13 @@ function _legalPayPlain(n) {
   return new Intl.NumberFormat('vi-VN').format(Math.round(Number(n) || 0))
 }
 
-function _legalPaymentBookedFormulaText(p) {
-  if (!p || p.booked_revenue == null) return ''
-  const gross = Number(p.amount) || 0
-  if (gross <= 0) return ''
-  const feePct = Number(_legalOverviewData?.project?.management_fee_pct) || 0
-  const vatPct = Number(p.vat_pct) || 0
-  if (!vatPct && !feePct) return ''
-  const nt = p.amount_before_vat != null ? Number(p.amount_before_vat) : null
-  let text = '= ' + _legalPayPlain(gross)
-  if (vatPct > 0) {
-    text += ` ÷ (1+${vatPct}% VAT)`
-    if (nt != null) text += ` → ${_legalPayPlain(nt)}`
-  }
-  if (feePct > 0) text += ` × (1−${feePct}% phí QL)`
-  return text
-}
-
-function _legalPaymentSyncBookedFormula(rowEl, p) {
-  if (!rowEl) return
-  let formulaEl = rowEl.querySelector('.legal-payment-sheet-formula')
-  const text = _legalPaymentBookedFormulaText(p)
-  if (!text) {
-    if (formulaEl) formulaEl.remove()
-    return
-  }
-  if (!formulaEl) {
-    formulaEl = document.createElement('div')
-    formulaEl.className = 'legal-payment-sheet-formula'
-    formulaEl.title = 'Doanh thu sổ = nghiệm thu trước VAT × (1 − phí quản lý)'
-    rowEl.appendChild(formulaEl)
-  }
-  formulaEl.textContent = text
-}
-
 function _legalPatchPaymentRowMetrics(rowEl, p) {
   if (!rowEl || !p) return
   const amountCell = rowEl.querySelector('[data-pfield="amount"]')?.closest('.legal-payment-sheet-cell')
   amountCell?.querySelectorAll('.legal-payment-sheet-readonly').forEach(el => el.remove())
   const paidCell = rowEl.querySelector('[data-pfield="paid_amount"]')?.closest('.legal-payment-sheet-cell')
   paidCell?.querySelectorAll('.legal-payment-sheet-readonly').forEach(el => el.remove())
-  const invCell = rowEl.querySelector('[data-pfield="invoice_number"]')?.closest('.legal-payment-sheet-cell')
-  const bookedCell = invCell?.nextElementSibling
+  const bookedCell = rowEl.querySelector('[data-prole="booked"]')
   if (bookedCell?.classList?.contains('legal-payment-sheet-cell')) {
     if (p.booked_revenue != null) {
       bookedCell.innerHTML = `<div class="legal-payment-sheet-readonly"><strong>${fmtMoney(Number(p.booked_revenue))}</strong></div>`
@@ -23297,21 +23264,20 @@ function _legalPatchPaymentRowMetrics(rowEl, p) {
       bookedCell.innerHTML = '<span class="legal-payment-sheet-readonly">—</span>'
     }
   }
-  _legalPaymentSyncBookedFormula(rowEl, p)
 }
 
 async function legalPaymentCommitRow(ev, paymentId) {
-  if (_legalPaymentInlineBusy) return
+  if (_legalPaymentInlineBusy) return false
   const row = ev?.target?.closest?.('.legal-payment-sheet-row')
-  if (!row || !row.isConnected) return
+  if (!row || !row.isConnected) return false
   const rowData = _legalPaymentReadRow(row)
   const payload = buildPaymentPayloadFromRow(rowData)
   if (!payload.description) {
     if (!paymentId) {
-      if (!(payload.amount > 0)) return
+      if (!(payload.amount > 0)) return false
     } else {
       toast('Mô tả không được để trống', 'error')
-      return
+      return false
     }
   }
   if (!paymentId) {
@@ -23322,7 +23288,7 @@ async function legalPaymentCommitRow(ev, paymentId) {
   if (!paymentId && !String(payload.description || '').trim() && (payload.amount || 0) > 0) {
     payload.description = '(Chưa nhập mô tả)'
   }
-  if (paymentId && _legalPaymentPayloadUnchanged(paymentId, payload)) return
+  if (paymentId && _legalPaymentPayloadUnchanged(paymentId, payload)) return true
   _legalPaymentInlineBusy = true
   const willSync = _legalPaymentSyncToast(payload.status, payload.amount)
   try {
@@ -23350,8 +23316,10 @@ async function legalPaymentCommitRow(ev, paymentId) {
         || document.querySelector('#legalPaymentsTable .legal-payment-sheet-row.is-new [data-pfield="description"]')
       if (nextDesc) nextDesc.focus()
     }
+    return true
   } catch (err) {
     toast('Lỗi: ' + err.message, 'error')
+    return false
   } finally {
     _legalPaymentInlineBusy = false
   }
@@ -23361,13 +23329,94 @@ function legalPaymentRowKeydown(ev, paymentId) {
   if (ev.key === 'Enter') {
     if (_legalImeBlocksEnter(ev)) return
     ev.preventDefault()
-    legalPaymentCommitFlush(ev, paymentId || null)
+    const row = ev.target?.closest?.('.legal-payment-sheet-row')
+    if (row?.classList.contains('is-editing')) legalPaymentFinishEdit(ev, paymentId)
+    else legalPaymentCommitFlush(ev, paymentId || null)
   }
+}
+
+let _legalPaymentEditingId = null
+
+function _legalPaymentCountsAsCollected(status) {
+  return status === 'paid' || status === 'partial'
+}
+
+function _legalPaymentDraftHasContent(rowEl) {
+  if (!rowEl) return false
+  const desc = rowEl.querySelector('[data-pfield="description"]')?.value?.trim()
+  const amount = Number(parseMoneyVal(rowEl.querySelector('[data-pfield="amount"]'))) || 0
+  const paid = Number(parseMoneyVal(rowEl.querySelector('[data-pfield="paid_amount"]'))) || 0
+  const date = rowEl.querySelector('[data-pfield="request_date"]')?.value
+  return !!(desc || amount || paid || date)
+}
+
+function legalPaymentDraftInput(ev) {
+  const row = ev.target?.closest?.('.legal-payment-sheet-row.is-new')
+  if (!row) return
+  const saved = row.parentElement?.querySelectorAll('.legal-payment-sheet-row:not(.is-new)').length || 0
+  const stt = _legalPaymentDraftHasContent(row) ? String(saved + 1) : ''
+  const label = row.querySelector('[data-prole="stt"]')
+  if (label) label.textContent = stt
+  const phase = row.querySelector('[data-pfield="payment_phase"]')
+  if (phase) phase.value = stt
+}
+
+function _legalPaymentDateText(value) {
+  const m = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '—'
+}
+
+async function legalPaymentFinishEdit(ev, paymentId) {
+  if (Number(_legalPaymentEditingId) !== Number(paymentId)) return
+  const ok = await legalPaymentCommitFlush(ev, paymentId)
+  if (ok === false) return
+  if (Number(_legalPaymentEditingId) !== Number(paymentId)) return
+  _legalPaymentEditingId = null
+  renderPaymentStatus(_legalOverviewData?.payments || [])
+}
+
+function legalPaymentRowFocusOut(ev, paymentId) {
+  const row = ev.currentTarget
+  if (!row?.classList.contains('is-editing')) return
+  const next = ev.relatedTarget
+  if (next && row.contains(next)) return
+  setTimeout(() => {
+    if (!row.isConnected) return
+    if (row.contains(document.activeElement)) return
+    legalPaymentFinishEdit({ target: row }, paymentId)
+  }, 0)
+}
+
+function legalPaymentDisplayClick(ev, id) {
+  if (ev.target.closest('button, a, input, select')) return
+  const fieldEl = ev.target.closest('[data-edit-field]')
+  if (!fieldEl) return
+  legalPaymentBeginEdit(id, fieldEl.dataset.editField)
+}
+
+async function legalPaymentBeginEdit(id, field) {
+  const allowed = ['description', 'request_date', 'status', 'amount', 'paid_amount']
+  const focusField = allowed.includes(field) ? field : 'description'
+  const prev = _legalPaymentEditingId
+  if (prev && Number(prev) !== Number(id)) {
+    const row = document.querySelector('.legal-payment-sheet-row.is-editing')
+    if (row) {
+      const ok = await legalPaymentCommitFlush({ target: row }, prev)
+      if (ok === false) return
+    }
+  }
+  _legalPaymentEditingId = Number(id)
+  renderPaymentStatus(_legalOverviewData?.payments || [])
+  const el = document.querySelector(`.legal-payment-sheet-row.is-editing [data-pfield="${focusField}"]`)
+  if (!el) return
+  el.focus()
+  if (el.tagName === 'INPUT' && typeof el.select === 'function') el.select()
 }
 
 async function legalPaymentStatusChange(ev, paymentId) {
   legalPaymentRefreshTotals()
   const row = ev?.target?.closest?.('.legal-payment-sheet-row')
+  if (row) row.classList.toggle('is-paid', ev.target?.value === 'paid')
   if (row?.classList.contains('is-new')) return
   await legalPaymentCommitFlush(ev, paymentId || null)
 }
@@ -23425,11 +23474,13 @@ function _legalPaymentPackageLabel(packageKey) {
   return pkg?.name || 'gói'
 }
 
-function _renderLegalPaymentSheetRow(p, packageKey, isNew) {
-  const id = isNew ? 0 : p.id
+function _renderLegalPaymentSheetRow(p, packageKey, isNew, stt) {
   const idAttr = isNew ? '' : String(p.id)
+  const editing = !isNew && Number(_legalPaymentEditingId) === Number(p.id)
+  const display = !isNew && !editing
+  const statusVal = isNew ? 'pending' : (p.status || 'pending')
   const statusOpts = Object.keys(PAYMENT_STATUS_LABELS).map(k => {
-    const sel = (isNew ? 'pending' : p.status) === k ? ' selected' : ''
+    const sel = statusVal === k ? ' selected' : ''
     return `<option value="${k}"${sel}>${escHtml(PAYMENT_STATUS_LABELS[k])}</option>`
   }).join('')
   const amountFmt = _legalPaymentMoneyInputValue(p.amount)
@@ -23437,36 +23488,56 @@ function _renderLegalPaymentSheetRow(p, packageKey, isNew) {
   const bookedCell = !isNew && p.booked_revenue != null
     ? `<div class="legal-payment-sheet-readonly"><strong>${fmtMoney(Number(p.booked_revenue))}</strong></div>`
     : '<span class="legal-payment-sheet-readonly">—</span>'
-  const formulaText = !isNew ? _legalPaymentBookedFormulaText(p) : ''
   const delBtn = isNew ? '' : `<button type="button" class="text-red-400 hover:text-red-600" title="Xóa" onclick="deletePayment(${p.id})"><i class="fas fa-trash"></i></button>`
-  const rowClass = isNew ? 'legal-payment-sheet-row is-new' : 'legal-payment-sheet-row'
+  const paidClass = statusVal === 'paid' ? ' is-paid' : ''
+  const rowClass = (isNew ? 'legal-payment-sheet-row is-new' : (editing ? 'legal-payment-sheet-row is-editing' : 'legal-payment-sheet-row is-display')) + paidClass
   const commitId = isNew ? 'null' : String(p.id)
-
   const notesVal = escHtml(p.notes || '')
   const descPh = isNew
-    ? '+ Thêm dòng… (Enter để lưu, Tab để sang ô)'
+    ? 'Thêm dòng…'
     : 'Mô tả *'
   const descRequired = isNew ? '' : 'required'
-  return `
-    <div class="${rowClass}" data-payment-id="${idAttr}">
-      <input type="hidden" data-pfield="notes" value="${notesVal}">
-      <input type="hidden" data-pfield="paid_date" value="${escHtml(p.paid_date || '')}">
-      <div class="legal-payment-sheet-cell"><input data-pfield="payment_phase" value="${escHtml(p.payment_phase || '')}" placeholder="Đợt" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
+  const rowAttrs = isNew
+    ? ' oninput="legalPaymentDraftInput(event)"'
+    : (editing
+      ? ` onfocusout="legalPaymentRowFocusOut(event, ${commitId})"`
+      : ` onclick="legalPaymentDisplayClick(event, ${p.id})"`)
+  const sttText = display || editing ? String(stt || '') : ''
+  const amountNum = Number(p.amount) || 0
+  const paidNum = Number(p.paid_amount) || 0
+  const fields = display ? `
+      <input type="hidden" data-pfield="status" value="${escHtml(statusVal)}">
+      <input type="hidden" data-pfield="amount" data-money="1" data-raw-val="${amountNum || ''}" value="${amountNum || ''}">
+      <input type="hidden" data-pfield="paid_amount" data-money="1" data-raw-val="${paidNum || ''}" value="${paidNum || ''}">
+      <div class="legal-payment-sheet-stt" data-prole="stt">${escHtml(sttText)}</div>
+      <div class="legal-payment-sheet-text is-editable" data-edit-field="description">${escHtml(p.description || '')}</div>
+      <div class="legal-payment-sheet-text is-editable" data-edit-field="request_date">${_legalPaymentDateText(p.request_date)}</div>
+      <div class="legal-payment-sheet-text is-editable" data-edit-field="status"><span class="legal-payment-status-pill">${escHtml(PAYMENT_STATUS_LABELS[statusVal] || statusVal)}</span></div>
+      <div class="legal-payment-sheet-text money is-editable" data-edit-field="amount">${amountNum ? _legalPayPlain(amountNum) : '—'}</div>
+      <div class="legal-payment-sheet-text money is-editable" data-edit-field="paid_amount">${paidNum ? _legalPayPlain(paidNum) : '—'}</div>
+    ` : `
+      <div class="legal-payment-sheet-stt" data-prole="stt">${escHtml(sttText)}</div>
       <div class="legal-payment-sheet-cell"><input data-pfield="description" value="${escHtml(p.description || '')}" placeholder="${descPh}" ${descRequired} onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
-      <div class="legal-payment-sheet-cell"><input data-pfield="request_number" value="${escHtml(p.request_number || '')}" placeholder="Số YC" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
       <div class="legal-payment-sheet-cell"><input type="date" data-pfield="request_date" value="${escHtml(p.request_date || '')}" title="Ngày nghiệm thu" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
       <div class="legal-payment-sheet-cell"><select data-pfield="status" onchange="legalPaymentStatusChange(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})">${statusOpts}</select></div>
       <div class="legal-payment-sheet-cell">
         <input class="legal-payment-money" data-pfield="amount" data-money="1" data-raw-val="${p.amount || ''}" value="${amountFmt}" placeholder="0" oninput="moneyInputFmt(this); legalPaymentRefreshTotals()" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})">
       </div>
-      <div class="legal-payment-sheet-cell"><input data-pfield="vat_pct" type="number" readonly tabindex="-1" value="${_legalProjectVatPct()}" title="Lấy từ % VAT hợp đồng của dự án"></div>
       <div class="legal-payment-sheet-cell">
         <input class="legal-payment-money" data-pfield="paid_amount" data-money="1" data-raw-val="${p.paid_amount || ''}" value="${paidFmt}" placeholder="0" oninput="moneyInputFmt(this); legalPaymentRefreshTotals()" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})">
       </div>
-      <div class="legal-payment-sheet-cell"><input data-pfield="invoice_number" value="${escHtml(p.invoice_number || '')}" placeholder="Số HĐ" onblur="legalPaymentCommitDebounced(event, ${commitId})" onkeydown="legalPaymentRowKeydown(event, ${commitId})"></div>
-      <div class="legal-payment-sheet-cell">${bookedCell}</div>
+    `
+  return `
+    <div class="${rowClass}" data-payment-id="${idAttr}"${rowAttrs}>
+      <input type="hidden" data-pfield="notes" value="${notesVal}">
+      <input type="hidden" data-pfield="paid_date" value="${escHtml(p.paid_date || '')}">
+      <input type="hidden" data-pfield="request_number" value="${escHtml(p.request_number || '')}">
+      <input type="hidden" data-pfield="invoice_number" value="${escHtml(p.invoice_number || '')}">
+      <input type="hidden" data-pfield="payment_phase" value="${escHtml(isNew ? '' : (p.payment_phase || ''))}">
+      <input type="hidden" data-pfield="vat_pct" value="${_legalProjectVatPct()}">
+      ${fields}
+      <div class="legal-payment-sheet-cell legal-payment-sheet-booked" data-prole="booked">${bookedCell}</div>
       <div class="legal-payment-sheet-actions legal-payment-sheet-cell">${delBtn}</div>
-      ${formulaText ? `<div class="legal-payment-sheet-formula" title="Doanh thu sổ = nghiệm thu trước VAT × (1 − phí quản lý)">${escHtml(formulaText)}</div>` : ''}
     </div>`
 }
 
@@ -23505,12 +23576,12 @@ function legalPaymentRefreshTotals() {
     card.querySelectorAll('.legal-payment-sheet-row').forEach(row => {
       const amount = Number(parseMoneyVal(row.querySelector('[data-pfield="amount"]'))) || 0
       const paid = Number(parseMoneyVal(row.querySelector('[data-pfield="paid_amount"]'))) || 0
-      const vat = parseFloat(row.querySelector('[data-pfield="vat_pct"]')?.value) || 0
+      const vat = _legalProjectVatPct()
       const status = row.querySelector('[data-pfield="status"]')?.value || 'pending'
       const isNew = row.classList.contains('is-new')
       gross += amount
       totalNt += calcRevenueNet(amount, vat, 0)
-      totalCash += calcRevenueNet(paid, vat, 0)
+      if (_legalPaymentCountsAsCollected(status)) totalCash += calcRevenueNet(paid, vat, 0)
       if (!isNew) {
         count += 1
         if (status === 'pending' || status === 'processing') pending += 1
@@ -23537,7 +23608,10 @@ function renderPaymentStatus(payments) {
 
   const total = packagedPayments.length
   const totalAmount = packagedPayments.reduce((s, p) => s + (p.amount_before_vat != null ? Number(p.amount_before_vat) : calcRevenueNet(p.amount||0, p.vat_pct||0, 0)), 0)
-  const paidAmount = packagedPayments.reduce((s, p) => s + (p.cash_before_vat != null ? Number(p.cash_before_vat) : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0)), 0)
+  const paidAmount = packagedPayments.reduce((s, p) => {
+    if (!_legalPaymentCountsAsCollected(p.status)) return s
+    return s + (p.cash_before_vat != null ? Number(p.cash_before_vat) : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0))
+  }, 0)
   const pending = packagedPayments.filter(p => p.status === 'pending' || p.status === 'processing').length
 
   if (summaryEl) legalPaymentPaintSummary(total, totalAmount, paidAmount, pending)
@@ -23548,8 +23622,8 @@ function renderPaymentStatus(payments) {
   }))
 
   const sheetHead = `<div class="legal-payment-sheet-head">
-        <span>Đợt</span><span>Mô tả</span><span>Số YC</span><span>Ngày nghiệm thu</span><span>Trạng thái</span>
-        <span>Nghiệm thu</span><span>VAT%</span><span>Đã thu</span><span>Số HĐ</span><span>DT sổ</span><span></span>
+        <span>STT</span><span>Mô tả</span><span>Ngày nghiệm thu</span><span>Trạng thái</span>
+        <span>Nghiệm thu</span><span>Đã thu</span><span>DT sổ</span><span></span>
       </div>`
   const blankRow = {
     payment_phase: '', description: '', request_number: '', request_date: '', status: 'pending',
@@ -23566,11 +23640,11 @@ function renderPaymentStatus(payments) {
         <span class="legal-payment-package-total">Tổng: ${fmtMoney(gross)}</span>
       </div>
       <div class="legal-payment-sheet">${sheetHead}`
-    rows.forEach(p => { html += _renderLegalPaymentSheetRow(p, g.key, false) })
-    html += _renderLegalPaymentSheetRow(blankRow, g.key, true)
+    rows.forEach((p, i) => { html += _renderLegalPaymentSheetRow(p, g.key, false, i + 1) })
+    html += _renderLegalPaymentSheetRow(blankRow, g.key, true, '')
     html += '</div></section>'
   })
-  html += `<p class="text-xs mt-2" style="color:var(--shell-text-muted)">Dòng cuối mỗi gói: Tab chỉ chuyển ô. Bấm Enter khi nhập xong để lưu. DT sổ = nghiệm thu ÷ (1+VAT) × (1 − phí QL), ghi ngay dưới số.</p>`
+  html += `<p class="text-xs mt-2" style="color:var(--shell-text-muted)">STT tự điền khi dòng có nội dung. Bấm vào ô để sửa, Enter hoặc bấm ra ngoài để lưu.</p>`
   container.innerHTML = html
 }
 

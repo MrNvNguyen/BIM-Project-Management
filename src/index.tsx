@@ -13302,7 +13302,7 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
       db.prepare(
         `SELECT COALESCE(SUM(paid_amount), 0) AS paid
          FROM payment_requests
-         WHERE project_id = ? AND ${paymentOnPackageSql('payment_requests')}`
+         WHERE project_id = ? AND status IN ('paid', 'partial') AND ${paymentOnPackageSql('payment_requests')}`
       ).bind(projectId),
     ])
     const pkgs = core[0]

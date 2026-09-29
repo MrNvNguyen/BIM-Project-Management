@@ -405,6 +405,7 @@
       align-items: center;
       gap: 4px;
     }
+    #projectDetailNav .proj-nav-label { display: none; }
     .top-bar #breadcrumb { color: var(--shell-text-muted); }
     .top-bar #topbarName { color: var(--shell-text); }
     .top-bar #topbarRole { color: var(--shell-text-muted); }
@@ -812,21 +813,18 @@
       display: grid;
       width: 100%;
       grid-template-columns:
-        32px
-        minmax(82px, 1.6fr)
-        44px
-        100px
-        140px
-        minmax(80px, 1fr)
-        44px
-        minmax(80px, 1fr)
-        minmax(52px, 0.55fr)
-        minmax(68px, 0.65fr)
-        22px;
-      column-gap: 4px;
-      row-gap: 2px;
-      align-items: start;
-      padding: 6px 8px;
+        40px
+        minmax(160px, 2.4fr)
+        118px
+        158px
+        minmax(112px, 1fr)
+        minmax(112px, 1fr)
+        minmax(108px, 0.9fr)
+        32px;
+      column-gap: 10px;
+      row-gap: 0;
+      align-items: center;
+      padding: 8px 12px;
     }
     .legal-payment-sheet-head {
       font-size: 10px;
@@ -842,10 +840,21 @@
       align-items: end;
       white-space: normal;
     }
-    .legal-payment-sheet-head > span { line-height: 1.15; }
+    .legal-payment-sheet-head > span { line-height: 1.2; }
+    .legal-payment-sheet-head > span:nth-child(1) { text-align: center; }
+    .legal-payment-sheet-head > span:nth-child(n+5):not(:last-child) { text-align: right; }
     .legal-payment-sheet-row { border-bottom: 1px solid var(--shell-table-row-border); font-size: 12px; }
+    .legal-payment-sheet-row > input[type="hidden"] { display: none; }
     .legal-payment-sheet-row:last-child { border-bottom: none; }
     .legal-payment-sheet-row:hover { background: var(--shell-row-hover); }
+    .legal-payment-sheet-row.is-paid { background: #d1fae5; }
+    .legal-payment-sheet-row.is-paid:hover { background: #bbf7d0; }
+    .legal-payment-sheet-row.is-paid .legal-payment-sheet-text,
+    .legal-payment-sheet-row.is-paid .legal-payment-sheet-stt { color: #064e3b; }
+    html[data-theme="dark"] .legal-payment-sheet-row.is-paid { background: rgba(16, 185, 129, 0.28); }
+    html[data-theme="dark"] .legal-payment-sheet-row.is-paid:hover { background: rgba(16, 185, 129, 0.38); }
+    html[data-theme="dark"] .legal-payment-sheet-row.is-paid .legal-payment-sheet-text,
+    html[data-theme="dark"] .legal-payment-sheet-row.is-paid .legal-payment-sheet-stt { color: #ecfdf5; }
     .legal-payment-sheet-row.is-new { background: rgba(0, 166, 81, 0.04); }
     html[data-theme="dark"] .legal-payment-sheet-row.is-new { background: rgba(0, 166, 81, 0.08); }
     .legal-payment-sheet-cell {
@@ -869,17 +878,7 @@
       min-height: 30px;
       min-width: 0;
     }
-    .legal-payment-sheet-formula {
-      grid-column: 6 / 11;
-      justify-self: end;
-      max-width: 100%;
-      font-size: 11px;
-      line-height: 1.35;
-      color: var(--shell-text-muted);
-      white-space: nowrap;
-      text-align: right;
-      padding: 0 0 2px;
-    }
+    .legal-payment-sheet-booked { align-items: flex-end; justify-content: center; text-align: right; min-height: 32px; }
     .legal-payment-sheet-cell input:focus,
     .legal-payment-sheet-cell select:focus {
       outline: 2px solid rgba(0, 166, 81, 0.35);
@@ -909,7 +908,25 @@
     }
     .legal-payment-sheet-readonly { font-size: 11px; color: var(--shell-text-muted); line-height: 1.35; white-space: normal; }
     .legal-payment-sheet-readonly strong { color: var(--shell-text); font-weight: 600; }
-    .legal-payment-sheet-actions { display: flex; flex-direction: row; align-items: center; justify-content: center; min-height: 32px; gap: 2px; }
+    .legal-payment-sheet-actions { display: flex; flex-direction: row; align-items: center; justify-content: center; min-height: 32px; }
+    .legal-payment-sheet-stt { display: flex; align-items: center; justify-content: center; min-height: 32px; font-size: 12px; font-weight: 700; color: var(--shell-text-muted); }
+    .legal-payment-sheet-text { display: flex; align-items: center; min-height: 32px; font-size: 13px; line-height: 1.35; color: var(--shell-text); overflow-wrap: anywhere; border-radius: 6px; }
+    .legal-payment-sheet-text.money { justify-content: flex-end; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .legal-payment-sheet-text.is-editable { cursor: pointer; }
+    .legal-payment-sheet-text.is-editable:hover { background: rgba(0, 166, 81, 0.12); }
+    .legal-payment-status-pill {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.2;
+      background: var(--shell-input-bg);
+      border: 1px solid var(--shell-border);
+      white-space: nowrap;
+    }
     .legal-cost-a-page-total { font-size: 14px; font-weight: 700; color: var(--primary); margin-bottom: 12px; }
     .legal-cost-a-card { border: 1px solid var(--shell-border); border-radius: 10px; margin-bottom: 16px; overflow: hidden; background: var(--shell-surface); }
     .legal-cost-a-card-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--shell-table-head-bg); border-bottom: 1px solid var(--shell-border); font-weight: 700; font-size: 13px; }
@@ -1529,7 +1546,22 @@
       .kpi-card { padding: 14px; }
       .card { padding: 14px; }
       .top-bar { padding: env(safe-area-inset-top, 0px) 8px 0; gap: 4px; }
-      #projectDetailNav { top: calc(68px + env(safe-area-inset-top, 0px)); right: 12px; }
+      #projectDetailNav {
+        top: auto;
+        left: 12px;
+        right: 76px;
+        bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+        justify-content: space-between;
+        padding: 4px;
+        border-radius: 999px;
+        background: var(--shell-surface, #fff);
+        border: 1px solid var(--shell-border, #e5e7eb);
+        box-shadow: 0 8px 20px rgba(0,0,0,.16);
+      }
+      #projectDetailNav.keyboard-hidden { display: none !important; }
+      #projectDetailNav button { min-width: 44px; min-height: 44px; border-radius: 999px; }
+      #projectDetailNav .proj-nav-label { display: inline; margin-left: 6px; font-size: 13px; font-weight: 700; }
+      #page-project-detail { padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
       .top-bar .mr-4 { margin-right: 0; }
       #breadcrumb { max-width: 26vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .theme-toggle-btn { padding: 6px 8px; font-size: 11px; }
@@ -2538,8 +2570,8 @@
             <p class="text-gray-500 text-sm" id="projectDetailCode"></p>
           </div>
           <div id="projectDetailNav" class="flex items-center gap-1">
-            <button type="button" id="projPrevBtn" onclick="openAdjacentProject(-1)" class="btn-secondary text-xs px-2 py-1.5" title="Dự án trước" disabled><i class="fas fa-chevron-left"></i></button>
-            <button type="button" id="projNextBtn" onclick="openAdjacentProject(1)" class="btn-secondary text-xs px-2 py-1.5" title="Dự án tiếp theo" disabled><i class="fas fa-chevron-right"></i></button>
+            <button type="button" id="projPrevBtn" onclick="openAdjacentProject(-1)" class="btn-secondary text-xs px-3 py-1.5" title="Dự án trước" disabled><i class="fas fa-chevron-left"></i><span class="proj-nav-label">Trước</span></button>
+            <button type="button" id="projNextBtn" onclick="openAdjacentProject(1)" class="btn-secondary text-xs px-3 py-1.5" title="Dự án tiếp theo" disabled><span class="proj-nav-label">Tiếp</span><i class="fas fa-chevron-right"></i></button>
           </div>
           <span id="projectDetailStatus" class="badge ml-auto"></span>
         </div>
@@ -7920,7 +7952,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260929u"></script>
+<script src="/static/app.js?v=20260929z"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
