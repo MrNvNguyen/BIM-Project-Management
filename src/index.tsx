@@ -252,7 +252,7 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
         ${emailDivider()}
         <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Bạn không còn là người phụ trách task này.</p>`
       return {
-        subject: `[OneCad BIM] Task đổi người phụ trách: ${data.taskTitle}`,
+        subject: `[OneCad BIM] Bạn không còn phụ trách task: ${data.taskTitle}`,
         html: emailBase(`Task đã chuyển người phụ trách`, body)
       }
     }
@@ -1071,7 +1071,8 @@ async function notifyTaskAssigneeChange(
     eventType: string,
     data: Record<string, any>,
   ) => {
-    if (!userId || userId === actor.id) return
+    if (!userId) return
+    if (eventType !== 'task_reassigned_from' && Number(userId) === Number(actor.id)) return
     try {
       await db.prepare(
         'INSERT INTO notifications (user_id, title, message, type, related_type, related_id) VALUES (?, ?, ?, ?, ?, ?)'
