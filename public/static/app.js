@@ -20584,7 +20584,7 @@ function renderLegalCostA(data) {
       const overrideDisplay = r.amount_override != null ? fmt(Math.round(r.amount_override)) : ''
       const ref = [r.payment_phase, r.description].filter(Boolean).join(' — ') || `#${r.payment_request_id}`
       const pctVal = r.cost_a_pct == null || r.cost_a_pct === '' ? '30' : String(r.cost_a_pct)
-      return `<tr data-cost-a-id="${r.payment_request_id}"
+      return `<tr${r.spend_status === 'spent' ? ' class="is-spent"' : ''} data-cost-a-id="${r.payment_request_id}"
         data-override-active="${r.amount_override != null ? '1' : '0'}"
         data-override-value="${r.amount_override != null ? Math.round(r.amount_override) : ''}">
         <td class="legal-cost-a-idx">${idx + 1}</td>
@@ -20720,6 +20720,8 @@ function legalCostANoteBlur(ev) {
 }
 
 function legalCostASpendChange(paymentId, sel) {
+  const row = sel?.closest('tr')
+  if (row) row.classList.toggle('is-spent', sel.value === 'spent')
   legalCostAPatchRow(paymentId, false)
 }
 

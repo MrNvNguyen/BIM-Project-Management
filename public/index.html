@@ -936,6 +936,10 @@
     .legal-cost-a-table th { font-size: 11px; font-weight: 600; color: var(--shell-text-muted); background: var(--shell-input-bg); line-height: 1.25; white-space: nowrap; vertical-align: bottom; }
     .legal-cost-a-table th.legal-cost-a-th-wrap { white-space: normal; }
     .legal-cost-a-table tr:last-child td { border-bottom: none; }
+    .legal-cost-a-table tr.is-spent td { background: #d1fae5; color: #064e3b; }
+    .legal-cost-a-table tr.is-spent:hover td { background: #bbf7d0; }
+    html[data-theme="dark"] .legal-cost-a-table tr.is-spent td { background: rgba(16, 185, 129, 0.28); color: #ecfdf5; }
+    html[data-theme="dark"] .legal-cost-a-table tr.is-spent:hover td { background: rgba(16, 185, 129, 0.38); }
     .legal-cost-a-table input[type="text"], .legal-cost-a-table select, .legal-cost-a-table textarea {
       width: 100%; min-width: 0; box-sizing: border-box; padding: 4px 6px; border: 1px solid var(--shell-border); border-radius: 6px;
       background: var(--shell-input-bg); color: var(--shell-text); font-size: 12px;
@@ -7952,7 +7956,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260929z"></script>
+<script src="/static/app.js?v=20260929aa"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
