@@ -19,6 +19,7 @@ let execState = {
   legalDetailLoading: false,
   legalCollapsed: {},      // { packageId_stageId: true/false }
   legalSubTab: 'items',   // 'items' | 'letters' | 'minutes'
+  legalPackageId: null,   // sheet gói thầu đang xem (chỉ đọc)
 }
 
 // ─── Formatters ─────────────────────────────────
@@ -160,8 +161,15 @@ async function exec_loadProjects() {
 
   if (execState.currentProjectId) {
     const still = execState.projects.find(p => p.id === execState.currentProjectId)
-    if (still) exec_highlightProject(execState.currentProjectId)
-    else { execState.currentProjectId = null; execState.currentOverview = null; exec_renderRightPanel() }
+    if (still) {
+      exec_highlightProject(execState.currentProjectId)
+      execState.legalDetail = null
+      const pid = execState.currentProjectId
+      await exec_loadOverview(pid)
+      if (execState.activeTab === 'legal' && execState.currentProjectId === pid) {
+        await exec_loadLegalDetail(pid)
+      }
+    } else { execState.currentProjectId = null; execState.currentOverview = null; exec_renderRightPanel() }
   } else if (execState.projects.length > 0) {
     exec_selectProject(execState.projects[0].id)
   }
@@ -171,7 +179,17 @@ async function exec_loadOverview(projectId) {
   execState.detailLoading = true
   exec_renderRightPanel()
   try {
-    execState.currentOverview = await execFetch(`/api/executive/project-overview/${projectId}`)
+    const [overview, book] = await Promise.all([
+      execFetch(`/api/executive/project-overview/${projectId}`),
+      execFetch(`/api/legal/${projectId}/contacts`).catch(() => null),
+    ])
+    if (book) {
+      overview.contacts = book.contacts || []
+      overview.contact_logs = book.contactLogs || []
+    } else {
+      overview.contact_logs = overview.contact_logs || []
+    }
+    execState.currentOverview = overview
   } catch (e) {
     console.error('exec_loadOverview:', e)
     execState.currentOverview = null
@@ -186,6 +204,7 @@ function exec_selectProject(projectId) {
   execState.legalDetail = null         // reset khi chuyển project
   execState.legalDetailLoading = false
   execState.legalSubTab = 'items'      // reset về tab đầu
+  execState.legalPackageId = null
   exec_highlightProject(projectId)
   exec_loadOverview(projectId)
 }
@@ -362,7 +381,7 @@ function exec_renderRightPanel() {
         const budgetDebtPct = budgetOk ? Math.round(budgetDebt / f.budget * 100) : 0
         const budgetPositive = budgetDebt >= 0
         return `
-        <div class="grid grid-cols-4 gap-2 mt-2">
+        <div class="grid grid-cols-4 gap-2 mt-2 exec-budget-kpis">
           <div class="bg-indigo-50 rounded-xl p-2 text-center border border-indigo-100">
             <p class="text-xs text-gray-500 flex items-center justify-center gap-1">
               <i class="fas fa-wallet text-indigo-400"></i> Ngân sách
@@ -480,49 +499,51 @@ function exec_switchTab(tabId) {
 // TAB 1: TỔNG QUAN
 // Nội dung: Tasks | Vướng mắc | Đầu mối | Hồ sơ summary | Văn bản gần đây
 // ═══════════════════════════════════════════════════
+function exec_latestContactLogs(logs, limit) {
+  const ranked = (logs || []).map((log, i) => ({ log, i }))
+  ranked.sort((a, b) => {
+    const ka = String(a.log.createdAt || a.log.date || '')
+    const kb = String(b.log.createdAt || b.log.date || '')
+    if (ka !== kb) return kb.localeCompare(ka)
+    return a.i - b.i
+  })
+  return ranked.slice(0, limit).map(row => row.log)
+}
+
+function exec_openLegalContacts() {
+  const id = execState.currentProjectId
+  if (typeof openLegalContactJournal === 'function') openLegalContactJournal(id)
+}
+
 function exec_tab_overview(ov) {
   const p = ov.project
-  const t = ov.tasks || {}
+  const packages = ov.bid_packages || []
+  const contacts = ov.contacts || []
+  const contactLogs = exec_latestContactLogs(ov.contact_logs || [], 5)
+  const contactLogTotal = (ov.contact_logs || []).length
 
   return `<div class="space-y-4">
 
-    <!-- Row 1: Tasks + Vướng mắc -->
+    <!-- Row 1: Gói thầu + Vướng mắc -->
     <div class="grid grid-cols-2 gap-3">
 
-      <!-- Tasks -->
       <div class="bg-gray-50 rounded-xl p-3">
         <p class="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">
-          <i class="fas fa-tasks mr-1 text-blue-400"></i> Tiến độ công việc
+          <i class="fas fa-file-contract mr-1 text-blue-400"></i> Gói thầu
+          <span class="ml-1 normal-case font-semibold text-gray-500">${packages.length} gói</span>
         </p>
-        <div class="grid grid-cols-4 gap-1 text-center mb-2">
-          <div class="bg-white rounded-lg p-2">
-            <p class="text-xl font-bold text-gray-700">${t.total||0}</p>
-            <p class="text-xs text-gray-400">Tổng</p>
-          </div>
-          <div class="bg-blue-50 rounded-lg p-2">
-            <p class="text-xl font-bold text-blue-600">${t.in_progress||0}</p>
-            <p class="text-xs text-gray-400">Đang làm</p>
-          </div>
-          <div class="bg-green-50 rounded-lg p-2">
-            <p class="text-xl font-bold text-green-600">${t.done||0}</p>
-            <p class="text-xs text-gray-400">Xong</p>
-          </div>
-          <div class="bg-red-50 rounded-lg p-2">
-            <p class="text-xl font-bold text-red-600">${t.overdue||0}</p>
-            <p class="text-xs text-gray-400">Trễ</p>
-          </div>
-        </div>
-        ${p.current_phase ? `<div class="text-xs text-blue-700 bg-blue-50 rounded-lg px-2 py-1.5 font-medium">📍 ${p.current_phase}</div>` : ''}
-        ${p.next_milestone ? `
-        <div class="mt-1.5 bg-white border border-blue-100 rounded-lg px-2 py-1.5">
-          <p class="text-xs text-gray-400">Mốc kế tiếp · ${exec_fmtDate(p.next_milestone_date)}</p>
-          <p class="text-xs font-semibold text-blue-700">${p.next_milestone}</p>
-        </div>` : ''}
-        ${p.health_score != null ? `
-        <div class="mt-1.5 flex items-center gap-2">
-          <span class="text-base">${exec_healthDot(p.health_score)}</span>
-          <span class="text-xs text-gray-600">Sức khỏe DA: <strong>${p.health_score}/100</strong></span>
-        </div>` : ''}
+        ${packages.length === 0
+          ? `<p class="text-xs text-gray-400 italic">Chưa có gói thầu. Thêm ở Hồ sơ pháp lý → Thông tin dự án.</p>`
+          : `<div class="space-y-1.5 max-h-40 overflow-y-auto">
+            ${packages.map(pkg => `
+            <div class="bg-white rounded-lg px-2 py-1.5">
+              <div class="flex items-start justify-between gap-2">
+                <p class="text-xs font-semibold text-gray-800 leading-tight">${exec_escapeHtml(pkg.name || '')}${pkg.code ? ` <span class="font-normal text-gray-400">${exec_escapeHtml(pkg.code)}</span>` : ''}</p>
+                <span class="text-xs font-bold text-[#00A651] whitespace-nowrap">${exec_fmtMoney(pkg.contract_value)}</span>
+              </div>
+              <p class="text-xs text-gray-400 mt-0.5">${exec_fmtDate(pkg.start_date)} → ${exec_fmtDate(pkg.end_date)}</p>
+            </div>`).join('')}
+          </div>`}
       </div>
 
       <!-- Vướng mắc -->
@@ -550,11 +571,37 @@ function exec_tab_overview(ov) {
       <p class="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">
         <i class="fas fa-address-book mr-1 text-[#00A651]"></i> Đầu mối liên hệ
       </p>
-      <div class="grid grid-cols-4 gap-2">
-        ${exec_contactCard('TVTK', 'fa-pencil-ruler', 'blue',   p.tvtk_name, p.tvtk_contact, p.tvtk_phone)}
-        ${exec_contactCard('CĐT',  'fa-building',     'purple', p.cdt_name||p.client, p.cdt_contact||p.client_contact_name, p.cdt_phone||p.client_contact_phone)}
-        ${exec_contactCard('QLDA', 'fa-user-tie',     'orange', p.qlda_name, p.qlda_contact, p.qlda_phone)}
-        ${exec_contactCard('Nhà thầu','fa-hard-hat',  'red',    p.nthau_name, p.nthau_contact, p.nthau_phone)}
+      ${contacts.length === 0
+        ? `<p class="text-xs text-gray-400 italic">Chưa có đầu mối. Thêm ở Hồ sơ pháp lý → Contact Liên Hệ.</p>`
+        : `<div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+          ${contacts.map(c => `
+          <div class="bg-gray-50 rounded-xl p-2.5">
+            <p class="text-xs font-semibold text-gray-800 leading-tight">${exec_escapeHtml(c.name || '')}</p>
+            ${c.role ? `<p class="text-xs text-indigo-500 mt-0.5">${exec_escapeHtml(c.role)}</p>` : ''}
+            ${c.phone ? `<a href="tel:${exec_escapeHtml(c.phone)}" class="text-xs font-mono text-[#00A651] hover:underline block mt-1">${exec_escapeHtml(c.phone)}</a>` : ''}
+            ${c.email ? `<p class="text-xs text-gray-500 truncate">${exec_escapeHtml(c.email)}</p>` : ''}
+          </div>`).join('')}
+        </div>`}
+      <div class="mt-3 pt-3 border-t border-gray-100">
+        <div class="flex items-center justify-between mb-2">
+          <p class="text-xs font-bold text-gray-400 uppercase tracking-wide">
+            <i class="fas fa-comment-dots mr-1 text-[#00A651]"></i> Ghi chú và nhật ký trao đổi
+          </p>
+          <button type="button" onclick="exec_openLegalContacts()" class="text-xs text-[#00A651] hover:underline">Xem →</button>
+        </div>
+        ${contactLogs.length === 0
+          ? `<p class="text-xs text-gray-400 italic">Chưa có nhật ký. Ghi ở Hồ sơ pháp lý → Contact Liên Hệ.</p>`
+          : `<div class="space-y-2">
+            ${contactLogTotal > 5 ? `<p class="text-xs text-gray-400">5 trao đổi mới nhất</p>` : ''}
+            ${contactLogs.map(log => `
+            <div class="bg-gray-50 rounded-lg px-2.5 py-2">
+              <p class="text-xs text-gray-700">
+                <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-white border border-gray-200">${exec_escapeHtml(log.date ? exec_fmtDate(log.date) : '—')}</span>
+                <span class="ml-1">Người làm việc: <strong>${exec_escapeHtml(log.person || log.contactPerson || '')}</strong></span>
+              </p>
+              <p class="text-xs text-gray-600 mt-1 whitespace-pre-wrap">${exec_escapeHtml(log.content || '')}</p>
+            </div>`).join('')}
+          </div>`}
       </div>
       ${(p.leader_name||p.pm_name) ? `
       <div class="mt-2 pt-2 border-t border-gray-100 flex gap-4 flex-wrap text-xs text-gray-600">
@@ -760,61 +807,41 @@ const EXEC_LEGAL_STATUS_LABELS = {
   na: 'Không áp dụng',
 }
 
-function exec_legalRingNextStatus(status) {
-  const s = status || 'pending'
-  if (s === 'completed') return 'pending'
-  if (s === 'na') return 'pending'
-  return 'completed'
+function exec_legalItemCount(stages) {
+  return (stages || []).reduce((n, s) => {
+    return n + (s.items || []).reduce((a, it) => a + 1 + ((it.children || []).length), 0)
+  }, 0)
 }
 
-// ─── Wave C checklist row (exec PMO — no app.js coupling) ───
+function exec_legalActivePackage(packages) {
+  if (!packages.length) return null
+  const found = packages.find(p => String(p.id) === String(execState.legalPackageId))
+  return found || packages[0]
+}
+
+// ─── Checklist row — chỉ đọc, hoàn thành thì tô nền ───
 function exec_legal_checklistRow(item, stageId, isChild) {
   const isDone = item.status === 'completed'
   const isInprog = item.status === 'in_progress'
   const isNa = item.status === 'na'
   const ringClass = isDone ? 'done' : isInprog ? 'progress' : isNa ? 'na' : 'pending'
-  const ringLabel = isDone ? 'Bỏ đánh dấu hoàn thành' : 'Đánh dấu hoàn thành'
   const dueOverdue = item.due_date && new Date(item.due_date) < new Date() && !isDone
   const statusKey = item.status && EXEC_LEGAL_STATUS_LABELS[item.status] ? item.status : 'pending'
   const statusClass = `legal-status-${statusKey}`
-  const titleClass = isDone ? ' legal-checklist-title-done' : ''
-  const statusOptions = Object.keys(EXEC_LEGAL_STATUS_LABELS).map(k => {
-    const sel = item.status === k ? ' selected' : ''
-    return `<option value="${k}"${sel}>${exec_escapeHtml(EXEC_LEGAL_STATUS_LABELS[k])}</option>`
-  }).join('')
-  const parentAttr = item.parent_id != null ? String(item.parent_id) : ''
+  const childCell = isChild
+    ? `<span class="legal-checklist-child-tag">Công việc con</span>`
+    : `<span></span>`
+  const dueText = item.due_date ? exec_fmtDate(item.due_date) : '—'
 
   return `
-    <div class="legal-checklist-row${isChild ? ' is-child' : ''}${dueOverdue ? ' is-overdue' : ''}"
+    <div class="legal-checklist-row${isChild ? ' is-child' : ''}${dueOverdue ? ' is-overdue' : ''}${isDone ? ' is-done' : ''}"
          data-legal-item-id="${item.id}"
-         data-stage-id="${stageId}"
-         data-parent-id="${parentAttr}"
-         data-is-child="${isChild ? '1' : '0'}">
-      <button type="button" class="legal-checklist-status-ring ${ringClass}"
-        aria-label="${exec_escapeHtml(ringLabel)}" aria-pressed="${isDone ? 'true' : 'false'}"
-        title="${exec_escapeHtml(ringLabel)}"
-        onclick="event.stopPropagation();exec_legalStatusRingClick(${item.id})"></button>
-      <span class="legal-checklist-title legal-checklist-inline-title${titleClass}"
-            contenteditable="true"
-            spellcheck="false"
-            data-field="title"
-            data-item-id="${item.id}"
-            onclick="event.stopPropagation()"
-            onblur="exec_legalSaveCell(${item.id},'title',this.innerText.trim())"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
-            role="textbox"
-            aria-label="Tên hạng mục">${exec_escapeHtml(item.title || '')}</span>
-      <input type="date"
-        class="legal-checklist-inline-date"
-        value="${item.due_date || ''}"
-        onclick="event.stopPropagation()"
-        onchange="exec_legalSaveCell(${item.id},'due_date',this.value)"
-        title="Hạn thực hiện"
-        aria-label="Hạn thực hiện" />
-      <select class="legal-checklist-inline-status ${statusClass}"
-        onclick="event.stopPropagation()"
-        onchange="exec_legalSaveStatus(${item.id}, this.value)"
-        aria-label="Trạng thái">${statusOptions}</select>
+         data-stage-id="${stageId}">
+      <span class="legal-checklist-status-ring ${ringClass}" aria-hidden="true"></span>
+      <span class="legal-checklist-title">${exec_escapeHtml(item.title || '')}</span>
+      ${childCell}
+      <span class="legal-checklist-due">${dueText}</span>
+      <span class="legal-checklist-inline-status exec-legal-status-ro ${statusClass}">${exec_escapeHtml(EXEC_LEGAL_STATUS_LABELS[statusKey])}</span>
     </div>`
 }
 
@@ -853,8 +880,34 @@ function exec_legal_stageTable(stage, pkgId) {
       <span class="legal-checklist-stage-count">${doneCount}/${totalCount}</span>
       <span class="exec-legal-stage-pct ${pctCls}">${pct}%</span>
     </div>
-    ${isCollapsed ? '' : `<div class="legal-checklist-rows">${rows}</div>`}
+    ${isCollapsed ? '' : `<div class="legal-checklist-colhead" aria-hidden="true">
+        <span></span><span>Hạng mục</span><span>Công việc con</span><span>Hạn</span><span>Trạng thái</span>
+      </div><div class="legal-checklist-rows">${rows}</div>`}
   </div>`
+}
+
+function exec_legalItemsPanel(packages) {
+  if (!packages.length) {
+    return `<div style="text-align:center;padding:32px;color:#9ca3af;font-size:13px"><i class="fas fa-folder-open" style="font-size:24px;display:block;margin-bottom:8px;opacity:.3"></i>Chưa có hạng mục hồ sơ</div>`
+  }
+  const active = exec_legalActivePackage(packages)
+  execState.legalPackageId = active.id
+  const stages = active.stages || []
+  const itemCount = exec_legalItemCount(stages)
+  const sheets = packages.map(pkg => {
+    const isActive = String(pkg.id) === String(active.id)
+    return `<button type="button" role="tab" aria-selected="${isActive}" class="legal-package-subtab${isActive ? ' active' : ''}" onclick="exec_legalSwitchPackage(${pkg.id})">${exec_escapeHtml(pkg.name || ('Gói #' + pkg.id))}</button>`
+  }).join('')
+  const stageHtml = stages.length
+    ? stages.map(st => exec_legal_stageTable(st, active.id)).join('')
+    : `<div class="text-center py-8 text-gray-400">Gói thầu chưa có giai đoạn nào</div>`
+  return `
+    <div class="legal-stages-toolbar">
+      <span><i class="fas fa-layer-group mr-1" style="color:var(--primary)"></i>Đang xem: <strong class="exec-shell-text">${exec_escapeHtml(active.name || 'Gói thầu')}</strong> · ${stages.length} giai đoạn · ${itemCount} hạng mục</span>
+      <span class="exec-shell-muted">Chỉ xem — sửa tại Hồ sơ pháp lý</span>
+    </div>
+    <div class="legal-package-subtabs" role="tablist">${sheets}</div>
+    <div class="legal-checklist-host">${stageHtml}</div>`
 }
 
 // ─── Full legal detail renderer ───────────────────
@@ -876,17 +929,7 @@ function exec_renderLegalDetail(data) {
   // ── Content từng tab ──
   const tabItems = `
     <div id="exec-legal-panel-items">
-      ${packages.length === 0
-        ? `<div style="text-align:center;padding:32px;color:#9ca3af;font-size:13px"><i class="fas fa-folder-open" style="font-size:24px;display:block;margin-bottom:8px;opacity:.3"></i>Chưa có hạng mục hồ sơ</div>`
-        : packages.map(pkg => `
-          <div class="exec-legal-pkg-block" style="margin-bottom:10px">
-            <div class="exec-legal-pkg-head" style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-              <i class="fas fa-folder" style="color:var(--primary);font-size:12px"></i>
-              <span class="exec-shell-text" style="font-weight:700;font-size:13px">${exec_escapeHtml(pkg.name||'Gói hồ sơ')}</span>
-            </div>
-            ${(pkg.stages||[]).map(st => exec_legal_stageTable(st, pkg.id)).join('')}
-          </div>`).join('')
-      }
+      ${exec_legalItemsPanel(packages)}
     </div>`
 
   const tabLetters = `
@@ -954,6 +997,15 @@ function exec_legalSwitchSubTab(tabId) {
   }
 }
 window.exec_legalSwitchSubTab = exec_legalSwitchSubTab
+
+function exec_legalSwitchPackage(pkgId) {
+  execState.legalPackageId = pkgId
+  const bodyEl = document.getElementById('exec-tab-body')
+  if (bodyEl && execState.legalDetail) {
+    bodyEl.innerHTML = exec_renderLegalDetail(execState.legalDetail)
+  }
+}
+window.exec_legalSwitchPackage = exec_legalSwitchPackage
 
 // ─── Toggle collapse for stage ────────────────────
 function exec_legalToggleCollapse(key) {
@@ -1591,39 +1643,6 @@ function exec_openHealthEdit(projectId) {
             ${ta('hlt-risk-notes','Rủi ro / Điểm nghẽn',p.risk_notes,2)}
           </div>
         </div>
-
-        <!-- Đầu mối liên hệ -->
-        <div>
-          <p class="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">📋 Đầu mối liên hệ</p>
-          <div class="space-y-3">
-            <div class="bg-blue-50 rounded-xl p-3">
-              <p class="text-xs font-bold text-blue-700 mb-2">🖊 TVTK (Tư vấn thiết kế)</p>
-              <div class="grid grid-cols-3 gap-2">${f('hlt-tvtk-name','Tên đơn vị',p.tvtk_name)}${f('hlt-tvtk-contact','Người liên hệ',p.tvtk_contact)}${f('hlt-tvtk-phone','Điện thoại',p.tvtk_phone)}</div>
-            </div>
-            <div class="bg-purple-50 rounded-xl p-3">
-              <p class="text-xs font-bold text-purple-700 mb-2">🏢 CĐT (Chủ đầu tư)</p>
-              <div class="grid grid-cols-3 gap-2">${f('hlt-cdt-name','Tên CĐT',p.cdt_name||p.client)}${f('hlt-cdt-contact','Người liên hệ',p.cdt_contact||p.client_contact_name)}${f('hlt-cdt-phone','Điện thoại',p.cdt_phone||p.client_contact_phone)}</div>
-            </div>
-            <div class="bg-orange-50 rounded-xl p-3">
-              <p class="text-xs font-bold text-orange-700 mb-2">👔 QLDA (Quản lý dự án)</p>
-              <div class="grid grid-cols-3 gap-2">${f('hlt-qlda-name','Tên đơn vị',p.qlda_name)}${f('hlt-qlda-contact','Người liên hệ',p.qlda_contact)}${f('hlt-qlda-phone','Điện thoại',p.qlda_phone)}</div>
-            </div>
-            <div class="bg-red-50 rounded-xl p-3">
-              <p class="text-xs font-bold text-red-700 mb-2">🏗 Nhà thầu thi công</p>
-              <div class="grid grid-cols-3 gap-2">${f('hlt-nthau-name','Tên nhà thầu',p.nthau_name)}${f('hlt-nthau-contact','Người liên hệ',p.nthau_contact)}${f('hlt-nthau-phone','Điện thoại',p.nthau_phone)}</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Thanh toán tiếp theo -->
-        <div>
-          <p class="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">💰 Đợt thanh toán tiếp theo</p>
-          <div class="grid grid-cols-3 gap-3">
-            ${f('hlt-pay-phase','Đợt thanh toán',p.next_payment_phase,'text','VD: Đợt 3')}
-            ${f('hlt-pay-amount','Số tiền (VNĐ)',p.next_payment_amount,'number')}
-            ${f('hlt-pay-note','Ghi chú',p.next_payment_note)}
-          </div>
-        </div>
       </div>
 
       <div class="flex gap-3 p-4 border-t border-gray-100 sticky bottom-0 bg-white rounded-b-2xl">
@@ -1651,23 +1670,6 @@ async function exec_saveHealthEdit(projectId) {
     pm_report_date:      g('hlt-report-date')      || null,
     major_issues:        g('hlt-issues')           || null,
     risk_notes:          g('hlt-risk-notes')       || null,
-    tvtk_name:           g('hlt-tvtk-name')        || null,
-    tvtk_contact:        g('hlt-tvtk-contact')     || null,
-    tvtk_phone:          g('hlt-tvtk-phone')       || null,
-    cdt_name:            g('hlt-cdt-name')         || null,
-    cdt_contact:         g('hlt-cdt-contact')      || null,
-    cdt_phone:           g('hlt-cdt-phone')        || null,
-    qlda_name:           g('hlt-qlda-name')        || null,
-    qlda_contact:        g('hlt-qlda-contact')     || null,
-    qlda_phone:          g('hlt-qlda-phone')       || null,
-    nthau_name:          g('hlt-nthau-name')       || null,
-    nthau_contact:       g('hlt-nthau-contact')    || null,
-    nthau_phone:         g('hlt-nthau-phone')      || null,
-    client_contact_name:  g('hlt-cdt-contact')    || null,
-    client_contact_phone: g('hlt-cdt-phone')       || null,
-    next_payment_phase:  g('hlt-pay-phase')        || null,
-    next_payment_amount: parseFloat(g('hlt-pay-amount')) || null,
-    next_payment_note:   g('hlt-pay-note')         || null,
   }
 
   // Disable save button + show loading state
@@ -1709,6 +1711,10 @@ async function initExecutiveDashboard() {
       d.id = 'exec-main-layout'
       page.appendChild(d)
     }
+  }
+  if (execState.currentProjectId) {
+    execState.legalDetail = null
+    execState.detailLoading = true
   }
   exec_renderLayout()
   await exec_loadProjects()

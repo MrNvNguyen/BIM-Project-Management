@@ -5,7 +5,11 @@ import {
   amountExcludingVat,
   applyWorkDateFilter,
   computeBookedRevenue,
+  contractValueBeforeVat,
+  displayRevenuePaymentStatus,
   computeLegalCostA,
+  legalCostAFormulaLabel,
+  resolveLegalCostAPct,
   computeProjectBudget,
   computeProjectLaborFromAggregates,
   computeRealtimeLaborFromAggregates,
@@ -128,6 +132,14 @@ describe('syncPaymentToRevenue (Wave A sync gate)', () => {
     expect(row.amount).toBe(700_000)
     expect(row.revenue_date).toBe('2026-03-15')
     expect(row.payment_status).toBe('pending')
+    expect(displayRevenuePaymentStatus('pending', 'processing')).toBe('processing')
+  })
+
+  it('lists a booked processing installment as processing, not as unpaid pending', () => {
+    expect(displayRevenuePaymentStatus('pending', 'processing')).toBe('processing')
+    expect(displayRevenuePaymentStatus('paid', 'paid')).toBe('paid')
+    expect(displayRevenuePaymentStatus('pending', 'pending')).toBe('pending')
+    expect(displayRevenuePaymentStatus('pending', null)).toBe('pending')
   })
 
   it('revert to pending deletes linked revenue and nulls payment link', async () => {
@@ -165,6 +177,18 @@ describe('computeLegalCostA (Wave D2 Chi phí A)', () => {
 
   it('155_000_000 gross, VAT 8%, fee 30% → 43_055_556', () => {
     expect(computeLegalCostA(155_000_000, 8, 30)).toBe(43_055_556)
+  })
+
+  it('blank percent uses 30', () => {
+    expect(resolveLegalCostAPct(null)).toBe(30)
+    expect(resolveLegalCostAPct(undefined)).toBe(30)
+    expect(resolveLegalCostAPct(60)).toBe(60)
+  })
+
+  it('formula label is percent over the VAT divisor', () => {
+    expect(legalCostAFormulaLabel(30, 8)).toBe('30%/1.08')
+    expect(legalCostAFormulaLabel(60, 10)).toBe('60%/1.1')
+    expect(legalCostAFormulaLabel(30, 0)).toBe('30%')
   })
 })
 
@@ -457,6 +481,11 @@ describe('labor allocation (Wave 1a parity)', () => {
     ]
     const filtered = filterMlcMonths(rows, '2026-02-01', '2027-01-31')
     expect(filtered.map(m => m.year * 100 + m.month).sort()).toEqual([202602, 202701])
+  })
+
+  it('contract value is package gross before the project VAT', () => {
+    expect(contractValueBeforeVat(1_700_000_000, 0)).toBe(1_700_000_000)
+    expect(contractValueBeforeVat(1_700_000_000, 8)).toBe(Math.round(1_700_000_000 / 1.08))
   })
 
   it('dayAfter converts inclusive NTC end to half-open exclusive', () => {

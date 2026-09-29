@@ -11,16 +11,20 @@ import {
   aggregatePaymentsBeforeVat,
   aggregateThreeMoney,
   amountExcludingVat,
+  contractValueBeforeVat,
   sumPendingBookedFromPayments,
   calendarMonthsOrFilter,
   calendarPairsSpan,
   computeBookedRevenue,
   computeLegalCostA,
+  legalCostAFormulaLabel,
+  resolveLegalCostAPct,
   computeMonthLaborCost as computeMonthLaborCostCore,
   computeProjectBudget,
   computeProjectLaborFromTimesheets,
   computeRealtimeLaborByProject,
   computeRealtimeLaborFromAggregates,
+  displayRevenuePaymentStatus,
   enrichPaymentMetrics,
   enrichRevenueRow,
   fetchAllProjectsHoursByMonth,
@@ -1591,8 +1595,8 @@ app.get('/api/projects', authMiddleware, async (c) => {
       SELECT
         p.id, p.code, p.name, p.description, p.client, p.project_type, p.status,
         p.start_date, p.end_date, p.location, p.admin_id, p.leader_id, p.progress,
-        p.created_by, p.created_at, p.updated_at, p.management_fee_pct,
-        p.contract_value, p.budget,
+        p.created_by, p.created_at, p.updated_at, p.management_fee_pct, p.vat_pct,
+        p.contract_value, p.budget, p.project_code_letter,
         u1.full_name as admin_name,
         u2.full_name as leader_name,
         COALESCE(ts.total_tasks, 0) as total_tasks,
@@ -1725,7 +1729,7 @@ app.post('/api/projects', authMiddleware, async (c) => {
     }
 
     const data = await c.req.json()
-    const { code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, location, admin_id, leader_id, project_code_letter } = data
+    const { code, name, description, client, project_type, status, start_date, end_date, budget, management_fee_pct, vat_pct, location, admin_id, leader_id, project_code_letter } = data
 
     if (!code || !name) return c.json({ error: 'Code and name required' }, 400)
 
@@ -1740,11 +1744,12 @@ app.post('/api/projects', authMiddleware, async (c) => {
     }
 
     const feePct = Math.min(100, Math.max(0, parseFloat(management_fee_pct) || 0))
+    const vatPct = Math.min(100, Math.max(0, parseFloat(vat_pct) || 0))
     const result = await db.prepare(
-      `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, location, admin_id, leader_id, project_code_letter, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO projects (code, name, description, client, project_type, status, start_date, end_date, budget, contract_value, management_fee_pct, vat_pct, location, admin_id, leader_id, project_code_letter, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(codeNorm, name, description || null, client || null, project_type || 'building', status || 'planning',
-      start_date || null, end_date || null, budget || 0, contract_value || 0, feePct, location || null,
+      start_date || null, end_date || null, budget || 0, 0, feePct, vatPct, location || null,
       admin_id || user.id, leader_id || null, project_code_letter || codeNorm, user.id).run()
 
     const projectId = result.meta.last_row_id
@@ -1819,6 +1824,10 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     const db = c.env.DB
     const id = parseInt(c.req.param('id'))
     const data = await c.req.json()
+    delete data.contract_value
+    if (data.vat_pct !== undefined) {
+      data.vat_pct = Math.min(100, Math.max(0, parseFloat(data.vat_pct) || 0))
+    }
     const user = c.get('user') as any
     // Only system_admin or project admin_id can edit
     const proj = await db.prepare('SELECT * FROM projects WHERE id = ?').bind(id).first() as any
@@ -1826,7 +1835,7 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
     if (user.role !== 'system_admin' && proj.admin_id !== user.id)
       return c.json({ error: 'Không có quyền chỉnh sửa dự án này' }, 403)
     const allowedFields = user.role === 'system_admin'
-      ? ['code','name','description','client','project_type','status','start_date','end_date','contract_value','management_fee_pct','location','admin_id','leader_id','progress','project_code_letter']
+      ? ['code','name','description','client','project_type','status','start_date','end_date','management_fee_pct','vat_pct','location','admin_id','leader_id','progress','project_code_letter']
       : ['name','description','client','project_type','status','start_date','end_date','location','leader_id','progress','project_code_letter']
     if (data.code !== undefined && user.role === 'system_admin') {
       const codeNorm = String(data.code).trim()
@@ -1910,7 +1919,11 @@ app.put('/api/projects/:id', authMiddleware, async (c) => {
       } catch (_) { /* ignore email errors */ }
     }
 
-    return c.json({ success: true })
+    if (data.vat_pct !== undefined && Number(data.vat_pct) !== (Number(proj.vat_pct) || 0)) {
+      await applyProjectVatToPayments(db, id, user.id)
+    }
+
+    return c.json({ success: true, ...(await syncProjectContractFromPackages(db, id)) })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -5112,7 +5125,8 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
     const projFilter   = project_id ? `AND p.id = ${parseInt(project_id)}` : ''
     const dateFilter   = year ? `AND pr.revenue_date >= '${fyStart}' AND pr.revenue_date <= '${fyEnd}'` : ''
 
-    // ── Phần 1: project_revenues (paid / partial) đã có revenue_date ──────────
+    // Chỉ phiếu đã ghi sổ: processing / partial / paid.
+    // pending (Chờ thanh toán) và rejected không vào danh sách doanh thu.
     // paid_amount_original = amount (Giá trị nghiệm thu) → Cột "Theo HĐ"
     // paid_amount          = paid_amount thực tế từ payment_requests → Cột "Dòng tiền"
     const paidQuery = `
@@ -5128,6 +5142,7 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         NULL             AS request_date,
         pr.invoice_number,
         pr.payment_status,
+        pq.status        AS linked_payment_status,
         pr.notes,
         'revenue'        AS source,
         -- Theo HĐ = gross NT từ payment_requests (NULL nếu orphan — không COALESCE sang booked)
@@ -5139,51 +5154,26 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
       FROM project_revenues pr
       JOIN projects p ON p.id = pr.project_id
       LEFT JOIN payment_requests pq ON pq.revenue_id = pr.id
-      WHERE pr.payment_status IN ('paid','partial')
+      WHERE (
+          pr.payment_status IN ('paid','partial','processing')
+          OR pq.status = 'processing'
+        )
         ${projFilter}
         ${dateFilter}
     `
 
-    // ── Phần 2: payment_requests (pending) — không lọc ngày ──────────────────
-    // Khoản chờ thu chưa có paid_date, dùng request_date để hiển thị
-    const pendingQuery = `
-      SELECT
-        pq.id            AS id,
-        pq.project_id,
-        p.code           AS project_code,
-        p.name           AS project_name,
-        pq.description,
-        pq.amount,
-        pq.currency,
-        NULL             AS revenue_date,   -- chưa có ngày thu thực tế
-        pq.request_date,                    -- ngày yêu cầu (dùng để hiển thị)
-        pq.invoice_number,
-        'pending'        AS payment_status,
-        pq.notes,
-        'payment_request' AS source,
-        pq.amount           AS paid_amount_original,  -- Theo HĐ = nghiệm thu
-        COALESCE(pq.paid_amount, 0) AS paid_amount,   -- Dòng tiền (thường = 0 với pending)
-        p.management_fee_pct AS fee_pct,
-        COALESCE(pq.vat_pct, 0) AS vat_pct
-      FROM payment_requests pq
-      JOIN projects p ON p.id = pq.project_id
-      WHERE pq.status = 'pending'
-        ${project_id ? `AND pq.project_id = ${parseInt(project_id)}` : ''}
-        ${year ? `AND (pq.request_date IS NULL OR (pq.request_date >= '${fyStart}' AND pq.request_date <= '${fyEnd}'))` : ''}
-    `
+    const paidRows = await db.prepare(paidQuery).all()
 
-    const [paidRows, pendingRows] = await Promise.all([
-      db.prepare(paidQuery).all(),
-      db.prepare(pendingQuery).all()
-    ])
+    const paid = (paidRows.results as any[]).sort((a, b) =>
+      (b.revenue_date || '').localeCompare(a.revenue_date || '')).map((row) => {
+        const { linked_payment_status, ...rest } = row
+        return enrichRevenueRow({
+          ...rest,
+          payment_status: displayRevenuePaymentStatus(rest.payment_status, linked_payment_status),
+        })
+      })
 
-    // Ghép: đã thu trước, chờ thu sau; sắp xếp trong từng nhóm theo ngày giảm dần
-    const paid    = (paidRows.results    as any[]).sort((a, b) =>
-      (b.revenue_date || '').localeCompare(a.revenue_date || '')).map(enrichRevenueRow)
-    const pending = (pendingRows.results as any[]).sort((a, b) =>
-      (b.request_date || '').localeCompare(a.request_date || '')).map(enrichRevenueRow)
-
-    return c.json([...paid, ...pending])
+    return c.json(paid)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -8485,7 +8475,17 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
 
     const curYear  = new Date().getFullYear()
     const curMonth = new Date().getMonth() + 1
-    const curMonthStr = String(curMonth).padStart(2, '0')
+    const birthdayMonthNames = ['Tháng 1','Tháng 2','Tháng 3','Tháng 4','Tháng 5','Tháng 6','Tháng 7','Tháng 8','Tháng 9','Tháng 10','Tháng 11','Tháng 12']
+    const birthdaySlots = [0, 1, 2].map(offset => {
+      const d = new Date(curYear, curMonth - 1 + offset, 1)
+      return {
+        year: d.getFullYear(),
+        month: d.getMonth() + 1,
+        month_key: String(d.getMonth() + 1).padStart(2, '0'),
+        label: birthdayMonthNames[d.getMonth()],
+        is_current: offset === 0,
+      }
+    })
     const fySettings3 = await getFiscalYearSettings(db)
     const { startDate: fyStartNow, endDate: fyEndNow } = getFiscalYearDateRange(curYear, fySettings3)
     const { start: monthStart, endExclusive: monthEnd } = monthDateRange(curYear, curMonth)
@@ -8611,9 +8611,9 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         SELECT id, full_name, birthday, department, job_title
         FROM users
         WHERE is_active = 1 AND birthday IS NOT NULL AND birthday != ''
-          AND strftime('%m', birthday) = ?
-        ORDER BY strftime('%d', birthday) ASC
-      `).bind(curMonthStr).all(),
+          AND strftime('%m', birthday) IN (?, ?, ?)
+        ORDER BY strftime('%m', birthday) ASC, strftime('%d', birthday) ASC
+      `).bind(birthdaySlots[0].month_key, birthdaySlots[1].month_key, birthdaySlots[2].month_key).all(),
       db.prepare(`
         SELECT p.id, p.code, p.name,
           date(p.end_date) as end_date,
@@ -8711,7 +8711,14 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
         return { ...r, completion_rate, ontime_rate, productivity, score }
       })
     }
-    const birthdayRows = ((birthdaysThisMonth as any).results as any[]).map(u => ({ ...u, avatar: avatarApiPath(u.id) }))
+    const birthdayAll = ((birthdaysThisMonth as any).results as any[]).map(u => ({ ...u, avatar: avatarApiPath(u.id) }))
+    const birthdaysForecast = birthdaySlots.map(slot => {
+      const people = birthdayAll
+        .filter(u => String(u.birthday || '').substring(5, 7) === slot.month_key)
+        .sort((a, b) => String(a.birthday).substring(8, 10).localeCompare(String(b.birthday).substring(8, 10)))
+      return { ...slot, count: people.length, people }
+    })
+    const birthdayRows = birthdaysForecast[0]?.people || []
 
     return c.json({
       stats: {
@@ -8759,6 +8766,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
       projects_near_deadline: (projectsNearDeadline as any).results,
       my_active_tasks: (myActiveTasks as any).results,
       birthdays_this_month: birthdayRows,
+      birthdays_forecast: birthdaysForecast,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -13055,7 +13063,91 @@ app.delete('/api/legal/stages/:id', authMiddleware, async (c) => {
   }
 })
 
+function legalPackageContractInput(data: any) {
+  const code = String(data?.code || '').trim() || null
+  const start = String(data?.start_date || '').trim() || null
+  const end = String(data?.end_date || '').trim() || null
+  const raw = data?.contract_value
+  const contractValue = raw == null || raw === '' ? 0 : Math.max(0, Number(String(raw).replace(/[^\d.-]/g, '')) || 0)
+  return { code, start_date: start, end_date: end, contract_value: contractValue }
+}
+
 // ── Package CRUD ──────────────────────────────────────────────────────────────
+
+// GET /api/legal/package-counts — số gói thầu theo dự án (danh sách Hồ sơ pháp lý)
+app.get('/api/legal/package-counts', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  try {
+    const db = c.env.DB
+    const sql = user.role === 'system_admin'
+      ? `SELECT project_id, COUNT(*) AS package_count
+         FROM legal_packages GROUP BY project_id`
+      : `SELECT lp.project_id, COUNT(*) AS package_count
+         FROM legal_packages lp
+         WHERE lp.project_id IN (
+           SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+           UNION
+           SELECT project_id FROM project_members WHERE user_id = ?
+         )
+         GROUP BY lp.project_id`
+    const stmt = db.prepare(sql)
+    const rows = user.role === 'system_admin'
+      ? await stmt.all()
+      : await stmt.bind(user.id, user.id, user.id).all()
+    const counts: Record<string, number> = {}
+    for (const row of rows.results as any[]) counts[String(row.project_id)] = Number(row.package_count) || 0
+    return c.json({ counts })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+
+async function syncProjectContractFromPackages(db: D1Database, projectId: number) {
+  const row = await db.prepare(`
+    SELECT
+      COALESCE((SELECT SUM(contract_value) FROM legal_packages WHERE project_id = ?), 0) AS gross,
+      COALESCE((SELECT vat_pct FROM projects WHERE id = ?), 0) AS vat_pct
+  `).bind(projectId, projectId).first() as { gross?: number; vat_pct?: number } | null
+  const packageGross = Number(row?.gross) || 0
+  const vatPct = Number(row?.vat_pct) || 0
+  const contractValue = contractValueBeforeVat(packageGross, vatPct)
+  await db.prepare(
+    'UPDATE projects SET contract_value = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+  ).bind(contractValue, projectId).run()
+  return { contract_value: contractValue, package_gross: packageGross, vat_pct: vatPct }
+}
+
+async function applyProjectVatToPayments(db: D1Database, projectId: number, userId: number) {
+  const proj = await db.prepare(
+    'SELECT COALESCE(vat_pct, 0) AS vat_pct FROM projects WHERE id = ?'
+  ).bind(projectId).first() as { vat_pct?: number } | null
+  const vat = Math.min(100, Math.max(0, Number(proj?.vat_pct) || 0))
+  const rows = await db.prepare(
+    'SELECT * FROM payment_requests WHERE project_id = ? AND COALESCE(vat_pct, 0) != ?'
+  ).bind(projectId, vat).all()
+  for (const raw of rows.results as any[]) {
+    await db.prepare(
+      'UPDATE payment_requests SET vat_pct = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+    ).bind(vat, raw.id).run()
+    const revenueId = await syncPaymentToRevenue(db, {
+      id: raw.id,
+      project_id: projectId,
+      description: raw.description,
+      amount: raw.amount || 0,
+      paid_amount: raw.paid_amount || 0,
+      currency: raw.currency || 'VND',
+      paid_date: raw.paid_date || null,
+      invoice_number: raw.invoice_number || null,
+      payment_phase: raw.payment_phase || null,
+      status: raw.status || 'pending',
+      revenue_id: raw.revenue_id || null,
+      notes: raw.notes || null,
+      vat_pct: vat,
+      request_date: raw.request_date || null,
+    }, userId)
+    await db.prepare('UPDATE payment_requests SET revenue_id = ? WHERE id = ?')
+      .bind(revenueId || null, raw.id).run()
+  }
+}
 
 // GET /api/legal/:projectId/packages
 app.get('/api/legal/:projectId/packages', authMiddleware, async (c) => {
@@ -13074,7 +13166,9 @@ app.post('/api/legal/:projectId/packages', authMiddleware, async (c) => {
   if (!['system_admin','project_admin','project_leader'].includes(user.role))
     return c.json({ error: 'Forbidden' }, 403)
   const projectId = parseInt(c.req.param('projectId'))
-  const { name, package_type } = await c.req.json()
+  const body = await c.req.json()
+  const { name, package_type } = body
+  const contract = legalPackageContractInput(body)
   if (!name || !name.trim()) return c.json({ error: 'Tên gói thầu không được để trống' }, 400)
   try {
     const maxOrderRow = await c.env.DB.prepare(
@@ -13082,12 +13176,24 @@ app.post('/api/legal/:projectId/packages', authMiddleware, async (c) => {
     ).bind(projectId).first() as any
     const maxOrder = maxOrderRow?.mo || 0
     const pkgResult = await c.env.DB.prepare(
-      'INSERT INTO legal_packages (project_id, name, package_type, sort_order) VALUES (?,?,?,?)'
-    ).bind(projectId, name.trim(), package_type || 'custom', maxOrder + 1).run()
+      `INSERT INTO legal_packages (project_id, name, package_type, sort_order, code, start_date, end_date, contract_value)
+       VALUES (?,?,?,?,?,?,?,?)`
+    ).bind(
+      projectId, name.trim(), package_type || 'custom', maxOrder + 1,
+      contract.code, contract.start_date, contract.end_date, contract.contract_value
+    ).run()
     const packageId = pkgResult.meta.last_row_id as number
-    // Tạo 4 giai đoạn A-B-C-D cho gói thầu mới
-    await initStagesForPackage(c.env.DB, projectId, packageId, user.id)
-    return c.json({ success: true, id: packageId, name: name.trim() })
+    if (package_type === 'blank') {
+      // Gói trống: không giai đoạn, không hạng mục mẫu.
+    } else if (package_type === 'custom') {
+      await c.env.DB.prepare(
+        'INSERT INTO legal_stages (project_id, package_id, code, name, sort_order) VALUES (?,?,?,?,?)'
+      ).bind(projectId, packageId, 'A', name.trim(), 1).run()
+    } else {
+      await initStagesForPackage(c.env.DB, projectId, packageId, user.id)
+    }
+    const synced = await syncProjectContractFromPackages(c.env.DB, projectId)
+    return c.json({ success: true, id: packageId, name: name.trim(), blank: package_type === 'blank', ...synced })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -13097,12 +13203,34 @@ app.put('/api/legal/packages/:id', authMiddleware, async (c) => {
   if (!['system_admin','project_admin','project_leader'].includes(user.role))
     return c.json({ error: 'Forbidden' }, 403)
   const id = parseInt(c.req.param('id'))
-  const { name } = await c.req.json()
-  if (!name || !name.trim()) return c.json({ error: 'Tên gói thầu không được để trống' }, 400)
+  const body = await c.req.json()
+  const name = body.name
+  if (!name || !String(name).trim()) return c.json({ error: 'Tên gói thầu không được để trống' }, 400)
   try {
-    await c.env.DB.prepare('UPDATE legal_packages SET name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
-      .bind(name.trim(), id).run()
-    return c.json({ success: true })
+    const pkg = await c.env.DB.prepare('SELECT project_id FROM legal_packages WHERE id = ?').bind(id).first() as { project_id?: number } | null
+    if (!pkg?.project_id) return c.json({ error: 'Không tìm thấy gói thầu' }, 404)
+    const sets = ['name=?', 'updated_at=CURRENT_TIMESTAMP']
+    const vals: any[] = [String(name).trim()]
+    if (Object.prototype.hasOwnProperty.call(body, 'code')) {
+      sets.push('code=?')
+      vals.push(String(body.code || '').trim() || null)
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'start_date')) {
+      sets.push('start_date=?')
+      vals.push(String(body.start_date || '').trim() || null)
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'end_date')) {
+      sets.push('end_date=?')
+      vals.push(String(body.end_date || '').trim() || null)
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'contract_value')) {
+      sets.push('contract_value=?')
+      vals.push(legalPackageContractInput(body).contract_value)
+    }
+    vals.push(id)
+    await c.env.DB.prepare(`UPDATE legal_packages SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run()
+    const synced = await syncProjectContractFromPackages(c.env.DB, pkg.project_id)
+    return c.json({ success: true, ...synced })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -13113,6 +13241,8 @@ app.delete('/api/legal/packages/:id', authMiddleware, async (c) => {
     return c.json({ error: 'Forbidden' }, 403)
   const id = parseInt(c.req.param('id'))
   try {
+    const pkg = await c.env.DB.prepare('SELECT project_id FROM legal_packages WHERE id = ?').bind(id).first() as { project_id?: number } | null
+    if (!pkg?.project_id) return c.json({ error: 'Không tìm thấy gói thầu' }, 404)
     // Lấy danh sách stage_id trong gói
     const stages = await c.env.DB.prepare(
       'SELECT id FROM legal_stages WHERE package_id = ?'
@@ -13134,7 +13264,8 @@ app.delete('/api/legal/packages/:id', authMiddleware, async (c) => {
     // Xóa stages rồi xóa package
     await c.env.DB.prepare('DELETE FROM legal_stages WHERE package_id = ?').bind(id).run()
     await c.env.DB.prepare('DELETE FROM legal_packages WHERE id = ?').bind(id).run()
-    return c.json({ success: true })
+    const synced = await syncProjectContractFromPackages(c.env.DB, pkg.project_id)
+    return c.json({ success: true, ...synced })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -13335,6 +13466,7 @@ app.post('/api/legal/:projectId/copy-from', authMiddleware, async (c) => {
       success: true,
       copied_packages: copiedPackages,
       name_conflicts: nameConflicts,
+      ...(await syncProjectContractFromPackages(db, destProjectId)),
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -13468,7 +13600,7 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
 
     // Project info — budget SSOT từ computeProjectBudget (finance.ts)
     const projectRow = await db.prepare(
-      `SELECT id, name, code, contract_value, management_fee_pct FROM projects WHERE id = ?`
+      `SELECT id, name, code, contract_value, management_fee_pct, vat_pct FROM projects WHERE id = ?`
     ).bind(projectId).first() as any
     const projectInfo = projectRow ? {
       ...projectRow,
@@ -13531,7 +13663,8 @@ app.post('/api/legal/:projectId/items', authMiddleware, async (c) => {
     ).bind(
       projectId, stageId, parentId,
       autoStt, body.title, body.item_type || 'task',
-      body.due_date || null, body.actual_completion_date || null,
+      body.due_date || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date()),
+      body.actual_completion_date || null,
       body.status || 'pending',
       body.notes || null, sortOrder, user.id
     ).run()
@@ -14312,18 +14445,31 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
     const data = await c.req.json()
     const { description, request_number, request_date, amount, currency, status,
             paid_amount, paid_date, invoice_number, invoice_date, payment_phase,
-            legal_item_id, notes, vat_pct } = data
+            legal_item_id, notes } = data
     if (!description) return c.json({ error: 'description required' }, 400)
-    const vatPctVal = Math.min(100, Math.max(0, parseFloat(vat_pct) || 0))
+    const projVat = await c.env.DB.prepare(
+      'SELECT COALESCE(vat_pct, 0) AS vat_pct FROM projects WHERE id = ?'
+    ).bind(projectId).first() as { vat_pct?: number } | null
+    const vatPctVal = Math.min(100, Math.max(0, Number(projVat?.vat_pct) || 0))
+    let packageId: number | null = data.package_id === '' || data.package_id == null
+      ? null
+      : parseInt(data.package_id, 10)
+    if (!Number.isFinite(packageId) || (packageId as number) <= 0) packageId = null
+    if (packageId) {
+      const pkg = await c.env.DB.prepare(
+        'SELECT id FROM legal_packages WHERE id = ? AND project_id = ?'
+      ).bind(packageId, projectId).first()
+      if (!pkg) return c.json({ error: 'Gói thầu không thuộc dự án' }, 400)
+    }
 
-    // Insert payment request
+    // Insert payment request. package_id chỉ để lọc sheet; không tham gia công thức tiền.
     const result = await c.env.DB.prepare(`
       INSERT INTO payment_requests
-        (project_id, legal_item_id, request_number, description, request_date, amount, currency,
+        (project_id, legal_item_id, package_id, request_number, description, request_date, amount, currency,
          status, paid_amount, paid_date, invoice_number, invoice_date, payment_phase, notes, vat_pct, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).bind(
-      projectId, legal_item_id || null, request_number || null, description,
+      projectId, legal_item_id || null, packageId, request_number || null, description,
       request_date || null, amount || 0, currency || 'VND',
       status || 'pending', paid_amount || 0, paid_date || null,
       invoice_number || null, invoice_date || null, payment_phase || null,
@@ -14385,9 +14531,28 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
       return c.json({ error: 'Chỉ admin dự án mới được sửa thanh toán' }, 403)
     }
 
+    if (data.package_id !== undefined) {
+      let packageId: number | null = data.package_id === '' || data.package_id == null
+        ? null
+        : parseInt(data.package_id, 10)
+      if (!Number.isFinite(packageId) || (packageId as number) <= 0) packageId = null
+      if (packageId) {
+        const pkg = await c.env.DB.prepare(
+          'SELECT id FROM legal_packages WHERE id = ? AND project_id = ?'
+        ).bind(packageId, current.project_id).first()
+        if (!pkg) return c.json({ error: 'Gói thầu không thuộc dự án' }, 400)
+      }
+      data.package_id = packageId
+    }
+
+    const projVat = await c.env.DB.prepare(
+      'SELECT COALESCE(vat_pct, 0) AS vat_pct FROM projects WHERE id = ?'
+    ).bind(current.project_id).first() as { vat_pct?: number } | null
+    data.vat_pct = Math.min(100, Math.max(0, Number(projVat?.vat_pct) || 0))
+
     const fields = ['description', 'request_number', 'request_date', 'amount', 'currency',
                     'status', 'paid_amount', 'paid_date', 'invoice_number', 'invoice_date',
-                    'payment_phase', 'legal_item_id', 'notes', 'vat_pct']
+                    'payment_phase', 'legal_item_id', 'package_id', 'notes', 'vat_pct']
     const updates: string[] = []
     const values: any[] = []
     fields.forEach(f => {
@@ -14518,19 +14683,96 @@ app.delete('/api/legal/payments/:id', authMiddleware, async (c) => {
   }
 })
 
-function legalCostAFormulaLabel(feePct: number, vatPct: number): string {
-  const fee = Number(feePct) || 0
-  const vat = Number(vatPct) || 0
-  const denom = vat > 0 ? 1 + vat / 100 : 1
-  return `${fee}%/${denom}`
-}
-
 function legalCostAPackageKey(packageName: string | null | undefined): string {
   const s = (packageName || '').trim()
   return s || 'Chung'
 }
 
 // GET /api/legal/:projectId/cost-a — Chi phí A (system_admin only)
+app.get('/api/legal/:projectId/contacts', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const user = c.get('user') as any
+  try {
+    const db = c.env.DB
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    }
+    const row = await db.prepare(
+      'SELECT contacts_json, logs_json FROM project_contact_books WHERE project_id = ?'
+    ).bind(projectId).first() as { contacts_json?: string; logs_json?: string } | null
+    return c.json({
+      contacts: parseContactJson(row?.contacts_json),
+      contactLogs: parseContactJson(row?.logs_json),
+    })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+app.put('/api/legal/:projectId/contacts', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const user = c.get('user') as any
+  try {
+    const db = c.env.DB
+    if (!(await canAccessProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    }
+    const body = await c.req.json()
+    const existing = await db.prepare(
+      'SELECT contacts_json, logs_json FROM project_contact_books WHERE project_id = ?'
+    ).bind(projectId).first() as { contacts_json?: string; logs_json?: string } | null
+    const contacts = Array.isArray(body?.contacts)
+      ? sanitizeContacts(body.contacts)
+      : parseContactJson(existing?.contacts_json)
+    const contactLogs = Array.isArray(body?.contactLogs)
+      ? sanitizeContactLogs(body.contactLogs)
+      : parseContactJson(existing?.logs_json)
+    await db.prepare(
+      `INSERT INTO project_contact_books (project_id, contacts_json, logs_json, updated_at)
+       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(project_id) DO UPDATE SET
+         contacts_json = excluded.contacts_json,
+         logs_json = excluded.logs_json,
+         updated_at = CURRENT_TIMESTAMP`
+    ).bind(projectId, JSON.stringify(contacts), JSON.stringify(contactLogs)).run()
+    return c.json({ contacts, contactLogs })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
+function parseContactJson(raw?: string | null) {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch { return [] }
+}
+
+function clipContactText(value: unknown, max: number) {
+  return String(value ?? '').trim().slice(0, max)
+}
+
+function sanitizeContacts(rows: any[]) {
+  return rows.slice(0, 200).map((c, i) => ({
+    id: clipContactText(c?.id, 40) || `ct-${Date.now()}-${i}`,
+    name: clipContactText(c?.name, 120),
+    phone: clipContactText(c?.phone, 40),
+    email: clipContactText(c?.email, 120),
+    role: clipContactText(c?.role, 120),
+  })).filter(c => c.name)
+}
+
+function sanitizeContactLogs(rows: any[]) {
+  return rows.slice(0, 500).map((l, i) => {
+    const person = clipContactText(l?.person || l?.contactPerson, 160)
+    return {
+      id: clipContactText(l?.id, 40) || `log-${Date.now()}-${i}`,
+      date: clipContactText(l?.date, 10),
+      person,
+      contactPerson: clipContactText(l?.contactPerson || person, 160),
+      content: clipContactText(l?.content, 4000),
+      createdAt: clipContactText(l?.createdAt, 40) || new Date().toISOString(),
+    }
+  }).filter(l => l.person && l.content)
+}
+
 app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
   const projectId = parseInt(c.req.param('projectId'))
   const user = c.get('user') as any
@@ -14544,17 +14786,17 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
     }
 
     const project = await db.prepare(
-      'SELECT management_fee_pct FROM projects WHERE id = ?'
+      'SELECT id FROM projects WHERE id = ?'
     ).bind(projectId).first() as any
     if (!project) return c.json({ error: 'not found' }, 404)
 
-    const feePct = Number(project.management_fee_pct) || 0
-
     const rows = await db.prepare(
       `SELECT pr.id, pr.description, pr.payment_phase, pr.amount, pr.vat_pct, pr.status,
-              pr.request_number, lp.name as package_name,
-              lca.amount_override, lca.spend_status, lca.note
+              pr.request_number,
+              COALESCE(pk.name, lp.name) as package_name,
+              lca.amount_override, lca.cost_a_pct, lca.spend_status, lca.note
        FROM payment_requests pr
+       LEFT JOIN legal_packages pk ON pk.id = pr.package_id
        LEFT JOIN legal_items li ON li.id = pr.legal_item_id
        LEFT JOIN legal_stages ls ON ls.id = li.stage_id
        LEFT JOIN legal_packages lp ON lp.id = ls.package_id
@@ -14569,14 +14811,17 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
     for (const raw of rows.results as any[]) {
       const vatPct = Number(raw.vat_pct) || 0
       const gross = Number(raw.amount) || 0
-      const formulaAmount = computeLegalCostA(gross, vatPct, feePct)
+      const storedPct = raw.cost_a_pct == null ? null : Number(raw.cost_a_pct)
+      const costAPct = resolveLegalCostAPct(storedPct)
+      const formulaAmount = computeLegalCostA(gross, vatPct, costAPct)
       const overrideRaw = raw.amount_override
       const amountOverride =
         overrideRaw === null || overrideRaw === undefined ? null : Number(overrideRaw)
-      const amountInUse =
+      const candidate =
         amountOverride != null && !Number.isNaN(amountOverride)
           ? Math.round(amountOverride)
           : formulaAmount
+      const amountInUse = candidate
       pageTotal += amountInUse
 
       const row = {
@@ -14587,7 +14832,8 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
         amount: gross,
         vat_pct: vatPct,
         status: raw.status,
-        formula_label: legalCostAFormulaLabel(feePct, vatPct),
+        cost_a_pct: costAPct,
+        formula_label: legalCostAFormulaLabel(costAPct, vatPct),
         formula_amount: formulaAmount,
         amount_override: amountOverride,
         amount_in_use: amountInUse,
@@ -14612,15 +14858,9 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
         group_total: groupRows.reduce((s, r) => s + r.amount_in_use, 0),
       }))
 
-    const defaultVat =
-      (rows.results as any[]).length > 0
-        ? Number((rows.results as any[])[0].vat_pct) || 0
-        : 0
     return c.json({
       groups,
       page_total: pageTotal,
-      management_fee_pct: feePct,
-      formula_label: legalCostAFormulaLabel(feePct, defaultVat),
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -14637,8 +14877,9 @@ app.patch('/api/legal/payments/:id/cost-a', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const payment = await db.prepare(
-      `SELECT pr.*, lp.name as package_name
+      `SELECT pr.*, COALESCE(pk.name, lp.name) as package_name
        FROM payment_requests pr
+       LEFT JOIN legal_packages pk ON pk.id = pr.package_id
        LEFT JOIN legal_items li ON li.id = pr.legal_item_id
        LEFT JOIN legal_stages ls ON ls.id = li.stage_id
        LEFT JOIN legal_packages lp ON lp.id = ls.package_id
@@ -14648,11 +14889,6 @@ app.patch('/api/legal/payments/:id/cost-a', authMiddleware, async (c) => {
     if (!(await canAccessProject(db, user, payment.project_id))) {
       return c.json({ error: 'Không có quyền truy cập HSPL dự án này' }, 403)
     }
-
-    const project = await db.prepare(
-      'SELECT management_fee_pct FROM projects WHERE id = ?'
-    ).bind(payment.project_id).first() as any
-    const feePct = Number(project?.management_fee_pct) || 0
 
     const existing = await db.prepare(
       'SELECT * FROM legal_cost_a WHERE payment_request_id = ?'
@@ -14682,25 +14918,38 @@ app.patch('/api/legal/payments/:id/cost-a', authMiddleware, async (c) => {
         ? (data.note === null ? null : String(data.note))
         : (existing?.note ?? null)
 
+    let costAPct: number | null
+    if (data.cost_a_pct === null) {
+      costAPct = null
+    } else if (data.cost_a_pct !== undefined && data.cost_a_pct !== '') {
+      const n = Number(data.cost_a_pct)
+      costAPct = Number.isFinite(n) ? Math.round(n * 100) / 100 : null
+    } else {
+      costAPct = existing?.cost_a_pct == null ? null : Number(existing.cost_a_pct)
+    }
+
     await db.prepare(
-      `INSERT INTO legal_cost_a (payment_request_id, amount_override, spend_status, note, updated_at)
-       VALUES (?, ?, ?, ?, datetime('now'))
+      `INSERT INTO legal_cost_a (payment_request_id, amount_override, cost_a_pct, spend_status, note, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(payment_request_id) DO UPDATE SET
          amount_override = excluded.amount_override,
+         cost_a_pct = excluded.cost_a_pct,
          spend_status = excluded.spend_status,
          note = excluded.note,
          updated_at = datetime('now')`
-    ).bind(id, amountOverride, spendStatus, note).run()
+    ).bind(id, amountOverride, costAPct, spendStatus, note).run()
 
     const vatPct = Number(payment.vat_pct) || 0
     const gross = Number(payment.amount) || 0
-    const formulaAmount = computeLegalCostA(gross, vatPct, feePct)
+    const appliedPct = resolveLegalCostAPct(costAPct)
+    const formulaAmount = computeLegalCostA(gross, vatPct, appliedPct)
     const amountInUse = amountOverride != null ? amountOverride : formulaAmount
 
     return c.json({
       payment_request_id: id,
       package_name: legalCostAPackageKey(payment.package_name),
-      formula_label: legalCostAFormulaLabel(feePct, vatPct),
+      cost_a_pct: appliedPct,
+      formula_label: legalCostAFormulaLabel(appliedPct, vatPct),
       formula_amount: formulaAmount,
       amount_override: amountOverride,
       amount_in_use: amountInUse,
@@ -17727,6 +17976,17 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
       ORDER BY bd.created_at DESC
     `).bind(id).all()
 
+    const bidPackages = await db.prepare(`
+      SELECT id, name, code, start_date, end_date, contract_value, sort_order
+      FROM legal_packages
+      WHERE project_id = ?
+      ORDER BY sort_order, id
+    `).bind(id).all()
+
+    const contactBook = await db.prepare(
+      'SELECT contacts_json FROM project_contact_books WHERE project_id = ?'
+    ).bind(id).first() as { contacts_json?: string } | null
+
     return c.json({
       project,
       legal: {
@@ -17737,6 +17997,8 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
       },
       letters: letters.results,
       minutes: minutes.results,
+      bid_packages: bidPackages.results,
+      contacts: parseContactJson(contactBook?.contacts_json),
       finance: {
         contract_value: contractValue,
         total_invoiced:  totalInvoiced,

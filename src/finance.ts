@@ -24,7 +24,28 @@ export function amountExcludingVat(grossAmount: number, vatPct: number): number 
   return computeBookedRevenue(grossAmount, vatPct, 0).amountBeforeVat
 }
 
-/** Chi phí A (HSPL): trước VAT × phí QL% — không dùng booked path. */
+/** GTHĐ dự án = tổng giá trị gói thầu (gross) ÷ (1 + VAT% khai trên dự án). */
+export function contractValueBeforeVat(packageGrossTotal: number, vatPct: number): number {
+  return amountExcludingVat(packageGrossTotal, vatPct)
+}
+
+/** % Chi phí A khi phiếu chưa nhập. */
+export const LEGAL_COST_A_DEFAULT_PCT = 30
+
+export function resolveLegalCostAPct(stored: number | null | undefined): number {
+  if (stored == null || !Number.isFinite(Number(stored))) return LEGAL_COST_A_DEFAULT_PCT
+  return Number(stored)
+}
+
+export function legalCostAFormulaLabel(pct: number, vatPct: number): string {
+  const vat = Number(vatPct) || 0
+  const pctText = `${Number(pct) || 0}%`
+  if (vat <= 0) return pctText
+  const denom = 1 + vat / 100
+  return `${pctText}/${String(Number(denom.toFixed(2)))}`
+}
+
+/** Chi phí A (HSPL): trước VAT × % Chi phí A — không dùng booked path. */
 export function computeLegalCostA(
   grossAmount: number,
   vatPct: number,
@@ -168,6 +189,15 @@ export function paymentStatusToRevenue(status: string): string {
   if (status === 'paid') return 'paid'
   if (status === 'partial') return 'partial'
   return 'pending'
+}
+
+/** Đợt Đang xử lý được ghi sổ với payment_status pending. Danh sách doanh thu hiện đúng trạng thái đợt. */
+export function displayRevenuePaymentStatus(
+  revenueStatus: string | null | undefined,
+  linkedPaymentStatus: string | null | undefined
+): string {
+  if (linkedPaymentStatus === 'processing') return 'processing'
+  return revenueStatus || 'pending'
 }
 
 function isoDateToday(): string {
