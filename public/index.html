@@ -396,6 +396,15 @@
     .sidebar.mini .sidebar-section-divider { display: block !important; height: 1px; background: rgba(255,255,255,0.15); margin: 6px 10px; }
     .sidebar-section-divider { display: none; }
     .top-bar { background: var(--shell-topbar-bg); color: var(--shell-text); height: 60px; display: flex; align-items: center; padding: 0 24px; box-shadow: 0 1px 4px var(--shell-shadow); border-bottom: 1px solid var(--shell-border); position: sticky; top: 0; z-index: 50; }
+    #projectDetailNav {
+      position: fixed;
+      top: 72px;
+      right: 24px;
+      z-index: 40;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
     .top-bar #breadcrumb { color: var(--shell-text-muted); }
     .top-bar #topbarName { color: var(--shell-text); }
     .top-bar #topbarRole { color: var(--shell-text-muted); }
@@ -1520,6 +1529,7 @@
       .kpi-card { padding: 14px; }
       .card { padding: 14px; }
       .top-bar { padding: env(safe-area-inset-top, 0px) 8px 0; gap: 4px; }
+      #projectDetailNav { top: calc(68px + env(safe-area-inset-top, 0px)); right: 12px; }
       .top-bar .mr-4 { margin-right: 0; }
       #breadcrumb { max-width: 26vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .theme-toggle-btn { padding: 6px 8px; font-size: 11px; }
@@ -2526,6 +2536,10 @@
           <div>
             <h1 class="text-2xl font-bold text-gray-800" id="projectDetailName">Chi tiết dự án</h1>
             <p class="text-gray-500 text-sm" id="projectDetailCode"></p>
+          </div>
+          <div id="projectDetailNav" class="flex items-center gap-1">
+            <button type="button" id="projPrevBtn" onclick="openAdjacentProject(-1)" class="btn-secondary text-xs px-2 py-1.5" title="Dự án trước" disabled><i class="fas fa-chevron-left"></i></button>
+            <button type="button" id="projNextBtn" onclick="openAdjacentProject(1)" class="btn-secondary text-xs px-2 py-1.5" title="Dự án tiếp theo" disabled><i class="fas fa-chevron-right"></i></button>
           </div>
           <span id="projectDetailStatus" class="badge ml-auto"></span>
         </div>
@@ -7906,7 +7920,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20260929r"></script>
+<script src="/static/app.js?v=20260929u"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;

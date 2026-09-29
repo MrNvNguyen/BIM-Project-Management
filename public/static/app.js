@@ -3029,9 +3029,53 @@ function projTaskGoPage(page) {
   if (el) el.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
+function projectNavList() {
+  return [...(allProjects || [])].sort((a, b) =>
+    String(a.code || '').localeCompare(String(b.code || ''), 'vi', { numeric: true })
+  )
+}
+
+function updateProjectNavButtons(projectId) {
+  const list = projectNavList()
+  const idx = list.findIndex(p => Number(p.id) === Number(projectId))
+  const prev = idx > 0 ? list[idx - 1] : null
+  const next = idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null
+  const prevBtn = $('projPrevBtn')
+  const nextBtn = $('projNextBtn')
+  if (prevBtn) {
+    prevBtn.disabled = !prev
+    prevBtn.style.opacity = prev ? '1' : '0.35'
+    prevBtn.title = prev ? `Dự án trước: ${prev.code} — ${prev.name}` : 'Dự án trước'
+  }
+  if (nextBtn) {
+    nextBtn.disabled = !next
+    nextBtn.style.opacity = next ? '1' : '0.35'
+    nextBtn.title = next ? `Dự án tiếp theo: ${next.code} — ${next.name}` : 'Dự án tiếp theo'
+  }
+}
+
+let _projectNavBusy = false
+async function openAdjacentProject(dir) {
+  if (_projectNavBusy) return
+  const id = window._currentProjectDetailId
+  if (!id) return
+  if (!allProjects?.length) {
+    try { await fetchProjectsCached(false, 'slim') } catch (_) { return }
+  }
+  const list = projectNavList()
+  const idx = list.findIndex(p => Number(p.id) === Number(id))
+  const target = list[idx + dir]
+  if (!target) return
+  _projectNavBusy = true
+  try { await openProjectDetail(target.id) } finally { _projectNavBusy = false }
+}
+
 async function openProjectDetail(id, openChatTab = false) {
   try {
+    const listPromise = allProjects?.length ? null : fetchProjectsCached(false, 'slim').catch(() => [])
     const project = await api(`/projects/${id}`)
+    if (listPromise) await listPromise
+    updateProjectNavButtons(project.id)
     const pid = parseInt(id)
     const modelsPromise = api(`/projects/${id}/models`).catch(() => [])
     let categories, tasks, projectModels
@@ -3181,9 +3225,9 @@ async function openProjectDetail(id, openChatTab = false) {
           <div class="space-y-2 max-h-48 overflow-y-auto">
             ${categories.map(cat => `
               <div class="flex items-center justify-between p-2 hover:bg-gray-50 rounded-lg">
-                <div>
+                <div class="flex items-center gap-2 min-w-0">
+                  ${cat.code ? `<span class="badge text-xs" style="background:#f3f4f6;color:#6b7280">${cat.code}</span>` : ''}
                   <span class="text-xs font-medium text-gray-800">${cat.name}</span>
-                  ${cat.code ? `<span class="badge ml-1 text-xs" style="background:#f3f4f6;color:#6b7280">${cat.code}</span>` : ''}
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-xs text-gray-400">${cat.completed_tasks||0}/${cat.task_count||0}</span>
