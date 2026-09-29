@@ -1065,6 +1065,8 @@ function setupMobileViewportGuards() {
     if (!nav || window.innerWidth >= 768) return
     const shrunk = window.visualViewport.height < window.innerHeight * 0.75
     nav.classList.toggle('keyboard-hidden', shrunk)
+    const dock = $('assistantDock')
+    if (dock) dock.classList.toggle('keyboard-hidden', shrunk)
   }
   window.visualViewport.addEventListener('resize', sync)
   window.visualViewport.addEventListener('scroll', sync)
@@ -20137,7 +20139,9 @@ function renderLegalProjectInfo() {
   const apiProj = _legalOverviewData.project || {}
   const packages = _legalOverviewData.packages || []
   const contractTotal = packages.reduce((s, p) => s + (Number(p.contract_value) || 0), 0)
-  const paidTotal = (_legalOverviewData.payments || []).reduce((s, p) => s + (Number(p.paid_amount) || 0), 0)
+  const paidTotal = (_legalOverviewData.payments || [])
+    .filter(p => _legalPaymentResolvePackageId(p))
+    .reduce((s, p) => s + (Number(p.paid_amount) || 0), 0)
   const dong = (n) => fmt(n) + ' đ'
   const rows = packages.map(pkg => {
     const start = pkg.start_date ? fmtDate(pkg.start_date) : 'Chưa chọn'

@@ -34,6 +34,8 @@ import {
   monthDateRange,
   resolveAssigneeNames,
   syncPaymentToRevenue,
+  paymentOnPackageSql,
+  revenueFromPackagePaymentSql,
   taskComputedProgress,
   yearDateRange,
   yearMonthKey,
@@ -5166,6 +5168,7 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         )
         ${projFilter}
         ${dateFilter}
+        AND ${revenueFromPackagePaymentSql('pr')}
     `
 
     const paidRows = await db.prepare(paidQuery).all()
@@ -11692,6 +11695,7 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       FROM project_revenues
       WHERE payment_status IN ('paid','partial')
         AND revenue_date >= ? AND revenue_date <= ?
+        AND ${revenueFromPackagePaymentSql('project_revenues')}
       GROUP BY strftime('%Y-%m', revenue_date)
     `).bind(fyStart, fyEnd).all()
 
@@ -11702,6 +11706,7 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
       JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status = 'pending'
         AND pq.request_date >= ? AND pq.request_date <= ?
+        AND ${paymentOnPackageSql('pq')}
       GROUP BY strftime('%Y-%m', pq.request_date)
     `).bind(fyStart, fyEnd).all()
 
@@ -11996,6 +12001,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
         SUM(CASE WHEN payment_status = 'partial' AND revenue_date >= ? AND revenue_date <= ? THEN amount ELSE 0 END) as revenue_partial,
         SUM(CASE WHEN payment_status IN ('paid','partial') AND revenue_date >= ? AND revenue_date <= ? THEN amount ELSE 0 END) as revenue_total
       FROM project_revenues
+      WHERE ${revenueFromPackagePaymentSql('project_revenues')}
       GROUP BY project_id
     `).bind(fyStart, fyEnd, fyStart, fyEnd, fyStart, fyEnd, fyStart, fyEnd).all()
 
@@ -12006,6 +12012,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       JOIN payment_requests pq ON pq.revenue_id = pr.id
       WHERE pr.payment_status = 'pending'
         AND pq.request_date >= ? AND pq.request_date <= ?
+        AND ${paymentOnPackageSql('pq')}
       GROUP BY pr.project_id
     `).bind(fyStart, fyEnd).all()
     const pendingBookedMap: Record<number, number> = {}
@@ -12019,6 +12026,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
              request_date, paid_date
       FROM payment_requests
       WHERE status IN ('paid', 'partial', 'pending')
+        AND ${paymentOnPackageSql('payment_requests')}
     `).all()
     const payRowsNtcFiltered = (payRowsNtc.results as any[]).filter((r: any) => {
       if (r.status === 'pending') {
@@ -12227,6 +12235,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
         MIN(revenue_date) as first_revenue_date,
         MAX(revenue_date) as last_revenue_date
       FROM project_revenues
+      WHERE ${revenueFromPackagePaymentSql('project_revenues')}
       GROUP BY project_id
     `).all()
 
@@ -12235,6 +12244,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
       SELECT project_id, amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
       FROM payment_requests
       WHERE status IN ('paid', 'partial', 'pending')
+        AND ${paymentOnPackageSql('payment_requests')}
     `).all()
     const { acceptanceByProject: revOrigMapLT, cashByProject: paidAmtMapLT } =
       aggregatePaymentsBeforeVat(payRowsLT.results as any[])
@@ -14808,6 +14818,7 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
        LEFT JOIN legal_packages lp ON lp.id = ls.package_id
        LEFT JOIN legal_cost_a lca ON lca.payment_request_id = pr.id
        WHERE pr.project_id = ? AND pr.amount > 0 AND pr.status != 'rejected'
+         AND ${paymentOnPackageSql('pr')}
        ORDER BY pr.created_at DESC`
     ).bind(projectId).all()
 
@@ -17607,7 +17618,9 @@ app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
         SELECT project_id,
           SUM(CASE WHEN status IN ('paid','partial') THEN paid_amount ELSE 0 END) AS collected_amount,
           SUM(CASE WHEN status IN ('pending','partial','paid') THEN amount ELSE 0 END) AS acceptance_amount
-        FROM payment_requests GROUP BY project_id
+        FROM payment_requests
+        WHERE ${paymentOnPackageSql('payment_requests')}
+        GROUP BY project_id
       ) pay ON pay.project_id = p.id
       LEFT JOIN (
         SELECT project_id,
@@ -17628,6 +17641,7 @@ app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
     const payByProjectRows = await db.prepare(`
       SELECT project_id, amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
       FROM payment_requests
+      WHERE ${paymentOnPackageSql('payment_requests')}
     `).all()
     const grouped: Record<number, any[]> = {}
     for (const r of (payByProjectRows.results as any[])) {
@@ -17907,6 +17921,7 @@ app.get('/api/executive/project-overview/:id', authMiddleware, pmoAccess, async 
     const payRowsOverview = await db.prepare(`
       SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
       FROM payment_requests WHERE project_id = ?
+        AND ${paymentOnPackageSql('payment_requests')}
     `).bind(id).all()
     const threeOverview = aggregateThreeMoney(payRowsOverview.results as any[])
 

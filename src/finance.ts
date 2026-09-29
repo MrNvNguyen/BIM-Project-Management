@@ -259,6 +259,29 @@ export function enrichRevenueRow(row: {
   }
 }
 
+export function paymentOnPackageSql(alias: string): string {
+  return `(
+    EXISTS (
+      SELECT 1 FROM legal_packages lp
+      WHERE lp.id = ${alias}.package_id AND lp.project_id = ${alias}.project_id
+    )
+    OR EXISTS (
+      SELECT 1 FROM legal_items li
+      JOIN legal_stages ls ON ls.id = li.stage_id
+      JOIN legal_packages lp ON lp.id = ls.package_id AND lp.project_id = ${alias}.project_id
+      WHERE li.id = ${alias}.legal_item_id
+    )
+  )`
+}
+
+export function revenueFromPackagePaymentSql(revenueAlias: string): string {
+  return `EXISTS (
+    SELECT 1 FROM payment_requests pq_pkg
+    WHERE pq_pkg.revenue_id = ${revenueAlias}.id
+      AND ${paymentOnPackageSql('pq_pkg')}
+  )`
+}
+
 export async function syncPaymentToRevenue(
   db: D1Database,
   payment: {
@@ -279,9 +302,12 @@ export async function syncPaymentToRevenue(
   },
   userId: number
 ): Promise<number | null> {
+  const onPackage = await db.prepare(
+    `SELECT 1 AS ok FROM payment_requests pr WHERE pr.id = ? AND ${paymentOnPackageSql('pr')} LIMIT 1`
+  ).bind(payment.id).first()
   const rawAmount = payment.amount || 0
   const status = String(payment.status || '')
-  const shouldSync = rawAmount > 0 && REVENUE_BOOK_STATUSES.has(status)
+  const shouldSync = !!onPackage && rawAmount > 0 && REVENUE_BOOK_STATUSES.has(status)
 
   const projRow = await db.prepare(
     'SELECT management_fee_pct FROM projects WHERE id = ?'

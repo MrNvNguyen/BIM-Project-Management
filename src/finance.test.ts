@@ -26,7 +26,7 @@ import {
 } from './finance'
 
 /** Minimal D1 mock for syncPaymentToRevenue integration tests. */
-function createSyncTestDb(feePct = 30) {
+function createSyncTestDb(feePct = 30, onPackage = true) {
   const revenues = new Map<number, Record<string, unknown>>()
   let nextRevenueId = 1
   const ops: string[] = []
@@ -44,6 +44,9 @@ function createSyncTestDb(feePct = 30) {
         async first() {
           if (sql.includes('management_fee_pct')) {
             return { management_fee_pct: feePct }
+          }
+          if (sql.includes('FROM payment_requests pr WHERE pr.id')) {
+            return onPackage ? { ok: 1 } : null
           }
           return null
         },
@@ -154,6 +157,19 @@ describe('syncPaymentToRevenue (Wave A sync gate)', () => {
     expect(harness.deletedRevenueIds).toEqual([99])
     expect(harness.paymentRevenueNulled).toBe(true)
     expect(harness.revenues.has(99)).toBe(false)
+  })
+
+  it('installment not on a package drops its revenue row', async () => {
+    const harness = createSyncTestDb(30, false)
+    harness.revenues.set(77, { id: 77, amount: 700_000 })
+    const id = await syncPaymentToRevenue(harness.db, {
+      ...basePayment,
+      status: 'paid',
+      revenue_id: 77,
+    }, 1)
+    expect(id).toBeNull()
+    expect(harness.deletedRevenueIds).toEqual([77])
+    expect(harness.revenues.has(77)).toBe(false)
   })
 
   it('rejected deletes linked revenue', async () => {
