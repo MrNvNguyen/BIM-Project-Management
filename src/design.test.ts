@@ -39,6 +39,8 @@ import {
   applyProjectDesignPhases,
   taskPhaseKeyForDesignSheet,
   isProjectExecutionPhaseKey,
+  filterModelMatrixTasksForDesignSheet,
+  taskPhaseMatchesDesignSheet,
 } from './design'
 
 function createProjectDesignDisciplineTestDb() {
@@ -781,6 +783,30 @@ describe('applyProjectDesignPhases', () => {
     ])
     expect(ok.error).toBeUndefined()
     expect(phases.map(p => p.code).sort()).toEqual(['basic_design', 'technical_design'])
+  })
+})
+
+describe('filterModelMatrixTasksForDesignSheet', () => {
+  const mixed = [
+    { id: 1, title: 'TKCS task', phase: 'basic_design' },
+    { id: 2, title: 'TKKT task', phase: 'technical_design' },
+    { id: 3, title: 'legacy task', phase: '' },
+  ]
+
+  it('keeps only tasks matching TKKT sheet', () => {
+    const tkkt = filterModelMatrixTasksForDesignSheet(mixed, 'technical_design')
+    expect(tkkt.map(t => t.id)).toEqual([2])
+    expect(tkkt.some(t => t.phase === 'basic_design')).toBe(false)
+  })
+
+  it('keeps only empty-phase tasks on legacy sheet', () => {
+    const legacy = filterModelMatrixTasksForDesignSheet(mixed, null)
+    expect(legacy.map(t => t.id)).toEqual([3])
+  })
+
+  it('excludes null-phase tasks from execution sheets', () => {
+    expect(taskPhaseMatchesDesignSheet(null, 'basic_design')).toBe(false)
+    expect(taskPhaseMatchesDesignSheet('basic_design', 'technical_design')).toBe(false)
   })
 })
 

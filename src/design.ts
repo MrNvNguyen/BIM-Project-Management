@@ -393,6 +393,23 @@ export function compareHstkToPackages(
   return 'unmatched'
 }
 
+/** Whether a task belongs on the active QLy sheet (legacy = empty phase only). */
+export function taskPhaseMatchesDesignSheet(
+  taskPhase: string | null | undefined,
+  sheetExecutionPhaseKey: string | null,
+): boolean {
+  const raw = String(taskPhase ?? '').trim()
+  if (sheetExecutionPhaseKey == null) return raw === ''
+  if (!raw) return false
+  return resolveProjectExecutionPhaseKey(raw) === sheetExecutionPhaseKey
+}
+
+export function filterModelMatrixTasksForDesignSheet<
+  T extends { phase?: string | null },
+>(tasks: T[], sheetExecutionPhaseKey: string | null): T[] {
+  return (tasks || []).filter(t => taskPhaseMatchesDesignSheet(t.phase, sheetExecutionPhaseKey))
+}
+
 /** When several tasks share a model, prefer the newest row (highest id). */
 export function pickPrimaryModelTask(
   tasks: { id?: number; assigned_to_name?: string | null; hstk_date?: string | null; design_package_id?: number | null }[],
@@ -2083,9 +2100,16 @@ export async function buildDesignOverview(
     `SELECT id, name FROM project_models WHERE project_id = ? ORDER BY name`,
   ).bind(projectId).all()
 
+  const sheetTaskPhaseKey =
+    opts?.phaseFilter === 'legacy' || opts?.phaseFilter === undefined
+      ? null
+      : typeof opts?.phaseFilter === 'number'
+        ? taskPhaseKeyForDesignSheet(opts.phaseFilter, phases)
+        : null
+
   const tasks = await db.prepare(
     `SELECT t.id, t.title, t.status, t.progress, t.cde_report, t.hstk_date, t.design_package_id, t.discipline_code, t.category_id,
-            t.model_filename, t.assigned_to, u.full_name AS assigned_to_name
+            t.model_filename, t.phase, t.assigned_to, u.full_name AS assigned_to_name
      FROM tasks t
      LEFT JOIN users u ON u.id = t.assigned_to
      WHERE t.project_id = ? AND t.model_filename IS NOT NULL AND TRIM(t.model_filename) != ''`,
@@ -2136,9 +2160,12 @@ export async function buildDesignOverview(
         unassigned.push({ model_id: m.id, name: m.name, parsed, reason: 'no_category' })
         continue
       }
-      const relatedTasks = (tasks.results || []).filter((t: any) =>
-        String(t.model_filename || '').trim() === m.name &&
-        (t.discipline_code === d.discipline_code || roleInCodes(parsed.role, d.role_codes)),
+      const relatedTasks = filterModelMatrixTasksForDesignSheet(
+        (tasks.results || []).filter((t: any) =>
+          String(t.model_filename || '').trim() === m.name &&
+          (t.discipline_code === d.discipline_code || roleInCodes(parsed.role, d.role_codes)),
+        ),
+        sheetTaskPhaseKey,
       )
       const catFolderPath = catKey != null ? (catPathMap.get(catKey) ?? null) : null
       const catDossier = buildCategoryDossierStatus(catFolderPath, pkgs, revMap)

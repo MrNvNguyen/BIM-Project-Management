@@ -446,6 +446,17 @@
     return `${formatIsoDateVi(pkg.package_date)} — ${label}`
   }
 
+  function matrixTasksForActiveSheet(tasks, projectId) {
+    const list = tasks || []
+    const sheet = qlyHstkGetUi(projectId).activeSheet
+    if (sheet === 'legacy') {
+      return list.filter(t => !String(t.phase ?? '').trim())
+    }
+    const phaseKey = qlyHstkActiveTaskPhaseKey(projectId)
+    if (!phaseKey) return []
+    return list.filter(t => String(t.phase ?? '').trim() === phaseKey)
+  }
+
   function pickPrimaryMatrixTask(tasks) {
     if (!tasks?.length) return null
     return [...tasks].sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0))[0]
@@ -465,10 +476,11 @@
       .join('')
   }
 
-  function formatDesignAssigneeCell(row) {
+  function formatDesignAssigneeCell(row, projectId) {
+    const sheetTasks = matrixTasksForActiveSheet(row.tasks, projectId)
     const name =
       (row.task_assignee_name && String(row.task_assignee_name).trim()) ||
-      pickPrimaryMatrixTask(row.tasks)?.assigned_to_name ||
+      pickPrimaryMatrixTask(sheetTasks)?.assigned_to_name ||
       ''
     if (!name) return '<span class="text-gray-400">—</span>'
     return `<span class="text-gray-200 whitespace-nowrap">${escHtml(String(name).trim())}</span>`
@@ -542,10 +554,12 @@
     'design-hstk-model-matrix w-full text-xs min-w-[1380px] bg-gray-950/90 rounded-lg overflow-hidden'
 
   function designTaskMatrixCell(projectId, rowKey, tasks, canAssign) {
+    const phaseTasks = matrixTasksForActiveSheet(tasks, projectId)
     const assignBtn = canAssign
       ? `<button type="button" class="btn-primary text-[10px] px-2 py-0.5 whitespace-nowrap shrink-0 self-start" onclick="assignDesignTask(${projectId},'${rowKey}')"><i class="fas fa-user-plus mr-1"></i>Giao task</button>`
       : ''
-    return `<div class="dh-task-cell">${formatDesignTaskCell(tasks)}${assignBtn}</div>`
+    const taskHtml = phaseTasks.length ? formatDesignTaskCell(phaseTasks) : ''
+    return `<div class="dh-task-cell">${taskHtml}${assignBtn}</div>`
   }
 
   function formatCategoryDossierStatusHtml(row) {
@@ -623,7 +637,7 @@
         ${categoryFolderPathCell(projectId, disciplineCode, row, canScan)}
         <td class="py-1.5 px-2 text-xs font-mono text-gray-100 align-top dh-cell-wrap">${escHtml(row.model_name)}${codeFlag}</td>
         <td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-wrap">${designTaskMatrixCell(projectId, rowKey, row.tasks, canAssign)}</td>
-        <td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-nowrap">${formatDesignAssigneeCell(row)}</td>
+        <td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-nowrap">${formatDesignAssigneeCell(row, projectId)}</td>
         <td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap">${matrixCvStatusCell(row.task_status)}</td>
         <td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap">${matrixCvProgressCell(row.task_progress_percent)}</td>
         <td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap">${matrixCvCdeCell(row.task_cde_report)}</td>
