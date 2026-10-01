@@ -44,6 +44,12 @@ import {
   TASK_OVERDUE_SQL,
 } from './finance'
 import {
+  registerDesignRoutes,
+  taskRequiresHstk,
+  HSTK_REQUIRED_BODY,
+  resolveTaskDescriptionOnCreate,
+} from './design'
+import {
   avatarApiPath,
   getR2,
   isR2Ref,
@@ -54,6 +60,13 @@ import {
   storeAvatar,
   storeMaybeDataUri,
 } from './storage'
+import {
+  canBrowseAllLegalProjects,
+  canMigrateLegalPackages,
+  hasLegalGlobalWriteRole,
+  isLegalSupportMember,
+} from './legal-auth'
+import { copyLegalPackageInnerContent, planLegalCopyFromBody } from './legal-copy'
 
 // ---- Types ----
 type Bindings = {
@@ -275,6 +288,27 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
       return {
         subject: `[OneCad BIM] 🔄 Task cập nhật: ${data.taskTitle}`,
         html: emailBase(`🔄 Cập nhật trạng thái Task`, body)
+      }
+    }
+
+    case 'design_package_new': {
+      const pkgHtml = (data.packages || [])
+        .map((p: any) => `<li><strong>${p.folder_name}</strong> (${p.revLabel})</li>`)
+        .join('')
+      const taskHtml = (data.tasks || [])
+        .map((t: any) => `<li>${t.title}</li>`)
+        .join('')
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${data.recipientName}</strong>,</p>
+        <p style="margin:0 0 4px 0;color:#6b7280;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Có hồ sơ thiết kế mới trên NAS cho dự án <strong>${data.projectName || ''}</strong> — bộ môn ${data.discipline || ''}.</p>
+        <ul style="font-size:14px;color:#374151;">${pkgHtml}</ul>
+        ${taskHtml ? `<p style="font-size:13px;color:#6b7280;">Task liên quan:</p><ul>${taskHtml}</ul>` : ''}
+        ${data.pkgLines ? `<pre style="font-size:12px;background:#f9fafb;padding:12px;border-radius:6px;white-space:pre-wrap;">${data.pkgLines}</pre>` : ''}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Mở link bimfolder trong mail hoặc đăng nhập tab QLy HSTK.</p>`
+      return {
+        subject: `[OneCad BIM] HSTK mới: ${data.projectName || 'Dự án'}`,
+        html: emailBase(`Hồ sơ thiết kế mới`, body),
       }
     }
 
@@ -897,7 +931,7 @@ async function sendEmail(env: Bindings, opts: {
 
   if (opts.userId && !MANDATORY_EVENTS.has(opts.eventType)) {
     const pref = await opts.db.prepare(
-      'SELECT email_enabled, notify_task_updated, notify_project_updated, notify_project_created, notify_timesheet_approved, notify_payment_request, notify_payment_status, notify_member_added FROM email_settings WHERE user_id = ?'
+      'SELECT email_enabled, notify_task_updated, notify_project_updated, notify_project_created, notify_timesheet_approved, notify_payment_request, notify_payment_status, notify_member_added, notify_design_package FROM email_settings WHERE user_id = ?'
     ).bind(opts.userId).first() as any
 
     if (pref) {
@@ -912,6 +946,7 @@ async function sendEmail(env: Bindings, opts: {
         payment_request_new:      'notify_payment_request',
         payment_status_changed:   'notify_payment_status',
         member_added_to_project:  'notify_member_added',
+        design_package_new:       'notify_design_package',
       }
       const prefKey = prefMap[opts.eventType]
       if (prefKey && pref[prefKey] === 0) return 'skipped'
@@ -2826,9 +2861,12 @@ app.get('/api/tasks/:id', authMiddleware, async (c) => {
 
 async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: any): Promise<{ status: number, body: any }> {
   try {
-    const { project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, start_date, due_date, estimated_hours, task_type, model_filename, cde_report, work_notes, hstk_date } = data
+    const { project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, start_date, due_date, estimated_hours, task_type, model_filename, cde_report, work_notes, hstk_date, design_package_id } = data
 
     if (!project_id || !title) return { status: 400, body: { error: 'project_id and title required' } }
+    if (taskRequiresHstk(design_package_id, hstk_date)) {
+      return { status: 422, body: HSTK_REQUIRED_BODY }
+    }
 
     // RBAC: mọi thành viên project đều được tạo task (kể cả member)
     // system_admin được tạo task ở mọi project
@@ -2842,13 +2880,22 @@ async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: 
       if (!membership) return { status: 403, body: { error: 'Bạn không phải thành viên của dự án này' } }
     }
 
+    const descriptionStored = await resolveTaskDescriptionOnCreate(
+      db,
+      project_id,
+      discipline_code,
+      design_package_id,
+      description,
+    )
+
     const result = await db.prepare(
-      `INSERT INTO tasks (project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours, task_type, model_filename, cde_report, work_notes, hstk_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(project_id, category_id || null, legal_item_id || null, title, description || null, discipline_code || null,
+      `INSERT INTO tasks (project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours, task_type, model_filename, cde_report, work_notes, hstk_date, design_package_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(project_id, category_id || null, legal_item_id || null, title, descriptionStored || null, discipline_code || null,
       phase || 'basic_design', priority || 'medium', status || 'todo',
       assigned_to || null, user.id, start_date || null, due_date || null, estimated_hours || 0,
-      task_type || 'model', model_filename || null, cde_report ? 1 : 0, work_notes || null, hstk_date || null).run()
+      task_type || 'model', model_filename || null, cde_report ? 1 : 0, work_notes || null, hstk_date || null,
+      design_package_id || null).run()
 
     const taskId = result.meta.last_row_id
 
@@ -2871,7 +2918,7 @@ async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: 
         await sendEmail(env, {
           to: emailUser.email, toName: emailUser.full_name,
           eventType: 'task_assigned',
-          data: { taskTitle: title, projectName: projInfo?.name, discipline: disciplineInfo?.name || discipline_code, priority: priority || 'medium', deadline: due_date, description, assignedBy: user.full_name },
+          data: { taskTitle: title, projectName: projInfo?.name, discipline: disciplineInfo?.name || discipline_code, priority: priority || 'medium', deadline: due_date, description: descriptionStored, assignedBy: user.full_name },
           db, userId: assigned_to, relatedType: 'task', relatedId: taskId
         })
       }
@@ -2991,13 +3038,19 @@ app.put('/api/tasks/:id', authMiddleware, async (c) => {
     // - Member được giao task nhưng không phải người tạo: sửa status/progress/actual_hours + estimated_hours (tự lên kế hoạch)
     const isFullAccess = isAdmin || isProjAdmin || isCreator
     const fields = isFullAccess
-      ? ['title', 'description', 'discipline_code', 'phase', 'priority', 'status', 'assigned_to', 'start_date', 'due_date', 'actual_start_date', 'actual_end_date', 'estimated_hours', 'actual_hours', 'progress', 'category_id', 'cde_report', 'work_notes', 'hstk_date', 'task_type', 'model_filename']
-      : ['status', 'progress', 'actual_hours', 'actual_end_date', 'estimated_hours', 'cde_report', 'work_notes', 'hstk_date', 'task_type', 'model_filename']
+      ? ['title', 'description', 'discipline_code', 'phase', 'priority', 'status', 'assigned_to', 'start_date', 'due_date', 'actual_start_date', 'actual_end_date', 'estimated_hours', 'actual_hours', 'progress', 'category_id', 'cde_report', 'work_notes', 'hstk_date', 'task_type', 'model_filename', 'design_package_id']
+      : ['status', 'progress', 'actual_hours', 'actual_end_date', 'estimated_hours', 'cde_report', 'work_notes', 'hstk_date', 'task_type', 'model_filename', 'design_package_id']
     // Normalize legacy status 'done' → 'completed' (tasks table không có 'done')
     if (data.status === 'done') data.status = 'completed'
 
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f])
+
+    const nextDesignPkg = data.design_package_id !== undefined ? data.design_package_id : task.design_package_id
+    const nextHstk = data.hstk_date !== undefined ? data.hstk_date : task.hstk_date
+    if (taskRequiresHstk(nextDesignPkg, nextHstk)) {
+      return c.json(HSTK_REQUIRED_BODY, 422)
+    }
 
     // Auto-set actual_end_date và xóa overdue khi CHUYỂN sang review hoặc completed
     // Lý do: 'review' nghĩa là member đã hoàn thành phần công việc, đang chờ QA/PM duyệt
@@ -3244,6 +3297,23 @@ async function canAccessProject(db: D1Database, user: any, projectId: number): P
     LIMIT 1
   `).bind(projectId, user.id, user.id, projectId, user.id).first()
   return !!row
+}
+
+/** HSPL write: global legal roles + Support member, or project admin on project. */
+async function canManageLegal(db: D1Database, user: any, projectId?: number): Promise<boolean> {
+  if (hasLegalGlobalWriteRole(user)) return true
+  return isProjectAdminOrAbove(db, user, projectId)
+}
+
+/** HSPL read: Support member may open any project in this module. */
+async function canAccessLegalProject(db: D1Database, user: any, projectId: number): Promise<boolean> {
+  if (isLegalSupportMember(user)) return true
+  return canAccessProject(db, user, projectId)
+}
+
+async function canWriteLegalContacts(db: D1Database, user: any, projectId: number): Promise<boolean> {
+  if (await canManageLegal(db, user, projectId)) return true
+  return canAccessProject(db, user, projectId)
 }
 
 // ===================================================
@@ -8393,7 +8463,7 @@ app.put('/api/email-settings', authMiddleware, async (c) => {
     const user = c.get('user') as any
     await ensureEmailSettings(db, user.id)
     const data = await c.req.json()
-    const fields = ['email_enabled','notify_task_assigned','notify_task_updated','notify_task_overdue','notify_project_added','notify_project_updated','notify_project_created','notify_timesheet_approved','notify_payment_request','notify_payment_status','notify_chat_mention','notify_daily_digest','notify_member_added']
+    const fields = ['email_enabled','notify_task_assigned','notify_task_updated','notify_task_overdue','notify_project_added','notify_project_updated','notify_project_created','notify_timesheet_approved','notify_payment_request','notify_payment_status','notify_chat_mention','notify_daily_digest','notify_member_added','notify_design_package']
     const updates = fields.filter(f => data[f] !== undefined).map(f => `${f} = ?`)
     const values = fields.filter(f => data[f] !== undefined).map(f => data[f] ? 1 : 0)
     if (!updates.length) return c.json({ error: 'Nothing to update' }, 400)
@@ -12920,7 +12990,7 @@ app.post('/api/legal/init/:projectId', authMiddleware, async (c) => {
 // PUT /api/legal/stages/:id — Đổi tên giai đoạn
 app.put('/api/legal/stages/:id', authMiddleware, async (c) => {
   const user = c.get('user') as any
-  if (!['system_admin','project_admin','project_leader'].includes(user.role))
+  if (!hasLegalGlobalWriteRole(user))
     return c.json({ error: 'Forbidden' }, 403)
   const id = parseInt(c.req.param('id'))
   const { name } = await c.req.json()
@@ -12936,7 +13006,7 @@ app.put('/api/legal/stages/:id', authMiddleware, async (c) => {
 // POST /api/legal/:projectId/stages — Thêm giai đoạn vào 1 package (hoặc orphan)
 app.post('/api/legal/:projectId/stages', authMiddleware, async (c) => {
   const user = c.get('user') as any
-  if (!['system_admin','project_admin','project_leader'].includes(user.role))
+  if (!hasLegalGlobalWriteRole(user))
     return c.json({ error: 'Forbidden' }, 403)
   const projectId = parseInt(c.req.param('projectId'))
   const { name, package_id } = await c.req.json()
@@ -12988,7 +13058,7 @@ app.post('/api/legal/:projectId/stages', authMiddleware, async (c) => {
 // DELETE /api/legal/stages/:id — Xóa giai đoạn (cascade: xóa luôn items bên trong)
 app.delete('/api/legal/stages/:id', authMiddleware, async (c) => {
   const user = c.get('user') as any
-  if (!['system_admin','project_admin','project_leader'].includes(user.role))
+  if (!hasLegalGlobalWriteRole(user))
     return c.json({ error: 'Forbidden' }, 403)
   const id = parseInt(c.req.param('id'))
   try {
@@ -13020,15 +13090,42 @@ function legalPackageContractInput(data: any) {
 
 // ── Package CRUD ──────────────────────────────────────────────────────────────
 
+// GET /api/legal/projects — danh sách dự án cho HSPL (system_admin + Support member)
+app.get('/api/legal/projects', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  if (!canBrowseAllLegalProjects(user)) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT p.id, p.code, p.name, p.description, p.client, p.location, p.status,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM legal_packages lp WHERE lp.project_id = p.id)
+           AND EXISTS (
+             SELECT 1 FROM legal_packages lp2
+             WHERE lp2.project_id = p.id AND COALESCE(lp2.contract_signed, 0) = 0
+           )
+          THEN 1 ELSE 0
+        END AS has_unsigned_contract
+       FROM projects p ORDER BY p.code ASC`
+    ).all()
+    return c.json({ projects: rows.results || [] })
+  } catch (e: any) { return c.json({ error: e.message }, 500) }
+})
+
 // GET /api/legal/package-counts — số gói thầu theo dự án (danh sách Hồ sơ pháp lý)
 app.get('/api/legal/package-counts', authMiddleware, async (c) => {
   const user = c.get('user') as any
   try {
     const db = c.env.DB
-    const sql = user.role === 'system_admin'
-      ? `SELECT project_id, COUNT(*) AS package_count
+    const sql = canBrowseAllLegalProjects(user)
+      ? `SELECT project_id,
+           COUNT(*) AS package_count,
+           SUM(CASE WHEN COALESCE(contract_signed, 0) = 0 THEN 1 ELSE 0 END) AS unsigned_count
          FROM legal_packages GROUP BY project_id`
-      : `SELECT lp.project_id, COUNT(*) AS package_count
+      : `SELECT lp.project_id,
+           COUNT(*) AS package_count,
+           SUM(CASE WHEN COALESCE(lp.contract_signed, 0) = 0 THEN 1 ELSE 0 END) AS unsigned_count
          FROM legal_packages lp
          WHERE lp.project_id IN (
            SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
@@ -13037,12 +13134,38 @@ app.get('/api/legal/package-counts', authMiddleware, async (c) => {
          )
          GROUP BY lp.project_id`
     const stmt = db.prepare(sql)
-    const rows = user.role === 'system_admin'
+    const rows = canBrowseAllLegalProjects(user)
       ? await stmt.all()
       : await stmt.bind(user.id, user.id, user.id).all()
     const counts: Record<string, number> = {}
-    for (const row of rows.results as any[]) counts[String(row.project_id)] = Number(row.package_count) || 0
-    return c.json({ counts })
+    const has_unsigned_contract: Record<string, boolean> = {}
+    for (const row of rows.results as any[]) {
+      const pid = String(row.project_id)
+      const n = Number(row.package_count) || 0
+      const unsigned = Number(row.unsigned_count) || 0
+      counts[pid] = n
+      has_unsigned_contract[pid] = n > 0 && unsigned > 0
+    }
+    const nameSql = canBrowseAllLegalProjects(user)
+      ? `SELECT project_id, name FROM legal_packages ORDER BY project_id, sort_order, id`
+      : `SELECT lp.project_id, lp.name FROM legal_packages lp
+         WHERE lp.project_id IN (
+           SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+           UNION
+           SELECT project_id FROM project_members WHERE user_id = ?
+         )
+         ORDER BY lp.project_id, lp.sort_order, lp.id`
+    const nameStmt = db.prepare(nameSql)
+    const nameRows = canBrowseAllLegalProjects(user)
+      ? await nameStmt.all()
+      : await nameStmt.bind(user.id, user.id, user.id).all()
+    const package_names: Record<string, string[]> = {}
+    for (const row of (nameRows.results || []) as any[]) {
+      const pid = String(row.project_id)
+      if (!package_names[pid]) package_names[pid] = []
+      package_names[pid].push(String(row.name || ''))
+    }
+    return c.json({ counts, has_unsigned_contract, package_names })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
@@ -13097,8 +13220,12 @@ async function applyProjectVatToPayments(db: D1Database, projectId: number, user
 
 // GET /api/legal/:projectId/packages
 app.get('/api/legal/:projectId/packages', authMiddleware, async (c) => {
+  const user = c.get('user') as any
   const projectId = parseInt(c.req.param('projectId'))
   try {
+    if (!(await canAccessLegalProject(c.env.DB, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập HSPL dự án này' }, 403)
+    }
     const pkgs = await c.env.DB.prepare(
       'SELECT * FROM legal_packages WHERE project_id = ? ORDER BY sort_order'
     ).bind(projectId).all()
@@ -13109,7 +13236,7 @@ app.get('/api/legal/:projectId/packages', authMiddleware, async (c) => {
 // POST /api/legal/:projectId/packages — Thêm gói thầu trống (không hồ sơ mẫu)
 app.post('/api/legal/:projectId/packages', authMiddleware, async (c) => {
   const user = c.get('user') as any
-  if (!['system_admin','project_admin','project_leader'].includes(user.role))
+  if (!hasLegalGlobalWriteRole(user))
     return c.json({ error: 'Forbidden' }, 403)
   const projectId = parseInt(c.req.param('projectId'))
   const body = await c.req.json()
@@ -13137,7 +13264,7 @@ app.post('/api/legal/:projectId/packages', authMiddleware, async (c) => {
 // PUT /api/legal/packages/:id — Đổi tên gói thầu
 app.put('/api/legal/packages/:id', authMiddleware, async (c) => {
   const user = c.get('user') as any
-  if (!['system_admin','project_admin','project_leader'].includes(user.role))
+  if (!hasLegalGlobalWriteRole(user))
     return c.json({ error: 'Forbidden' }, 403)
   const id = parseInt(c.req.param('id'))
   const body = await c.req.json()
@@ -13184,7 +13311,7 @@ app.put('/api/legal/packages/:id', authMiddleware, async (c) => {
 // DELETE /api/legal/packages/:id — Xóa gói thầu (cascade xóa toàn bộ stages + items)
 app.delete('/api/legal/packages/:id', authMiddleware, async (c) => {
   const user = c.get('user') as any
-  if (!['system_admin','project_admin','project_leader'].includes(user.role))
+  if (!hasLegalGlobalWriteRole(user))
     return c.json({ error: 'Forbidden' }, 403)
   const id = parseInt(c.req.param('id'))
   try {
@@ -13219,7 +13346,7 @@ app.delete('/api/legal/packages/:id', authMiddleware, async (c) => {
 // POST /api/legal/migrate-packages/:projectId — Migrate dự án cũ sang cấu trúc mới
 app.post('/api/legal/migrate-packages/:projectId', authMiddleware, async (c) => {
   const user = c.get('user') as any
-  if (!['system_admin','project_admin'].includes(user.role))
+  if (!canMigrateLegalPackages(user))
     return c.json({ error: 'Forbidden' }, 403)
   const projectId = parseInt(c.req.param('projectId'))
   try {
@@ -13259,31 +13386,45 @@ app.post('/api/legal/:projectId/copy-from', authMiddleware, async (c) => {
       return c.json({ error: 'Dự án nguồn và đích phải khác nhau' }, 400)
     }
 
-    if (!(await isProjectAdminOrAbove(db, user, destProjectId))) {
+    if (!(await canManageLegal(db, user, destProjectId))) {
       return c.json({ error: 'Không có quyền quản trị HSPL dự án đích' }, 403)
     }
-    if (!(await isProjectAdminOrAbove(db, user, sourceProjectId))) {
+    if (!(await canManageLegal(db, user, sourceProjectId))) {
       return c.json({ error: 'Không có quyền quản trị HSPL dự án nguồn' }, 403)
     }
 
-    const onNameConflict: 'skip' | 'overwrite' =
-      body.on_name_conflict === 'overwrite' ? 'overwrite' : 'skip'
-    const packageIdsFilter: number[] | null = Array.isArray(body.package_ids)
-      ? body.package_ids.map((x: any) => parseInt(String(x), 10)).filter((n: number) => Number.isFinite(n) && n > 0)
-      : null
+    const copyPlan = planLegalCopyFromBody(body as Record<string, unknown>)
+    if ('error' in copyPlan) {
+      return c.json({ error: copyPlan.error }, copyPlan.status)
+    }
+    const {
+      runShellCopy,
+      innerRequested,
+      innerSourcePackageId,
+      innerDestPackageId,
+      packageIdsFilter,
+      onNameConflict,
+    } = copyPlan
 
     let sourcePkgs = await db.prepare(
       'SELECT * FROM legal_packages WHERE project_id = ? ORDER BY sort_order, id'
     ).bind(sourceProjectId).all()
     let srcList = sourcePkgs.results as any[]
-    if (packageIdsFilter && packageIdsFilter.length > 0) {
+    if (runShellCopy && packageIdsFilter && packageIdsFilter.length > 0) {
       const idSet = new Set(packageIdsFilter)
       srcList = srcList.filter((p) => idSet.has(p.id))
       if (srcList.length === 0) {
         return c.json({ error: 'Không tìm thấy gói thầu nguồn đã chọn' }, 400)
       }
+    } else if (!runShellCopy) {
+      srcList = []
     }
 
+    const nameConflicts: { name: string; source_package_id: number; dest_package_id: number; action: string }[] = []
+    const copiedPackages: { source_package_id: number; dest_package_id: number; name: string }[] = []
+    const recalcStages = new Set<number>()
+
+    if (runShellCopy) {
     const destPkgsRes = await db.prepare(
       'SELECT id, name FROM legal_packages WHERE project_id = ?'
     ).bind(destProjectId).all()
@@ -13296,10 +13437,6 @@ app.post('/api/legal/:projectId/copy-from', authMiddleware, async (c) => {
       'SELECT MAX(sort_order) as mo FROM legal_packages WHERE project_id = ?'
     ).bind(destProjectId).first() as any
     let destPkgOrder = destMaxOrderRow?.mo || 0
-
-    const nameConflicts: { name: string; source_package_id: number; dest_package_id: number; action: string }[] = []
-    const copiedPackages: { source_package_id: number; dest_package_id: number; name: string }[] = []
-    const recalcStages = new Set<number>()
 
     for (const srcPkg of srcList) {
       const pkgName = String(srcPkg.name).trim()
@@ -13404,15 +13541,32 @@ app.post('/api/legal/:projectId/copy-from', authMiddleware, async (c) => {
         itemMap.set(it.id, ins.meta.last_row_id as number)
       }
     }
+    }
 
     for (const stageId of recalcStages) {
       await recalculateSiblingsStt(db, stageId, null)
+    }
+
+    let inner_content_result = null as Awaited<ReturnType<typeof copyLegalPackageInnerContent>> | null
+    if (innerRequested) {
+      inner_content_result = await copyLegalPackageInnerContent(db, {
+        sourceProjectId,
+        destProjectId,
+        sourcePackageId: innerSourcePackageId,
+        destPackageId: innerDestPackageId,
+        userId: user.id,
+        onNameConflict,
+      })
+      for (const stageId of inner_content_result.affected_stage_ids) {
+        await recalculateSiblingsStt(db, stageId, null)
+      }
     }
 
     return c.json({
       success: true,
       copied_packages: copiedPackages,
       name_conflicts: nameConflicts,
+      inner_content: inner_content_result,
       ...(await syncProjectContractFromPackages(db, destProjectId)),
     })
   } catch (e: any) {
@@ -13426,9 +13580,10 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    if (!(await canAccessProject(db, user, projectId))) {
+    if (!(await canAccessLegalProject(db, user, projectId))) {
       return c.json({ error: 'Không có quyền truy cập HSPL dự án này' }, 403)
     }
+    const can_manage = await canManageLegal(db, user, projectId)
 
     // Không auto-migrate trên GET (Wave 4) — dùng POST /api/legal/:projectId/migrate-packages
     const shell = c.req.query('view') === 'shell'
@@ -13584,7 +13739,8 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
         ...enrichPaymentMetrics(pr, (projectInfo as any)?.management_fee_pct || 0),
       })),
       minutes: shell ? null : minutes.results,
-      project: projectInfo
+      project: projectInfo,
+      can_manage,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -13656,7 +13812,7 @@ app.put('/api/legal/items/:id', authMiddleware, async (c) => {
 
 app.delete('/api/legal/items/:id', authMiddleware, async (c) => {
   const user = c.get('user') as any
-  if (!(['system_admin','project_admin','project_leader'] as string[]).includes(user.role)) {
+  if (!hasLegalGlobalWriteRole(user)) {
     return c.json({ error: 'Forbidden' }, 403)
   }
   const id = parseInt(c.req.param('id'))
@@ -13744,7 +13900,7 @@ app.post('/api/legal/items/:id/reorder', authMiddleware, async (c) => {
     ).bind(id).first() as any
     if (!item) return c.json({ error: 'Not found' }, 404)
 
-    if (!(await isProjectAdminOrAbove(db, user, item.project_id))) {
+    if (!(await canManageLegal(db, user, item.project_id))) {
       return c.json({ error: 'Không có quyền sắp xếp hạng mục HSPL' }, 403)
     }
 
@@ -13984,7 +14140,7 @@ app.get('/api/legal/documents/:id/file', authMiddleware, async (c) => {
     'SELECT * FROM legal_documents WHERE id = ?'
   ).bind(id).first() as any
   if (!row) return c.body(null, 404)
-  if (!(await canAccessProject(c.env.DB, user, row.project_id))) {
+  if (!(await canAccessLegalProject(c.env.DB, user, row.project_id))) {
     return c.json({ error: 'Không có quyền tải tài liệu này' }, 403)
   }
   const key = row.r2_key || (isR2Ref(row.file_url) ? r2KeyFromRef(row.file_url) : null)
@@ -14146,7 +14302,7 @@ app.put('/api/legal/letters/:id', authMiddleware, async (c) => {
 
 app.delete('/api/legal/letters/:id', authMiddleware, async (c) => {
   const user = c.get('user') as any
-  if (!['system_admin','project_admin','project_leader'].includes(user.role)) {
+  if (!hasLegalGlobalWriteRole(user)) {
     return c.json({ error: 'Forbidden' }, 403)
   }
   const id = parseInt(c.req.param('id'))
@@ -14371,7 +14527,7 @@ app.get('/api/legal/:projectId/payments', authMiddleware, async (c) => {
   const projectId = parseInt(c.req.param('projectId'))
   try {
     const user = c.get('user') as any
-    if (!(await canAccessProject(c.env.DB, user, projectId))) {
+    if (!(await canAccessLegalProject(c.env.DB, user, projectId))) {
       return c.json({ error: 'Không có quyền xem thanh toán dự án này' }, 403)
     }
     const rows = await c.env.DB.prepare(`
@@ -14405,7 +14561,7 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
   const projectId = parseInt(c.req.param('projectId'))
   const user = c.get('user') as any
   try {
-    if (!(await isProjectAdminOrAbove(c.env.DB, user, projectId))) {
+    if (!(await canManageLegal(c.env.DB, user, projectId))) {
       return c.json({ error: 'Chỉ admin dự án mới được tạo đề nghị thanh toán' }, 403)
     }
     const data = await c.req.json()
@@ -14493,7 +14649,7 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
       'SELECT * FROM payment_requests WHERE id = ?'
     ).bind(id).first() as any
     if (!current) return c.json({ error: 'not found' }, 404)
-    if (!(await isProjectAdminOrAbove(c.env.DB, user, current.project_id))) {
+    if (!(await canManageLegal(c.env.DB, user, current.project_id))) {
       return c.json({ error: 'Chỉ admin dự án mới được sửa thanh toán' }, 403)
     }
 
@@ -14632,7 +14788,7 @@ app.delete('/api/legal/payments/:id', authMiddleware, async (c) => {
       'SELECT id, project_id, revenue_id FROM payment_requests WHERE id = ?'
     ).bind(id).first() as any
     if (!payment) return c.json({ error: 'not found' }, 404)
-    if (!(await isProjectAdminOrAbove(c.env.DB, user, payment.project_id))) {
+    if (!(await canManageLegal(c.env.DB, user, payment.project_id))) {
       return c.json({ error: 'Chỉ admin dự án mới được xóa thanh toán' }, 403)
     }
 
@@ -14660,7 +14816,7 @@ app.get('/api/legal/:projectId/contacts', authMiddleware, async (c) => {
   const user = c.get('user') as any
   try {
     const db = c.env.DB
-    if (!(await canAccessProject(db, user, projectId))) {
+    if (!(await canAccessLegalProject(db, user, projectId))) {
       return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
     }
     const row = await db.prepare(
@@ -14678,8 +14834,8 @@ app.put('/api/legal/:projectId/contacts', authMiddleware, async (c) => {
   const user = c.get('user') as any
   try {
     const db = c.env.DB
-    if (!(await canAccessProject(db, user, projectId))) {
-      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    if (!(await canWriteLegalContacts(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền cập nhật contact dự án này' }, 403)
     }
     const body = await c.req.json()
     const existing = await db.prepare(
@@ -15048,7 +15204,7 @@ app.post('/api/legal/import-excel/:projectId', authMiddleware, async (c) => {
   const db = c.env.DB
 
   try {
-    if (!(await isProjectAdminOrAbove(db, user, projectId))) {
+    if (!(await canManageLegal(db, user, projectId))) {
       return c.json({ error: 'Chỉ admin dự án mới được import HSPL' }, 403)
     }
     // --- Đọc file từ multipart ---
@@ -18588,6 +18744,14 @@ app.post('/api/assistant/confirm', authMiddleware, async (c) => {
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
+})
+
+registerDesignRoutes(app, {
+  authMiddleware,
+  canAccessProject,
+  isProjectLeaderOrAdmin,
+  sendEmail,
+  getUserEmailInfo,
 })
 
 export default app

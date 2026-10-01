@@ -1,5 +1,6 @@
 // ================================================================
 // OneCad BIM Management System - Frontend Application
+// bundle: 20261001i
 // ================================================================
 
 // Helper: dùng XLSXStyle (có cell styling) cho writeFile, dùng XLSX core cho read/parse
@@ -829,7 +830,7 @@ function logout() {
 // ================================================================
 // Valid pages that can be deep-linked via URL hash
 const _navigablePages = [
-  'dashboard', 'projects', 'tasks', 'timesheet', 'gantt', 'costs',
+  'dashboard', 'project-dashboard', 'projects', 'tasks', 'timesheet', 'gantt', 'costs',
   'assets', 'depreciation', 'users', 'profile', 'email-admin',
   'productivity', 'finance-project', 'labor-cost', 'cost-types',
   'system-config', 'analytics', 'legal', 'leave', 'executive-dashboard'
@@ -897,7 +898,7 @@ function navigate(page, opts = {}) {
   if (navEl) navEl.classList.add('active')
 
   const breadcrumbs = {
-    dashboard: 'Dashboard', projects: 'Dự án', 'project-detail': 'Chi tiết dự án',
+    dashboard: 'Dashboard', 'project-dashboard': 'Dashboard dự án', projects: 'Dự án', 'project-detail': 'Chi tiết dự án',
     tasks: 'Công việc', timesheet: 'Timesheet', gantt: 'Tiến độ Gantt',
     costs: 'Chi phí & Doanh thu', assets: 'Tài sản', depreciation: 'Khấu hao tài sản',
     users: 'Nhân sự', profile: 'Hồ sơ', 'email-admin': 'Email Thông báo',
@@ -928,6 +929,10 @@ function navigate(page, opts = {}) {
     }).catch(e => toast('Lỗi tải Executive Dashboard: ' + e.message, 'error'))
   }
   else if (page === 'dashboard') loadDashboard()
+  else if (page === 'project-dashboard') {
+    if (typeof initProjectDashboardFilters === 'function') initProjectDashboardFilters()
+    if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
+  }
   else if (page === 'projects') loadProjects()
   else if (page === 'tasks') loadTasks()
   else if (page === 'timesheet') loadTimesheets()
@@ -2362,6 +2367,11 @@ function buildTaskPayloadFromGrid(taskBase, gridFields, opts = {}) {
           ? 1
           : 0,
     hstk_date: (pick('hstk_date', taskBase?.hstk_date) ? String(pick('hstk_date', taskBase?.hstk_date)).trim() : null) || null,
+    design_package_id: (() => {
+      const hid = document.getElementById('taskDesignPackageId')
+      const v = pick('design_package_id', taskBase?.design_package_id ?? (hid ? hid.value : window._taskDesignPackageId))
+      return v ? parseInt(v, 10) || null : null
+    })(),
     task_type: pick('task_type', taskBase?.task_type || 'model'),
     model_filename: pick('model_filename', taskBase?.model_filename ?? null) || null,
   }
@@ -2529,8 +2539,18 @@ async function taskGridCommitRow(ev, taskId, context) {
     return
   }
   if (!isNew && _taskGridPayloadUnchanged(taskBase, payload)) return
+  const pkgId = payload.design_package_id ?? taskBase.design_package_id
+  if (pkgId && !String(payload.hstk_date || '').trim()) {
+    const hstkEl = row.querySelector('[data-tfield="hstk_date"]')
+    if (hstkEl && typeof markRequiredField === 'function') {
+      markRequiredField(row, 'hstk_date', 'Phải điền Theo HSTK nào để so sánh với hồ sơ phát sinh task', true)
+    }
+    toast('Phải điền Theo HSTK nào', 'warning')
+    return
+  }
 
   _taskGridInlineBusy = true
+  const prevHstk = row.querySelector('[data-tfield="hstk_date"]')?.value
   try {
     if (isNew) await api('/tasks', { method: 'post', data: payload })
     else await api(`/tasks/${taskId}`, { method: 'put', data: payload })
@@ -2541,6 +2561,15 @@ async function taskGridCommitRow(ev, taskId, context) {
       await loadTasks()
     }
   } catch (e) {
+    if (e.response?.data?.field === 'hstk_date') {
+      const hstkEl = row.querySelector('[data-tfield="hstk_date"]')
+      if (hstkEl) {
+        if (prevHstk !== undefined) hstkEl.value = prevHstk
+        if (typeof markRequiredField === 'function') {
+          markRequiredField(row, 'hstk_date', e.response?.data?.error || '', true)
+        }
+      }
+    }
     toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
   } finally {
     _taskGridInlineBusy = false
@@ -3284,6 +3313,10 @@ async function openProjectDetail(id, openChatTab = false) {
             class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-table mr-1"></i>Tổng hợp CV
           </button>
+          <button id="projTab-qlydesign" onclick="switchProjectTab('qlydesign',${project.id})"
+            class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
+            <i class="fas fa-folder-tree mr-1"></i>QLy HSTK
+          </button>
           ${currentUser?.role === 'system_admin' ? `
           <button id="projTab-estimate" onclick="switchProjectTab('estimate',${project.id})"
             class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
@@ -3337,6 +3370,10 @@ async function openProjectDetail(id, openChatTab = false) {
         <div id="projPanel-estimate" class="hidden p-4" style="min-height:400px">
           <div id="estimateContainer_${project.id}"></div>
         </div>` : ''}
+        <!-- QLy HSTK (NAS packages) -->
+        <div id="projPanel-qlydesign" class="hidden p-4" style="min-height:400px">
+          <div id="qlyHstkContainer_${project.id}"></div>
+        </div>
         <!-- Checklist HSTK Panel -->
         <div id="projPanel-hstk" class="hidden p-4" style="min-height:400px">
           <div id="hstkContainer_${project.id}"></div>
@@ -3672,6 +3709,7 @@ async function reloadModelCard(projectId) {
       _reloadTaskFilenameCombobox(projectId, models)
     }
     document.querySelectorAll(`.task-grid-row[data-project-id="${projectId}"]`).forEach(row => _taskGridApplyModelOptions(row))
+    if (typeof refreshQlyHstkIfVisible === 'function') await refreshQlyHstkIfVisible(projectId)
   } catch(e) { console.error('reloadModelCard', e) }
 }
 
@@ -5430,6 +5468,11 @@ async function openTaskModal(taskId = null, projectId = null) {
       if ($('taskWorkNotes')) $('taskWorkNotes').value = task.work_notes || ''
       if ($('taskCdeReport')) $('taskCdeReport').checked = !!task.cde_report
       if ($('taskHstkDate')) $('taskHstkDate').value = task.hstk_date || ''
+      window._taskDesignPackageId = task.design_package_id || null
+      window._taskDesignPackageName = ''
+      const hidLoad = document.getElementById('taskDesignPackageId')
+      if (hidLoad) hidLoad.value = task.design_package_id || ''
+      if (typeof applyHstkRequiredUi === 'function') applyHstkRequiredUi()
       if ($('taskType')) { $('taskType').value = task.task_type || 'model'; updateTaskTypeUI() }
       // Filename combobox will be initialized after project is loaded (below)
       if ($('taskFilename')) $('taskFilename').value = task.model_filename || ''
@@ -5516,6 +5559,10 @@ async function openTaskModal(taskId = null, projectId = null) {
     if ($('taskWorkNotes')) $('taskWorkNotes').value = ''
     if ($('taskCdeReport')) $('taskCdeReport').checked = false
     if ($('taskHstkDate')) $('taskHstkDate').value = ''
+    window._taskDesignPackageId = window._taskDesignPackageId || null
+    const hidNew = document.getElementById('taskDesignPackageId')
+    if (hidNew) hidNew.value = window._taskDesignPackageId || ''
+    if (typeof applyHstkRequiredUi === 'function') applyHstkRequiredUi()
     if ($('taskType')) { $('taskType').value = 'model'; updateTaskTypeUI() }
     if ($('taskFilename')) $('taskFilename').value = ''
     // Init filename combobox empty (will populate on project select)
@@ -5692,6 +5739,13 @@ $('taskForm').addEventListener('submit', async (e) => {
     model_filename: (_cbGetValue('taskFilenameCombobox') || ($('taskFilename') ? $('taskFilename').value.trim() : null)) || null,
   }
   const data = buildTaskPayloadFromGrid({}, gridFields, { isNew: !id })
+  if (data.design_package_id && !String(data.hstk_date || '').trim()) {
+    if (typeof markRequiredField === 'function') {
+      markRequiredField(document.getElementById('taskModal'), 'hstk_date', 'Phải điền Theo HSTK nào để so sánh với hồ sơ phát sinh task', true)
+    }
+    toast('Phải điền Theo HSTK nào', 'warning')
+    return
+  }
   try {
     if (id) await api(`/tasks/${id}`, { method: 'put', data })
     else await api('/tasks', { method: 'post', data })
@@ -5701,11 +5755,34 @@ $('taskForm').addEventListener('submit', async (e) => {
     // Nếu đang xem chi tiết dự án → reload lại để cập nhật realtime
     if ($('page-project-detail')?.classList.contains('active') && window._currentProjectDetailId) {
       _invalidateProjectDetailCache()
-      await openProjectDetail(window._currentProjectDetailId)
+      const stayOnQlyHstk = window._taskFromQlyHstk ||
+        (document.getElementById('projPanel-qlydesign')?.style.display === 'block')
+      window._taskFromQlyHstk = false
+      if (stayOnQlyHstk && typeof refreshQlyHstkIfVisible === 'function') {
+        try {
+          const pid = window._currentProjectDetailId
+          const tasks = await api(`/tasks?project_id=${pid}&limit=${TASK_PROJECT_LIMIT}`)
+          if (_projectDetailFetchCache.projectId === parseInt(pid, 10)) {
+            _projectDetailFetchCache.tasks = tasks
+          }
+          _projTaskAllData = tasks
+          renderProjTaskRows()
+        } catch (_) { /* ignore */ }
+        await refreshQlyHstkIfVisible(window._currentProjectDetailId)
+      } else {
+        await openProjectDetail(window._currentProjectDetailId)
+      }
     } else {
+      window._taskFromQlyHstk = false
       loadTasks()
     }
-  } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
+  } catch (e) {
+    const field = e.response?.data?.field
+    if (field === 'hstk_date' && typeof markRequiredField === 'function') {
+      markRequiredField(document.getElementById('taskModal'), 'hstk_date', e.response?.data?.error || '', true)
+    }
+    toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error')
+  }
 })
 
 function confirmDeleteTask(id, title) {
@@ -6424,6 +6501,7 @@ function switchProjectTab(tab, projectId) {
   const chatPanel     = $('projPanel-chat')
   const summaryPanel  = $('projPanel-summary')
   const hstkPanel     = $('projPanel-hstk')
+  const qlyPanel      = $('projPanel-qlydesign')
   const estimatePanel = $('projPanel-estimate')
   if (taskPanel)     taskPanel.style.display     = tab === 'tasks'    ? 'block' : 'none'
   if (weeklyPanel)   weeklyPanel.style.display   = tab === 'weekly'   ? 'block' : 'none'
@@ -6440,9 +6518,13 @@ function switchProjectTab(tab, projectId) {
     hstkPanel.classList.remove('hidden')
     hstkPanel.style.display = tab === 'hstk' ? 'block' : 'none'
   }
+  if (qlyPanel) {
+    qlyPanel.classList.remove('hidden')
+    qlyPanel.style.display = tab === 'qlydesign' ? 'block' : 'none'
+  }
 
   // Update tab buttons
-  ;['tasks','weekly','chat','summary','estimate'].forEach(key => {
+  ;['tasks','weekly','chat','summary','estimate','qlydesign'].forEach(key => {
     const btn = $(`projTab-${key}`)
     if (btn) btn.className = `tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap${key === tab ? ' active' : ''}`
   })
@@ -6487,6 +6569,13 @@ function switchProjectTab(tab, projectId) {
     if (container && !container._initialized) {
       container._initialized = true
       renderWorkSummaryTab(container, pid)
+    }
+  }
+
+  if (tab === 'qlydesign') {
+    const container = $(`qlyHstkContainer_${pid}`)
+    if (container && typeof initQlyHstkTab === 'function' && !container._qlyHstkLoaded) {
+      initQlyHstkTab(container, pid)
     }
   }
 
@@ -13315,10 +13404,10 @@ function _renderStaffTableRows() {
       }
       const cell = v => v ? `<span class="text-gray-800">${v}</span>` : '<span class="text-gray-300">—</span>'
       const genderTxt = {male:'Nam', female:'Nữ', other:'Khác'}[u.gender] || null
-      const rowBg = (i % 2 === 0) ? '#ffffff' : '#f9fafb'
-      return `<tr class="hover:bg-blue-50 transition-colors cursor-pointer" onmouseover="this.querySelectorAll('.sticky-col').forEach(c=>c.style.background='#eff6ff')" onmouseout="this.querySelectorAll('.sticky-col').forEach(c=>c.style.background='${rowBg}')" onclick="openUserDetail(${u.id})">
-        <td class="sticky-col py-2.5 px-3 text-gray-400 text-xs border-r border-gray-100" style="position:sticky;left:0;z-index:10;background:${rowBg};min-width:42px">${start + i + 1}</td>
-        <td class="sticky-col py-2.5 px-3 border-r border-gray-200" style="position:sticky;left:42px;z-index:10;background:${rowBg};min-width:200px;box-shadow:2px 0 6px rgba(0,0,0,0.08)">
+      const rowStripe = (i % 2 === 0) ? 'staff-row-even' : 'staff-row-odd'
+      return `<tr class="staff-table-row ${rowStripe} transition-colors cursor-pointer" onclick="openUserDetail(${u.id})">
+        <td class="staff-sticky-col py-2.5 px-3 text-gray-400 text-xs border-r border-gray-100" style="position:sticky;left:0;z-index:10;min-width:42px">${start + i + 1}</td>
+        <td class="staff-sticky-col py-2.5 px-3 border-r border-gray-200" style="position:sticky;left:42px;z-index:10;min-width:200px;box-shadow:2px 0 6px rgba(0,0,0,0.08)">
           <div class="flex items-center gap-2">
             ${avatar}
             <div>
@@ -19444,12 +19533,39 @@ let _legalOverviewData = null
 let _legalCostAData = null
 let _legalCurrentTab = 'info'
 let _legalPackageCounts = {}
+let _legalHasUnsignedContract = {}
+let _legalProjectStatusFilter = 'all'
 let _legalTabSetByUser = false
 let _legalProjectSearch = ''
+let _legalRelatedSearch = ''
+let _legalProjectClientFilter = ''
+let _legalPackageNames = {}
 let _legalActivePackageId = null
 let _legalPaymentActivePackageId = null
 let _legalPaymentInlineBusy = false
 let _legalPaymentItemPackageMap = null
+
+function isLegalSupportMemberUser() {
+  if (!currentUser || currentUser.role !== 'member') return false
+  return String(currentUser.department || '').trim().toLowerCase() === 'support'
+}
+
+/** SSOT: overview.can_manage from API after load; Support member before first load. */
+function legalCanManageCurrentProject() {
+  if (_legalOverviewData && typeof _legalOverviewData.can_manage === 'boolean') {
+    return !!_legalOverviewData.can_manage
+  }
+  if (isLegalSupportMemberUser()) return true
+  if (!_legalCurrentProjectId || !currentUser) return false
+  const eff = getEffectiveRoleForProject(_legalCurrentProjectId)
+  return ['system_admin', 'project_admin', 'project_leader'].includes(eff)
+}
+
+function legalHasFullModuleUi() {
+  if (!currentUser) return false
+  if (currentUser.role === 'system_admin' || isLegalSupportMemberUser()) return true
+  return false
+}
 
 function _legalPaymentNormPackageKey(key) {
   if (key === null || key === undefined || key === '') return 0
@@ -19906,33 +20022,161 @@ const PAYMENT_STATUS_COLORS = {
 
 // ── Navigate to Legal page ───────────────────────────────────────────────────
 function legalOnProjectSearch(q) {
-  _legalProjectSearch = (q || '').trim().toLowerCase()
-  renderLegalProjectList()
+  _legalProjectSearch = (q || '').trim()
+  void _legalAfterProjectListFilterChange()
 }
 
-function renderLegalProjectList() {
-  const el = $('legalProjectList')
-  if (!el) return
-  const q = _legalProjectSearch
-  const filtered = (allProjects || []).filter(p => {
-    if (!q) return true
-    const hay = `${p.code || ''} ${p.name || ''}`.toLowerCase()
-    return hay.includes(q)
+function legalOnRelatedSearch(q) {
+  _legalRelatedSearch = (q || '').trim()
+  void _legalAfterProjectListFilterChange()
+}
+
+function _legalRelatedHaystack(p) {
+  const pid = String(p.id)
+  const pkgNames = (_legalPackageNames[pid] || []).join(' ')
+  return _foldVn([
+    p.description,
+    p.name,
+    p.code,
+    p.client,
+    p.location,
+    pkgNames,
+  ].filter(Boolean).join(' '))
+}
+
+const LEGAL_PROJECT_STATUS_CHIPS = [
+  { id: 'all', label: 'Tất cả' },
+  { id: 'active', label: 'Đang làm' },
+  { id: 'on_hold', label: 'Tạm dừng' },
+  { id: 'completed', label: 'HT' },
+]
+
+function _legalProjectMatchesStatusChip(p) {
+  if (_legalProjectStatusFilter === 'pending_sign') _legalProjectStatusFilter = 'all'
+  const chip = _legalProjectStatusFilter || 'all'
+  if (chip === 'all') return true
+  const status = String(p.status || 'active').toLowerCase()
+  if (chip === 'active') return status === 'active'
+  if (chip === 'completed') return status === 'completed'
+  if (chip === 'on_hold') return status === 'on_hold'
+  return true
+}
+
+function _legalFilteredProjects() {
+  const qNameCode = _foldVn(_legalProjectSearch)
+  const qRelated = _foldVn(_legalRelatedSearch)
+  const client = _legalProjectClientFilter
+  return (allProjects || []).filter(p => {
+    if (client && String(p.client || '') !== client) return false
+    if (!_legalProjectMatchesStatusChip(p)) return false
+    if (qNameCode) {
+      const hay = _foldVn(`${p.code || ''} ${p.name || ''}`)
+      if (!hay.includes(qNameCode)) return false
+    }
+    if (qRelated && !_legalRelatedHaystack(p).includes(qRelated)) return false
+    return true
   })
-  if (!filtered.length) {
-    el.innerHTML = '<div class="legal-project-empty">Không tìm thấy dự án</div>'
+}
+
+async function _legalAfterProjectListFilterChange() {
+  const filtered = _legalFilteredProjects()
+  renderLegalProjectStatusChips()
+  renderLegalProjectList()
+  const curId = _legalCurrentProjectId
+  const stillVisible = curId && filtered.some(p => Number(p.id) === Number(curId))
+  if (stillVisible) return
+  if (filtered.length) {
+    await selectLegalProject(filtered[0].id)
     return
   }
-  el.innerHTML = filtered.map(p => {
-    const active = Number(_legalCurrentProjectId) === Number(p.id)
-    const n = _legalPackageCounts[String(p.id)]
-    const pkgLine = n == null ? '' : `<div class="legal-project-pkgs">${n} gói thầu</div>`
-    return `<button type="button" class="legal-project-card${active ? ' active' : ''}" onclick="selectLegalProject(${p.id})">
+  _legalCurrentProjectId = null
+  _legalOverviewData = null
+  _legalShowProjectShell(false)
+  if ($('legalKPIRow')) $('legalKPIRow').style.display = 'none'
+  if ($('legalTabs')) $('legalTabs').style.display = 'none'
+  ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnCopyFromLegal'].forEach(id => {
+    if ($(id)) $(id).style.display = 'none'
+  })
+  if ($('legalProjectSelectCombobox') && typeof _cbAssignValue === 'function') {
+    try { _cbAssignValue('legalProjectSelectCombobox', '') } catch (_) {}
+  }
+}
+
+function renderLegalProjectStatusChips() {
+  const host = $('legalProjectStatusChips')
+  if (!host) return
+  if (_legalProjectStatusFilter === 'pending_sign') _legalProjectStatusFilter = 'all'
+  const active = _legalProjectStatusFilter || 'all'
+  host.innerHTML = LEGAL_PROJECT_STATUS_CHIPS.map(chip => {
+    const sel = chip.id === active
+    return `<button type="button" role="tab" aria-selected="${sel ? 'true' : 'false'}"
+      class="legal-project-status-chip${sel ? ' active' : ''}"
+      onclick="legalOnProjectStatusFilter('${chip.id}')">${escHtml(chip.label)}</button>`
+  }).join('')
+}
+
+async function legalOnProjectStatusFilter(chipId) {
+  const next = chipId || 'all'
+  if (_legalProjectStatusFilter === next) return
+  _legalProjectStatusFilter = next
+  await _legalAfterProjectListFilterChange()
+}
+
+function _legalCanBrowseAllLegalProjects() {
+  if (!currentUser) return false
+  if (currentUser.role === 'system_admin') return true
+  return isLegalSupportMemberUser()
+}
+
+function _legalInstallClientFilterCombobox() {
+  if (!$('legalClientFilterCombobox')) return
+  const uniqueClients = [...new Set(
+    (allProjects || []).map(p => p.client).filter(c => c && String(c).trim())
+  )].sort((a, b) => String(a).localeCompare(String(b), 'vi'))
+  const clientItems = uniqueClients.map(c => ({ value: c, label: c }))
+  const host = $('legalClientFilterCombobox')
+  if (host) {
+    host.title = uniqueClients.length
+      ? ''
+      : 'Chưa có chủ đầu tư trong dữ liệu (cột client trống trên mọi dự án bạn xem được).'
+  }
+  createCombobox('legalClientFilterCombobox', {
+    placeholder: 'Tất cả chủ đầu tư',
+    items: clientItems,
+    value: _legalProjectClientFilter || '',
+    minWidth: '180px',
+    onchange: (val) => legalOnClientFilterChange(val)
+  })
+}
+
+async function legalOnClientFilterChange(val) {
+  _legalProjectClientFilter = (val || '').trim()
+  await _legalAfterProjectListFilterChange()
+}
+
+function _legalProjectCardHtml(p) {
+  const active = Number(_legalCurrentProjectId) === Number(p.id)
+  const n = _legalPackageCounts[String(p.id)]
+  const pkgLine = n == null ? '' : `<div class="legal-project-pkgs">${n} gói thầu</div>`
+  return `<button type="button" class="legal-project-card${active ? ' active' : ''}" onclick="selectLegalProject(${p.id})">
       <div class="legal-project-code">${escHtml(p.code || '—')}</div>
       <div class="legal-project-name">${escHtml(p.name || '')}</div>
       ${pkgLine}
     </button>`
-  }).join('')
+}
+
+function renderLegalProjectList() {
+  renderLegalProjectStatusChips()
+  const el = $('legalProjectList')
+  if (!el) return
+  const filtered = _legalFilteredProjects().slice().sort((a, b) =>
+    String(a.code || '').localeCompare(String(b.code || ''), 'vi')
+  )
+  if (!filtered.length) {
+    el.innerHTML = '<div class="legal-project-empty">Không tìm thấy dự án</div>'
+    return
+  }
+  el.innerHTML = filtered.map(_legalProjectCardHtml).join('')
 }
 
 function _legalShowProjectShell(show) {
@@ -19975,15 +20219,39 @@ async function loadLegalPackageCounts() {
   try {
     const data = await api('/legal/package-counts')
     _legalPackageCounts = data?.counts || {}
-  } catch (_) { _legalPackageCounts = {} }
+    _legalHasUnsignedContract = data?.has_unsigned_contract || {}
+    _legalPackageNames = data?.package_names || {}
+  } catch (_) {
+    _legalPackageCounts = {}
+    _legalHasUnsignedContract = {}
+    _legalPackageNames = {}
+  }
 }
 
 async function loadLegal() {
-  if (allProjects.length === 0) {
-    try { allProjects = (await api('/projects')).projects || [] } catch(e) {}
-  }
+  try {
+    if (_legalCanBrowseAllLegalProjects()) {
+      const data = await api('/legal/projects')
+      allProjects = data?.projects || []
+    } else if (!allProjects.length || _projectsCacheKind === 'slim') {
+      const data = await api('/projects')
+      allProjects = data?.projects || (Array.isArray(data) ? data : [])
+      if (_projectsCacheKind === 'slim') {
+        _projectsCacheKind = 'full'
+        _projectsCacheAt = Date.now()
+        refreshProjectRoleCache()
+      }
+    }
+  } catch (e) {}
   await loadLegalPackageCounts()
+  _legalInstallClientFilterCombobox()
   if (!_legalCurrentProjectId) _legalCurrentProjectId = _legalPickDefaultProjectId()
+  else {
+    const filtered = _legalFilteredProjects()
+    const stillVisible = filtered.some(p => Number(p.id) === Number(_legalCurrentProjectId))
+    if (!stillVisible && filtered.length) _legalCurrentProjectId = filtered[0].id
+    else if (!stillVisible) _legalCurrentProjectId = null
+  }
 
   renderLegalProjectList()
 
@@ -20066,9 +20334,10 @@ async function loadLegalProject(projectId) {
     // Member chỉ được xem + tạo văn bản gửi đi
     // Project Leader trở lên: toàn quyền
     const effRole = getEffectiveRoleForProject(requestedId)
-    // Kiểm tra quyền: chỉ system_admin mới có full quyền
-    const isSystemAdmin = effRole === 'system_admin'
-    const isDestLegalAdmin = ['system_admin', 'project_admin'].includes(effRole)
+    const canManage = !!data.can_manage
+    const isDestLegalAdmin = canManage && (
+      ['system_admin', 'project_admin'].includes(effRole) || isLegalSupportMemberUser()
+    )
     if ($('btnCopyFromLegal')) {
       $('btnCopyFromLegal').style.display = isDestLegalAdmin ? '' : 'none'
     }
@@ -20076,8 +20345,8 @@ async function loadLegalProject(projectId) {
     // Show KPI row
     $('legalKPIRow').style.display = ''
 
-    // Điều chỉnh tabs theo quyền
-    if (!isSystemAdmin) {
+    // Điều chỉnh tabs theo quyền (system_admin + Support member: full HSPL trừ Chi phí A)
+    if (!legalHasFullModuleUi()) {
       // Member / Project Leader / Project Admin: chỉ hiện Văn bản gửi đi, Biên bản họp, Tài liệu đính kèm
       $('legalTabs').style.display = ''
       ;['stages', 'payments', 'cost-a', 'info'].forEach(t => {
@@ -20815,15 +21084,14 @@ function switchLegalPackageTab(pkgId) {
 }
 
 function canReorderLegalChecklist() {
-  if (!_legalCurrentProjectId || !currentUser) return false
+  if (!legalCanManageCurrentProject()) return false
+  if (isLegalSupportMemberUser()) return true
   const eff = getEffectiveRoleForProject(_legalCurrentProjectId)
   return ['system_admin', 'project_admin'].includes(eff)
 }
 
 function canDeleteLegalChecklist() {
-  if (!_legalCurrentProjectId || !currentUser) return false
-  const eff = getEffectiveRoleForProject(_legalCurrentProjectId)
-  return ['system_admin', 'project_admin', 'project_leader'].includes(eff)
+  return legalCanManageCurrentProject()
 }
 
 let _legalDndActive = null
@@ -24352,6 +24620,32 @@ function closeLegalCopyFromModal() {
   if (m) m.classList.add('hidden')
 }
 
+function _legalCopyFillInnerSourcePkgOptions(pkgs) {
+  const innerSrc = $('legalCopyInnerSourcePkg')
+  if (!innerSrc) return
+  if (!pkgs || pkgs.length === 0) {
+    innerSrc.innerHTML = '<option value="">— Dự án nguồn chưa có gói —</option>'
+    innerSrc.disabled = true
+    return
+  }
+  innerSrc.disabled = false
+  innerSrc.innerHTML = `<option value="">— Chọn gói nguồn —</option>${pkgs.map(p =>
+    `<option value="${p.id}">${escHtml(p.name)}</option>`).join('')}`
+}
+
+async function _legalCopyFillInnerDestPkgOptions() {
+  const innerDest = $('legalCopyInnerDestPkg')
+  if (!innerDest || !_legalCurrentProjectId) return
+  try {
+    const data = await api(`/legal/${_legalCurrentProjectId}/packages`)
+    const pkgs = data.packages || []
+    innerDest.innerHTML = `<option value="">— Không sao chép nội dung —</option>${pkgs.map(p =>
+      `<option value="${p.id}">${escHtml(p.name)}</option>`).join('')}`
+  } catch (e) {
+    innerDest.innerHTML = `<option value="">— Lỗi tải gói đích —</option>`
+  }
+}
+
 async function onLegalCopyFromSourceChange() {
   const sel = $('legalCopyFromSource')
   const wrap = $('legalCopyFromPkgWrap')
@@ -24361,6 +24655,7 @@ async function onLegalCopyFromSourceChange() {
   if (!srcId) {
     wrap.style.display = 'none'
     list.innerHTML = ''
+    _legalCopyFillInnerSourcePkgOptions([])
     return
   }
   try {
@@ -24375,9 +24670,11 @@ async function onLegalCopyFromSourceChange() {
           <span>${escHtml(p.name)}</span>
         </label>`).join('')
     }
+    _legalCopyFillInnerSourcePkgOptions(pkgs)
     wrap.style.display = ''
   } catch (e) {
     list.innerHTML = `<p class="text-red-600 text-sm">${escHtml(e.message)}</p>`
+    _legalCopyFillInnerSourcePkgOptions([])
     wrap.style.display = ''
   }
 }
@@ -24405,6 +24702,12 @@ async function openLegalCopyFromModal() {
   if (skipRadio) skipRadio.checked = true
   $('legalCopyFromPkgWrap').style.display = 'none'
   $('legalCopyFromPkgList').innerHTML = ''
+  const innerSrc = $('legalCopyInnerSourcePkg')
+  if (innerSrc) {
+    innerSrc.innerHTML = '<option value="">— Chọn dự án nguồn trước —</option>'
+    innerSrc.disabled = true
+  }
+  await _legalCopyFillInnerDestPkgOptions()
   $('modalLegalCopyFrom').classList.remove('hidden')
 }
 
@@ -24416,6 +24719,18 @@ async function executeLegalCopyFrom() {
     return
   }
   const checked = [...document.querySelectorAll('.legal-copy-pkg-cb:checked')].map(el => parseInt(el.value, 10))
+  const innerSourcePkgId = parseInt($('legalCopyInnerSourcePkg')?.value, 10)
+  const innerDestPkgId = parseInt($('legalCopyInnerDestPkg')?.value, 10)
+  const innerBoth = innerSourcePkgId > 0 && innerDestPkgId > 0
+  const innerPartial = (innerSourcePkgId > 0) !== (innerDestPkgId > 0)
+  if (innerPartial) {
+    toast('Chọn cả gói nguồn và gói đích để sao chép nội dung', 'warning')
+    return
+  }
+  if (!checked.length && !innerBoth) {
+    toast('Chọn gói thầu cần sao chép hoặc cặp gói nguồn/đích', 'warning')
+    return
+  }
   const conflictMode = document.querySelector('input[name="legalCopyNameConflict"]:checked')?.value || 'skip'
   const btn = $('btnLegalCopyFromSubmit')
   if (btn) btn.disabled = true
@@ -24425,24 +24740,41 @@ async function executeLegalCopyFrom() {
       on_name_conflict: conflictMode,
     }
     if (checked.length) payload.package_ids = checked
+    if (innerBoth) {
+      payload.inner_content = {
+        source_package_id: innerSourcePkgId,
+        dest_package_id: innerDestPkgId,
+      }
+    }
     const res = await api(`/legal/${_legalCurrentProjectId}/copy-from`, { method: 'POST', data: payload })
     const copied = res.copied_packages || []
     const conflicts = res.name_conflicts || []
-    let msg = copied.length
-      ? `Đã sao chép ${copied.length} gói thầu.`
-      : 'Không có gói nào được sao chép.'
+    const inner = res.inner_content
+    const parts = []
+    if (copied.length) parts.push(`Đã sao chép ${copied.length} gói thầu`)
+    else if (!innerBoth) parts.push('Không có gói thầu mới được sao chép')
+    if (inner) {
+      parts.push(
+        `Nội dung gói: +${inner.copied_items || 0} hạng mục, +${inner.copied_documents || 0} tài liệu, +${inner.copied_letters || 0} văn bản` +
+        ((inner.skipped_items || inner.skipped_documents || inner.skipped_letters)
+          ? ` (bỏ qua trùng: ${(inner.skipped_items || 0) + (inner.skipped_documents || 0) + (inner.skipped_letters || 0)})`
+          : '')
+      )
+    }
+    let msg = parts.join('. ') + (parts.length ? '.' : 'Không có thay đổi.')
     if (conflicts.length) {
       const skipped = conflicts.filter(c => c.action === 'skipped').map(c => c.name)
-      if (skipped.length) msg += ` Bỏ qua trùng tên: ${skipped.join(', ')}.`
+      if (skipped.length) msg += ` Bỏ qua gói trùng tên: ${skipped.join(', ')}.`
     }
-    toast(msg, copied.length ? 'success' : 'warning')
+    const didWork = copied.length > 0 || (inner && ((inner.copied_items || 0) + (inner.copied_documents || 0) + (inner.copied_letters || 0) > 0))
+    toast(msg, didWork ? 'success' : 'warning')
     const result = $('legalCopyFromResult')
     if (result) {
       result.classList.remove('hidden')
       result.innerHTML = `<p class="text-green-700">${escHtml(msg)}</p>`
     }
     await loadLegalProject(_legalCurrentProjectId)
-    if (copied.length) closeLegalCopyFromModal()
+    if (didWork) closeLegalCopyFromModal()
   } catch (e) {
     toast('Sao chép thất bại: ' + e.message, 'error')
   } finally {
