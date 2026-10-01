@@ -899,20 +899,7 @@
     if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
   }
 
-  window.selectProjectDashboard = function selectProjectDashboard(projectId) {
-    const root = document.getElementById('projectDashboardRoot')
-    const listEl = root?.querySelector('.pd-project-list')
-    const listScroll = listEl ? listEl.scrollTop : 0
-    window._pdState.selectedProjectId = projectId
-    if (window._pdLastData && root) {
-      renderProjectDashboard(root, window._pdLastData, { preserveListScroll: listScroll })
-    }
-  }
-
-  window.loadProjectDashboardPage = async function loadProjectDashboardPage() {
-    const root = document.getElementById('projectDashboardRoot')
-    if (!root) return
-    root.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải…</div>`
+  function projectDashboardQueryParams() {
     const tab = window._pdState?.tab || 'project'
     const memberId = tab === 'member' ? (document.getElementById('pdMemberFilter')?.value || '') : ''
     const status = document.getElementById('pdStatusFilter')?.value || ''
@@ -921,10 +908,69 @@
     if (memberId) q.set('member_id', memberId)
     if (status) q.set('status', status)
     if (stuck) q.set('stuck', stuck)
+    return q
+  }
+
+  function mergeProjectDashboardDetail(projectId, detail) {
+    if (!window._pdLastData?.projects) return
+    const idx = window._pdLastData.projects.findIndex(p => p.id === projectId)
+    if (idx >= 0) {
+      window._pdLastData.projects[idx] = { ...window._pdLastData.projects[idx], ...detail, detail_loaded: true }
+    }
+  }
+
+  window._pdDetailLoading = window._pdDetailLoading || null
+
+  async function loadProjectDashboardDetail(projectId) {
+    const root = document.getElementById('projectDashboardRoot')
+    if (!root || !projectId) return
+    const detailEl = root.querySelector('.pd-project-detail')
+    if (detailEl) {
+      detailEl.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải chi tiết…</div>`
+    }
+    const q = projectDashboardQueryParams()
+    q.set('project_id', String(projectId))
+    const reqId = (window._pdDetailLoading = Symbol('pd-detail'))
+    try {
+      const data = await api(`/project-dashboard?${q.toString()}`)
+      if (window._pdDetailLoading !== reqId) return
+      if (data.project) {
+        mergeProjectDashboardDetail(projectId, data.project)
+        const listEl = root.querySelector('.pd-project-list')
+        const listScroll = listEl ? listEl.scrollTop : 0
+        renderProjectDashboard(root, window._pdLastData, { preserveListScroll: listScroll })
+      }
+    } catch (e) {
+      if (window._pdDetailLoading !== reqId) return
+      if (detailEl) {
+        detailEl.innerHTML = `<p class="text-red-600 text-sm p-4">Không tải được chi tiết dự án: ${escHtml(e.message)}</p>`
+      }
+    }
+  }
+
+  window.selectProjectDashboard = function selectProjectDashboard(projectId) {
+    const root = document.getElementById('projectDashboardRoot')
+    const listEl = root?.querySelector('.pd-project-list')
+    const listScroll = listEl ? listEl.scrollTop : 0
+    window._pdState.selectedProjectId = projectId
+    if (window._pdLastData && root) {
+      renderProjectDashboard(root, window._pdLastData, { preserveListScroll: listScroll })
+      const proj = window._pdLastData.projects?.find(p => p.id === projectId)
+      if (!proj?.detail_loaded) void loadProjectDashboardDetail(projectId)
+    }
+  }
+
+  window.loadProjectDashboardPage = async function loadProjectDashboardPage() {
+    const root = document.getElementById('projectDashboardRoot')
+    if (!root) return
+    root.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải…</div>`
+    const q = projectDashboardQueryParams()
     try {
       const data = await api(`/project-dashboard?${q.toString()}`)
       window._pdLastData = data
       renderProjectDashboard(root, data)
+      const selId = window._pdState.selectedProjectId
+      if (selId) void loadProjectDashboardDetail(selId)
     } catch (e) {
       window._pdLastData = null
       root.innerHTML = `<p class="text-red-600">${escHtml(e.message)}</p>`
@@ -971,9 +1017,12 @@
   function renderCategoryMatrix(p) {
     const matrix = p.category_matrix || {}
     const catCodes = Object.keys(matrix).sort()
-    if (!catCodes.length) return ''
-    const discCodes = [...new Set(catCodes.flatMap(c => Object.keys(matrix[c] || {})))].sort()
-    if (!discCodes.length) return ''
+    const discCodes = catCodes.length
+      ? [...new Set(catCodes.flatMap(c => Object.keys(matrix[c] || {})))].sort()
+      : []
+    if (!catCodes.length || !discCodes.length) {
+      return `<p class="pd-section-title">Hạng mục × bộ môn (rev đã cập nhật / hiện tại)</p><p class="pd-empty-hint text-sm">Chưa có dữ liệu ma trận hạng mục.</p>`
+    }
     let tbl = '<table class="pd-table pd-matrix"><thead><tr><th>Hạng mục</th>'
     for (const dc of discCodes) tbl += `<th class="font-mono">${escHtml(dc)}</th>`
     tbl += '</tr></thead><tbody>'
@@ -988,7 +1037,6 @@
 
   function renderRecentHstkPackages(p) {
     const discs = p.disciplines || []
-    if (!discs.length) return ''
     let timelineRows = ''
     for (const d of discs) {
       const pkgs = (d.packages_timeline || []).slice(0, 3)
@@ -1003,14 +1051,17 @@
       }).join('')
       timelineRows += '</td></tr>'
     }
-    if (!timelineRows) return ''
-    return `<p class="pd-section-title pd-recent-hstk">3 hồ sơ HSTK gần nhất / đã cập nhật (theo bộ môn)</p>
-      <div class="pd-table-wrap"><table class="pd-table"><tbody>${timelineRows}</tbody></table></div>`
+    const body = timelineRows
+      ? `<table class="pd-table"><tbody>${timelineRows}</tbody></table>`
+      : `<p class="pd-empty-hint text-sm">Chưa có hồ sơ HSTK gần đây.</p>`
+    return `<p class="pd-section-title pd-recent-hstk">3 hồ sơ HSTK gần nhất / đã cập nhật (theo bộ môn)</p><div class="pd-table-wrap">${body}</div>`
   }
 
   function renderDisciplineHstkSection(p) {
     const discs = p.disciplines || []
-    if (!discs.length) return ''
+    if (!discs.length) {
+      return `<p class="pd-section-title">Hồ sơ theo bộ môn</p><p class="pd-empty-hint text-sm">Chưa khai báo bộ môn HSTK trên dự án.</p>`
+    }
     let rows = ''
     for (const d of discs) {
       const hasPkg = (d.packages_timeline || []).length > 0 || !!d.latest_hstk
@@ -1032,7 +1083,13 @@
 
   function renderOpenTasksTable(p) {
     const tasks = p.open_tasks_preview || []
-    if (!tasks.length) return ''
+    if (!tasks.length) {
+      const hint =
+        (p.open_tasks || 0) > 0
+          ? 'Có task mở trên dự án nhưng chưa có dòng hiển thị (kiểm tra quyền hoặc tải lại).'
+          : 'Không có task model chưa xong.'
+      return `<p class="pd-section-title">Model / task chưa xong</p><p class="pd-empty-hint text-sm">${escHtml(hint)}</p>`
+    }
     const rows = tasks.map(t => {
       const hstk = t.hstk_date || '—'
       const status = PD_TASK_STATUS[t.status] || t.status || '—'
@@ -1145,6 +1202,9 @@
   }
 
   function renderProjectDetailPanel(p, workloadHtml) {
+    if (p.detail_loaded === false) {
+      return `${workloadHtml || ''}<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải chi tiết…</div>`
+    }
     const discCount = (p.disciplines || []).length
     const lagCount = countCategoryMatrixByStatus(p, 'lagging')
     const noTaskCount = countCategoryMatrixByStatus(p, 'none')

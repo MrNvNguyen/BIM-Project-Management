@@ -1226,11 +1226,35 @@ export function registerDesignRoutes(
       const memberId = c.req.query('member_id')
       const statusFilter = c.req.query('status') || ''
       const stuckOnly = c.req.query('stuck') === '1'
-      const data = await buildProjectDashboard(db, user, isProjectLeaderOrAdmin, {
+      const filters = {
         memberId: memberId ? parseInt(memberId, 10) : null,
         statusFilter,
         stuckOnly,
-      })
+      }
+      const projectIdRaw = c.req.query('project_id')
+      if (projectIdRaw) {
+        const projectId = parseInt(projectIdRaw, 10)
+        if (!Number.isFinite(projectId)) return c.json({ error: 'project_id không hợp lệ' }, 400)
+        if (!(await canAccessProject(db, user, projectId))) {
+          return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+        }
+        const project = await buildProjectDashboardDetail(
+          db,
+          user,
+          projectId,
+          isProjectLeaderOrAdmin,
+          canAccessProject,
+        )
+        if (!project) return c.json({ error: 'Không tìm thấy dự án' }, 404)
+        return c.json({ project })
+      }
+      const data = await buildProjectDashboardList(
+        db,
+        user,
+        isProjectLeaderOrAdmin,
+        canAccessProject,
+        filters,
+      )
       return c.json(data)
     } catch (e: any) {
       return c.json({ error: e.message }, 500)
@@ -1584,12 +1608,12 @@ export async function buildDesignOverview(
   }
 }
 
-export async function buildProjectDashboard(
-  db: D1Database,
+type ProjectDashboardFilters = { memberId: number | null; statusFilter: string; stuckOnly: boolean }
+
+function projectDashboardBaseQuery(
   user: any,
-  isProjectLeaderOrAdmin: (db: D1Database, user: any, projectId?: number) => Promise<boolean>,
-  filters: { memberId: number | null; statusFilter: string; stuckOnly: boolean },
-) {
+  filters: ProjectDashboardFilters,
+): { sql: string; params: unknown[] } {
   let projectQuery = `
     SELECT p.id, p.code, p.name, p.status, p.start_date, p.end_date,
       COALESCE(ts.open_tasks, 0) AS open_tasks,
@@ -1619,112 +1643,216 @@ export async function buildProjectDashboard(
     )`
     params.push(filters.memberId, filters.memberId, filters.memberId)
   }
+  if (user.role !== 'system_admin') {
+    projectQuery += ` AND p.id IN (
+      SELECT project_id FROM project_members WHERE user_id = ?
+      UNION SELECT id FROM projects WHERE admin_id = ? OR leader_id = ?
+    )`
+    params.push(user.id, user.id, user.id)
+  }
   projectQuery += ` ORDER BY p.name`
+  return { sql: projectQuery, params }
+}
 
-  const projects = await db.prepare(projectQuery).bind(...params).all()
+async function batchLightDashboardBlockers(
+  db: D1Database,
+  projects: Array<{ id: number; overdue_tasks: number }>,
+): Promise<Map<number, string[]>> {
+  const map = new Map<number, string[]>()
+  for (const p of projects) {
+    const b: string[] = []
+    if (p.overdue_tasks > 0) b.push('Có task trễ hạn')
+    map.set(p.id, b)
+  }
+  if (!projects.length) return map
+
+  const ids = projects.map(p => p.id)
+  const placeholders = ids.map(() => '?').join(',')
+
+  const discs = await db.prepare(
+    `SELECT project_id, discipline_code, last_scanned_at FROM project_design_disciplines WHERE project_id IN (${placeholders})`,
+  ).bind(...ids).all()
+
+  for (const d of (discs.results || []) as Array<{ project_id: number; discipline_code: string; last_scanned_at?: string | null }>) {
+    const list = map.get(d.project_id) || []
+    if (d.last_scanned_at) {
+      const days = (Date.now() - new Date(d.last_scanned_at).getTime()) / 86400000
+      if (days > 14) list.push(`${d.discipline_code}: chưa quét >14 ngày`)
+    } else if (d.discipline_code) {
+      list.push(`${d.discipline_code}: chưa quét lần nào`)
+    }
+    map.set(d.project_id, list)
+  }
+
+  const pkgCounts = await db.prepare(
+    `SELECT project_id, discipline_code, COUNT(*) AS c FROM design_packages
+     WHERE project_id IN (${placeholders}) GROUP BY project_id, discipline_code`,
+  ).bind(...ids).all()
+  const pkgSet = new Set(
+    ((pkgCounts.results || []) as Array<{ project_id: number; discipline_code: string }>).map(
+      r => `${r.project_id}:${r.discipline_code}`,
+    ),
+  )
+  for (const d of (discs.results || []) as Array<{ project_id: number; discipline_code: string }>) {
+    if (!pkgSet.has(`${d.project_id}:${d.discipline_code}`)) {
+      const list = map.get(d.project_id) || []
+      list.push(`${d.discipline_code}: chưa có gói HSTK`)
+      map.set(d.project_id, list)
+    }
+  }
+
+  const overdueReviews = await db.prepare(
+    `SELECT project_id, folder_name FROM design_packages
+     WHERE project_id IN (${placeholders})
+       AND review_due_date IS NOT NULL AND review_status != 'approved'
+       AND review_due_date < date('now')`,
+  ).bind(...ids).all()
+  for (const r of (overdueReviews.results || []) as Array<{ project_id: number; folder_name: string }>) {
+    const list = map.get(r.project_id) || []
+    list.push(`Gói ${r.folder_name} quá hạn phản hồi`)
+    map.set(r.project_id, list)
+  }
+
+  for (const [id, list] of map) {
+    map.set(id, [...new Set(list)])
+  }
+  return map
+}
+
+export function summarizeDashboardFromOverview(overview: { disciplines: any[] }, p: { overdue_tasks?: number }) {
+  const blockers: string[] = []
+  if (p.overdue_tasks > 0) blockers.push('Có task trễ hạn')
+  let totalRevChanges = 0
+  const discSummaries: any[] = []
+  const categoryMatrix: Record<string, Record<string, any>> = {}
+
+  for (const d of overview.disciplines) {
+    totalRevChanges += d.revision_change_count || 0
+    if (d.last_scanned_at) {
+      const days = (Date.now() - new Date(d.last_scanned_at).getTime()) / 86400000
+      if (days > 14) blockers.push(`${d.discipline_code}: chưa quét >14 ngày`)
+    } else if (d.discipline_code) {
+      blockers.push(`${d.discipline_code}: chưa quét lần nào`)
+    }
+    if (!d.packages?.length && d.discipline_code) {
+      blockers.push(`${d.discipline_code}: chưa có gói HSTK`)
+    }
+    for (const pkg of d.packages || []) {
+      if (pkg.review_due_date && pkg.review_status !== 'approved') {
+        const due = new Date(pkg.review_due_date)
+        if (due < new Date()) blockers.push(`Gói ${pkg.folder_name} quá hạn phản hồi`)
+      }
+    }
+    const latestPkgId = d.latest_package?.id ?? null
+    for (const row of d.model_matrix || []) {
+      if (row.revision_lag >= 1) {
+        blockers.push(`Hạng mục ${row.category_code} chậm ${row.revision_lag} revision (${d.discipline_code})`)
+      }
+      if (row.hstk_compare === 'match_old') blockers.push(`Task chậm HS (${d.discipline_code})`)
+      if (latestPkgId) {
+        const hasLatestPkgTask = (row.tasks || []).some((t: any) => t.design_package_id === latestPkgId)
+        if (!hasLatestPkgTask) {
+          blockers.push(`Hạng mục ${row.category_code} chưa có task theo gói mới nhất (${d.discipline_code})`)
+        }
+      } else if (!row.tasks?.length) {
+        blockers.push(`Hạng mục ${row.category_code} chưa giao task (${d.discipline_code})`)
+      }
+      const cat = row.category_code
+      if (!categoryMatrix[cat]) categoryMatrix[cat] = {}
+      categoryMatrix[cat][d.discipline_code] = {
+        revision_updated: row.revision_updated,
+        revision_current: row.revision_current,
+        revision_lag: row.revision_lag,
+        status:
+          row.revision_lag >= 1
+            ? 'lagging'
+            : row.tasks?.some((t: any) => t.status === 'in_progress')
+              ? 'in_progress'
+              : row.tasks?.length
+                ? 'done'
+                : 'none',
+      }
+    }
+    discSummaries.push({
+      discipline_code: d.discipline_code,
+      discipline_name: d.discipline_name,
+      leader_name: d.leader_name,
+      current_revision: d.current_revision,
+      revision_change_count: d.revision_change_count,
+      latest_hstk: d.latest_package,
+      packages_timeline: dashboardTimelinePackages(d.packages || [], 3).map((pkg: any) => ({
+        folder_name: pkg.folder_name,
+        package_date: pkg.package_date,
+        description: pkg.description,
+        package_type: pkg.package_type,
+        doc_stage: pkg.doc_stage,
+        source: pkg.source,
+        review_status: pkg.review_status,
+        review_due_date: pkg.review_due_date,
+        revision: pkg.revision,
+        open_path: pkg.open_path,
+        outgoing_letter_number: pkg.letter_number,
+      })),
+    })
+  }
+
+  return {
+    totalRevChanges,
+    discSummaries,
+    categoryMatrix,
+    blockers: [...new Set(blockers)],
+  }
+}
+
+async function fetchOpenTaskPreviewForDashboard(
+  db: D1Database,
+  user: any,
+  projectId: number,
+  canAccessProject: (db: D1Database, user: any, projectId: number) => Promise<boolean>,
+): Promise<any[]> {
+  if (!(await canAccessProject(db, user, projectId))) return []
+  const ot = await db.prepare(
+    `SELECT t.id, t.title, t.discipline_code, t.category_id, t.due_date, t.status, t.hstk_date,
+            u.full_name AS assigned_to_name, c.name AS category_name
+     FROM tasks t
+     LEFT JOIN users u ON u.id = t.assigned_to
+     LEFT JOIN categories c ON c.id = t.category_id
+     WHERE t.project_id = ? AND t.status NOT IN ('completed','review','cancelled')
+     ORDER BY t.due_date ASC LIMIT 50`,
+  ).bind(projectId).all()
+  return (ot.results || []) as any[]
+}
+
+export async function buildProjectDashboardList(
+  db: D1Database,
+  user: any,
+  isProjectLeaderOrAdmin: (db: D1Database, user: any, projectId?: number) => Promise<boolean>,
+  canAccessProject: (db: D1Database, user: any, projectId: number) => Promise<boolean>,
+  filters: ProjectDashboardFilters,
+) {
+  const { sql, params } = projectDashboardBaseQuery(user, filters)
+  const projects = await db.prepare(sql).bind(...params).all()
+  const raw = (projects.results || []) as any[]
+  const lightBlockers = await batchLightDashboardBlockers(
+    db,
+    raw.map(p => ({ id: p.id, overdue_tasks: p.overdue_tasks })),
+  )
+
   const rows: any[] = []
-
-  for (const p of (projects.results || []) as any[]) {
-    const overview = await buildDesignOverview(db, p.id, user, isProjectLeaderOrAdmin)
-    const blockers: string[] = []
-    if (p.overdue_tasks > 0) blockers.push('Có task trễ hạn')
-    let totalRevChanges = 0
-    const discSummaries: any[] = []
-    const categoryMatrix: Record<string, Record<string, any>> = {}
-
-    for (const d of overview.disciplines) {
-      totalRevChanges += d.revision_change_count || 0
-      if (d.last_scanned_at) {
-        const days = (Date.now() - new Date(d.last_scanned_at).getTime()) / 86400000
-        if (days > 14) blockers.push(`${d.discipline_code}: chưa quét >14 ngày`)
-      } else if (d.discipline_code) {
-        blockers.push(`${d.discipline_code}: chưa quét lần nào`)
-      }
-      if (!d.packages?.length && d.discipline_code) {
-        blockers.push(`${d.discipline_code}: chưa có gói HSTK`)
-      }
-      for (const pkg of d.packages || []) {
-        if (pkg.review_due_date && pkg.review_status !== 'approved') {
-          const due = new Date(pkg.review_due_date)
-          if (due < new Date()) blockers.push(`Gói ${pkg.folder_name} quá hạn phản hồi`)
-        }
-      }
-      const latestPkgId = d.latest_package?.id ?? null
-      for (const row of d.model_matrix || []) {
-        if (row.revision_lag >= 1) blockers.push(`Hạng mục ${row.category_code} chậm ${row.revision_lag} revision (${d.discipline_code})`)
-        if (row.hstk_compare === 'match_old') blockers.push(`Task chậm HS (${d.discipline_code})`)
-        if (latestPkgId) {
-          const hasLatestPkgTask = (row.tasks || []).some((t: any) => t.design_package_id === latestPkgId)
-          if (!hasLatestPkgTask) {
-            blockers.push(`Hạng mục ${row.category_code} chưa có task theo gói mới nhất (${d.discipline_code})`)
-          }
-        } else if (!row.tasks?.length) {
-          blockers.push(`Hạng mục ${row.category_code} chưa giao task (${d.discipline_code})`)
-        }
-        const cat = row.category_code
-        if (!categoryMatrix[cat]) categoryMatrix[cat] = {}
-        categoryMatrix[cat][d.discipline_code] = {
-          revision_updated: row.revision_updated,
-          revision_current: row.revision_current,
-          revision_lag: row.revision_lag,
-          status: row.revision_lag >= 1 ? 'lagging' : (row.tasks?.some((t: any) => t.status === 'in_progress') ? 'in_progress' : (row.tasks?.length ? 'done' : 'none')),
-        }
-      }
-      discSummaries.push({
-        discipline_code: d.discipline_code,
-        discipline_name: d.discipline_name,
-        leader_name: d.leader_name,
-        current_revision: d.current_revision,
-        revision_change_count: d.revision_change_count,
-        latest_hstk: d.latest_package,
-        packages_timeline: dashboardTimelinePackages(d.packages || [], 3).map((pkg: any) => ({
-          folder_name: pkg.folder_name,
-          package_date: pkg.package_date,
-          description: pkg.description,
-          package_type: pkg.package_type,
-          doc_stage: pkg.doc_stage,
-          source: pkg.source,
-          review_status: pkg.review_status,
-          review_due_date: pkg.review_due_date,
-          revision: pkg.revision,
-          open_path: pkg.open_path,
-          outgoing_letter_number: pkg.letter_number,
-        })),
-      })
-    }
-
-    const canSeeTasks = await isProjectLeaderOrAdmin(db, user, p.id)
-    let openTaskPreview: any[] | undefined
-    if (canSeeTasks) {
-      const ot = await db.prepare(
-        `SELECT t.id, t.title, t.discipline_code, t.category_id, t.due_date, t.status, t.hstk_date,
-                u.full_name AS assigned_to_name, c.name AS category_name
-         FROM tasks t
-         LEFT JOIN users u ON u.id = t.assigned_to
-         LEFT JOIN categories c ON c.id = t.category_id
-         WHERE t.project_id = ? AND t.status NOT IN ('completed','review','cancelled')
-         ORDER BY t.due_date ASC LIMIT 50`,
-      ).bind(p.id).all()
-      openTaskPreview = ot.results || []
-    }
-
-    const entry = {
+  for (const p of raw) {
+    const blockers = lightBlockers.get(p.id) || []
+    if (filters.stuckOnly && blockers.length === 0) continue
+    rows.push({
       id: p.id,
       code: p.code,
       name: p.name,
       status: p.status,
-      phase: null,
       progress: taskComputedProgress(p.total_tasks, p.done_tasks),
       open_tasks: p.open_tasks,
       overdue_tasks: p.overdue_tasks,
-      total_revision_changes: totalRevChanges,
-      disciplines: discSummaries,
-      category_matrix: categoryMatrix,
-      blockers: [...new Set(blockers)],
-      open_tasks_preview: openTaskPreview,
-    }
-    if (filters.stuckOnly && entry.blockers.length === 0) continue
-    rows.push(entry)
+      blockers,
+      detail_loaded: false,
+    })
   }
 
   let workload: any = null
@@ -1733,6 +1861,64 @@ export async function buildProjectDashboard(
   }
 
   return { projects: rows, workload }
+}
+
+export async function buildProjectDashboardDetail(
+  db: D1Database,
+  user: any,
+  projectId: number,
+  isProjectLeaderOrAdmin: (db: D1Database, user: any, projectId?: number) => Promise<boolean>,
+  canAccessProject: (db: D1Database, user: any, projectId: number) => Promise<boolean>,
+) {
+  const p = await db.prepare(
+    `SELECT p.id, p.code, p.name, p.status,
+      COALESCE(ts.open_tasks, 0) AS open_tasks,
+      COALESCE(ts.overdue_tasks, 0) AS overdue_tasks,
+      COALESCE(ts.total_tasks, 0) AS total_tasks,
+      COALESCE(ts.done_tasks, 0) AS done_tasks
+     FROM projects p
+     LEFT JOIN (
+       SELECT project_id,
+         SUM(CASE WHEN ${TASK_OPEN_TOTAL_SQL} AND status NOT IN ('completed','review') THEN 1 ELSE 0 END) AS open_tasks,
+         SUM(CASE WHEN ${TASK_OVERDUE_SQL} THEN 1 ELSE 0 END) AS overdue_tasks,
+         SUM(CASE WHEN ${TASK_OPEN_TOTAL_SQL} THEN 1 ELSE 0 END) AS total_tasks,
+         SUM(CASE WHEN ${TASK_DONE_SQL} THEN 1 ELSE 0 END) AS done_tasks
+       FROM tasks WHERE project_id = ? GROUP BY project_id
+     ) ts ON ts.project_id = p.id
+     WHERE p.id = ?`,
+  ).bind(projectId, projectId).first() as any
+  if (!p) return null
+
+  const overview = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin)
+  const { totalRevChanges, discSummaries, categoryMatrix, blockers } = summarizeDashboardFromOverview(overview, p)
+  const openTaskPreview = await fetchOpenTaskPreviewForDashboard(db, user, projectId, canAccessProject)
+
+  return {
+    id: p.id,
+    code: p.code,
+    name: p.name,
+    status: p.status,
+    phase: null,
+    progress: taskComputedProgress(p.total_tasks, p.done_tasks),
+    open_tasks: p.open_tasks,
+    overdue_tasks: p.overdue_tasks,
+    total_revision_changes: totalRevChanges,
+    disciplines: discSummaries,
+    category_matrix: categoryMatrix,
+    blockers,
+    open_tasks_preview: openTaskPreview,
+    detail_loaded: true,
+  }
+}
+
+/** @deprecated Use buildProjectDashboardList + buildProjectDashboardDetail */
+export async function buildProjectDashboard(
+  db: D1Database,
+  user: any,
+  isProjectLeaderOrAdmin: (db: D1Database, user: any, projectId?: number) => Promise<boolean>,
+  filters: ProjectDashboardFilters,
+) {
+  return buildProjectDashboardList(db, user, isProjectLeaderOrAdmin, async () => true, filters)
 }
 
 async function buildMemberWorkload(

@@ -29,6 +29,7 @@ import {
   resolveEmptyTaskDescription,
   collectProjectLeaderUserIds,
   collectDesignPackageNotifyRecipientUserIds,
+  summarizeDashboardFromOverview,
 } from './design'
 
 describe('parseBepFileName', () => {
@@ -463,6 +464,15 @@ describe('project dashboard HSTK stats', () => {
       '260905-HSTK cap nhat',
       '260518-Canh quan+HTKT',
     ])
+  })
+})
+
+describe('summarizeDashboardFromOverview', () => {
+  it('returns empty discipline summaries without throwing when no disciplines configured', () => {
+    const out = summarizeDashboardFromOverview({ disciplines: [] }, { overdue_tasks: 3 })
+    expect(out.discSummaries).toEqual([])
+    expect(out.categoryMatrix).toEqual({})
+    expect(out.blockers).toContain('Có task trễ hạn')
   })
 })
 
