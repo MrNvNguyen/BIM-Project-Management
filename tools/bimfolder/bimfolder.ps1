@@ -4,15 +4,46 @@
   [switch]$SelfTest
 )
 
-# URL gốc app — IT chỉnh một lần khi triển khai (không lấy từ tham số api trên link).
-$AppApiBase = 'http://127.0.0.1:8788'
+# Danh sách origin app được phép — IT chỉnh mảng $AllowedAppOrigins khi triển khai (không lấy từ tham số api trên link).
+# Listener luôn chạy local (HttpListener không bind HTTPS production).
+$DefaultAppApiBase = 'http://127.0.0.1:8788'
 $ListenerPrefix = 'http://127.0.0.1:8765/'
-$AllowedCorsOrigins = @('http://127.0.0.1:8788', 'http://localhost:8788')
+$AllowedAppOrigins = @(
+  'http://127.0.0.1:8788',
+  'http://localhost:8788',
+  'https://ddcn.bimonecadvn.com'
+)
 
 Add-Type -AssemblyName System.Web
 
 $script:ScanToken = $null
 $script:MyScriptPath = $MyInvocation.MyCommand.Path
+$script:LastAllowedAppOrigin = $null
+
+function Normalize-AppOrigin([string]$origin) {
+  if (-not $origin) { return $null }
+  return $origin.Trim().TrimEnd('/')
+}
+
+function Test-AllowedAppOrigin([string]$origin) {
+  $n = Normalize-AppOrigin $origin
+  if (-not $n) { return $null }
+  foreach ($a in $AllowedAppOrigins) {
+    if ((Normalize-AppOrigin $a) -eq $n) { return $n }
+  }
+  return $null
+}
+
+function Register-AllowedAppOrigin([string]$origin) {
+  $allowed = Test-AllowedAppOrigin $origin
+  if ($allowed) { $script:LastAllowedAppOrigin = $allowed }
+  return $allowed
+}
+
+function Get-AppApiBase {
+  if ($script:LastAllowedAppOrigin) { return $script:LastAllowedAppOrigin }
+  return (Normalize-AppOrigin $DefaultAppApiBase)
+}
 
 function Fail([string]$msg) {
   Write-Host $msg
@@ -24,7 +55,8 @@ function Post-ScanClientError([string]$msg) {
   if (-not $script:ScanToken) { return }
   try {
     $body = @{ token = $script:ScanToken; client_error = $msg } | ConvertTo-Json -Compress
-    Invoke-RestMethod -Method POST -Uri "$AppApiBase/api/design/scan-callback" -ContentType 'application/json; charset=utf-8' -Body $body -ErrorAction Stop | Out-Null
+    $apiBase = Get-AppApiBase
+    Invoke-RestMethod -Method POST -Uri "$apiBase/api/design/scan-callback" -ContentType 'application/json; charset=utf-8' -Body $body -ErrorAction Stop | Out-Null
   } catch {
     Write-Host ("Khong gui loi ve app: " + $_.Exception.Message)
   }
@@ -630,7 +662,8 @@ function Send-ScanCallback([string]$token, [string]$folderPath, [string[]]$names
     folder_names = @($names)
   }
   $body = $payload | ConvertTo-Json -Compress -Depth 5
-  Invoke-RestMethod -Method POST -Uri "$AppApiBase/api/design/scan-callback" -ContentType 'application/json; charset=utf-8' -Body $body -ErrorAction Stop | Out-Null
+  $apiBase = Get-AppApiBase
+  Invoke-RestMethod -Method POST -Uri "$apiBase/api/design/scan-callback" -ContentType 'application/json; charset=utf-8' -Body $body -ErrorAction Stop | Out-Null
 }
 
 function Invoke-PickScan([string]$token, [string]$startPath, [string]$nasRoot) {
@@ -677,10 +710,7 @@ function Start-ListenerBackgroundIfNeeded {
 }
 
 function Write-CorsHeaders([System.Net.HttpListenerResponse]$resp, [string]$origin) {
-  $allow = $null
-  foreach ($o in $AllowedCorsOrigins) {
-    if ($origin -eq $o) { $allow = $o; break }
-  }
+  $allow = Test-AllowedAppOrigin $origin
   if ($allow) {
     $resp.Headers['Access-Control-Allow-Origin'] = $allow
   }
@@ -724,6 +754,7 @@ function Start-BimfolderListener {
     $req = $ctx.Request
     $resp = $ctx.Response
     $origin = $req.Headers['Origin']
+    Register-AllowedAppOrigin $origin | Out-Null
     $path = $req.Url.AbsolutePath.TrimEnd('/')
     if ($req.HttpMethod -eq 'OPTIONS') {
       Write-CorsHeaders $resp $origin

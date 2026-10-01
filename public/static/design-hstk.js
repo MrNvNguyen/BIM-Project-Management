@@ -1283,18 +1283,64 @@
     return `<ul class="pd-alert-grouped">${lines.map(l => `<li>${escHtml(l)}</li>`).join('')}</ul>`
   }
 
+  function pdTaskIsOverdue(t) {
+    if (!t || !t.due_date) return false
+    const due = String(t.due_date).slice(0, 10)
+    const today = new Date().toISOString().slice(0, 10)
+    return due < today
+  }
+
   function renderMemberWorkloadBanner(w) {
     if (!w) return ''
     const taskPayload = w.tasks || {}
     const visibleTasks = taskPayload.tasks || []
     const hidden = taskPayload.hidden_counts_by_project || {}
-    const hiddenLines = Object.entries(hidden).map(([pid, cnt]) => `<li>Dự án #${pid}: ${cnt} task (ẩn tên theo quyền)</li>`).join('')
-    return `<div class="card mb-3 p-3 bg-blue-50 border border-blue-100">
-      <h3 class="font-bold text-sm mb-1">Tải việc thành viên</h3>
-      <p class="text-xs text-gray-600">${w.project_count} dự án tham gia · ${w.open_tasks} task mở · ${w.overdue_tasks} trễ · ${Math.round(w.open_hours || 0)}h dự kiến · Hạn gần: ${escHtml(w.nearest_due || '—')}</p>
-      ${(w.by_project || []).length ? `<ul class="text-xs mt-1 text-gray-600">${w.by_project.map(bp => `<li>${escHtml(bp.project_name)}: ${bp.open_tasks} mở, ${bp.overdue_tasks} trễ</li>`).join('')}</ul>` : ''}
-      <ul class="text-xs mt-1">${visibleTasks.map(t => `<li><button type="button" class="text-primary underline" onclick="openTaskModal(${t.id})">${escHtml(t.title)}</button> — ${escHtml(t.project_name)} · ${escHtml(t.due_date || '')}</li>`).join('') || (hiddenLines ? '' : '<li>Không có task mở</li>')}</ul>
-      ${hiddenLines ? `<ul class="text-xs mt-1 text-gray-500">${hiddenLines}</ul>` : ''}
+    const summaryLine = `${w.project_count} dự án tham gia · ${w.open_tasks} task mở · ${w.overdue_tasks} trễ · ${Math.round(w.open_hours || 0)}h dự kiến · Hạn gần: ${escHtml(w.nearest_due || '—')}`
+
+    const byProjectRows = (w.by_project || []).map(bp => {
+      return `<tr class="pd-workload-summary-row">
+        <td class="pd-workload-proj">${escHtml(bp.project_name)}</td>
+        <td class="pd-workload-task"><span class="text-xs">Tổng theo dự án</span></td>
+        <td class="pd-workload-stat">${bp.open_tasks} mở · ${bp.overdue_tasks} trễ</td>
+      </tr>`
+    }).join('')
+
+    const taskRows = visibleTasks.map(t => {
+      const pct = t.progress != null ? Math.round(Number(t.progress)) : 0
+      const status = PD_TASK_STATUS[t.status] || t.status || '—'
+      const overdue = pdTaskIsOverdue(t)
+      const duePart = t.due_date ? escHtml(String(t.due_date).slice(0, 10)) : '—'
+      const stat = `${pct}% · ${escHtml(status)}${overdue ? ' · Trễ' : ''} · Hạn ${duePart}`
+      return `<tr>
+        <td class="pd-workload-proj">${escHtml(t.project_name)}</td>
+        <td class="pd-workload-task"><button type="button" class="text-primary underline text-left" onclick="openTaskModal(${t.id})">${escHtml(t.title)}</button></td>
+        <td class="pd-workload-stat">${stat}</td>
+      </tr>`
+    }).join('')
+
+    const hiddenRows = Object.entries(hidden).map(([pid, cnt]) => {
+      return `<tr class="pd-workload-hidden-row">
+        <td class="pd-workload-proj">Dự án #${escHtml(pid)}</td>
+        <td class="pd-workload-task">${cnt} task (ẩn tên theo quyền)</td>
+        <td class="pd-workload-stat">—</td>
+      </tr>`
+    }).join('')
+
+    const emptyRow = !byProjectRows && !taskRows && !hiddenRows
+      ? '<tr><td colspan="3" class="text-center pd-empty-hint" style="padding:0.75rem">Không có task mở</td></tr>'
+      : ''
+
+    return `<div class="pd-workload-card">
+      <div class="pd-workload-head">
+        <h3 class="pd-workload-title">Tải việc thành viên</h3>
+        <p class="pd-workload-summary">${summaryLine}</p>
+      </div>
+      <div class="pd-workload-body pd-table-wrap">
+        <table class="pd-table pd-workload-table">
+          <thead><tr><th>Dự án</th><th>Task</th><th>% / trạng thái</th></tr></thead>
+          <tbody>${byProjectRows}${taskRows}${hiddenRows}${emptyRow}</tbody>
+        </table>
+      </div>
     </div>`
   }
 
@@ -1303,10 +1349,10 @@
     const pill = projectStatusPill(p)
     return `<button type="button" class="pd-list-item${active}" onclick="selectProjectDashboard(${p.id})">
       <div class="pd-list-item-name">${escHtml(p.name)}</div>
-      <div class="pd-list-item-meta">
-        <span class="font-mono">${escHtml(p.code)}</span>
+      <div class="pd-list-item-meta pd-list-item-meta-code"><span class="font-mono">${escHtml(p.code)}</span></div>
+      <div class="pd-list-item-meta pd-list-item-meta-foot">
         ${pill}
-        <span>Tiến độ ${p.progress ?? 0}%</span>
+        <span class="pd-list-item-progress">Tiến độ ${p.progress ?? 0}%</span>
       </div>
     </button>`
   }
