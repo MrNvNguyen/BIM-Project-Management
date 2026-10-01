@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   parseBepFileName,
   parseYyMmDdFolder,
+  modelBepProjectCodeMismatch,
+  bepProjectTokenMatchesOutgoingLetter,
   roleInCodes,
   assignRevisionNumbers,
   compareHstkToPackages,
@@ -30,7 +32,63 @@ import {
   collectProjectLeaderUserIds,
   collectDesignPackageNotifyRecipientUserIds,
   summarizeDashboardFromOverview,
+  applyProjectDesignDisciplineDeclaration,
 } from './design'
+
+function createProjectDesignDisciplineTestDb() {
+  const rows = new Map<string, { role_codes: string; leader_id: number | null }>()
+  const rowKey = (projectId: number, code: string) => `${projectId}:${code}`
+
+  const db = {
+    prepare(sql: string) {
+      const binds: unknown[] = []
+      const stmt = {
+        bind(...args: unknown[]) {
+          binds.push(...args)
+          return stmt
+        },
+        async run() {
+          if (sql.includes('INSERT INTO project_design_disciplines')) {
+            const [projectId, code, roleCodes, leaderId] = binds as [number, string, string, number | null]
+            rows.set(rowKey(projectId, code), { role_codes: roleCodes, leader_id: leaderId })
+          } else if (sql.includes('DELETE FROM project_design_disciplines')) {
+            const projectId = binds[0] as number
+            if (sql.includes('NOT IN')) {
+              const retained = new Set(binds.slice(1) as string[])
+              for (const key of [...rows.keys()]) {
+                const [pid, code] = key.split(':')
+                if (Number(pid) === projectId && !retained.has(code)) rows.delete(key)
+              }
+            } else {
+              for (const key of [...rows.keys()]) {
+                if (key.startsWith(`${projectId}:`)) rows.delete(key)
+              }
+            }
+          }
+          return { meta: { last_row_id: 0 } }
+        },
+        async first() {
+          return null
+        },
+        async all() {
+          return { results: [] }
+        },
+      }
+      return stmt
+    },
+  }
+
+  return {
+    db: db as unknown as D1Database,
+    rows,
+    codesForProject(projectId: number) {
+      return [...rows.keys()]
+        .filter(k => k.startsWith(`${projectId}:`))
+        .map(k => k.split(':')[1])
+        .sort()
+    },
+  }
+}
 
 describe('parseBepFileName', () => {
   it('parses standard BEP model name', () => {
@@ -47,6 +105,29 @@ describe('parseBepFileName', () => {
   it('rejects BOD-style invalid name', () => {
     const r = parseBepFileName('BOD-TKCS-ZZ-M3-Nhà làm việc chính-Combine')
     expect('error' in r).toBe(true)
+  })
+})
+
+describe('modelBepProjectCodeMismatch', () => {
+  it('not flagged when BEP token equals an outgoing letter number', () => {
+    expect(modelBepProjectCodeMismatch('BV38.4', 'OTHER-CODE', ['BV38.4/2026/CV-01'])).toBe(false)
+    expect(modelBepProjectCodeMismatch('BV38.4', 'OTHER-CODE', ['bv38.4'])).toBe(false)
+  })
+
+  it('flagged when token matches neither project code nor any letter', () => {
+    expect(modelBepProjectCodeMismatch('BV38.4', 'TT09', ['TT09/2026/01-CV'])).toBe(true)
+    expect(modelBepProjectCodeMismatch('WRONG', 'TT09', ['TT09/2026/01-CV'])).toBe(true)
+  })
+
+  it('with no outgoing letters uses project code only', () => {
+    expect(modelBepProjectCodeMismatch('BV38.4', 'BV38.4', [])).toBe(false)
+    expect(modelBepProjectCodeMismatch('BV38.4', 'TT09', [])).toBe(true)
+    expect(modelBepProjectCodeMismatch('BV38.4', '', [])).toBe(false)
+  })
+
+  it('matches letter prefix with separator not loose substring', () => {
+    expect(bepProjectTokenMatchesOutgoingLetter('BV', 'BV38.4/2026')).toBe(false)
+    expect(bepProjectTokenMatchesOutgoingLetter('BV38.4', 'BV38.4/2026/CV-01')).toBe(true)
   })
 })
 
@@ -473,6 +554,23 @@ describe('summarizeDashboardFromOverview', () => {
     expect(out.discSummaries).toEqual([])
     expect(out.categoryMatrix).toEqual({})
     expect(out.blockers).toContain('Có task trễ hạn')
+  })
+})
+
+describe('applyProjectDesignDisciplineDeclaration', () => {
+  it('save [A,B] then [A] removes B from project list, keeps A and leader', async () => {
+    const { db, rows, codesForProject } = createProjectDesignDisciplineTestDb()
+    await applyProjectDesignDisciplineDeclaration(db, 1, [
+      { discipline_code: 'A', role_codes: 'A', leader_id: 10 },
+      { discipline_code: 'B', role_codes: 'B', leader_id: 20 },
+    ])
+    expect(codesForProject(1)).toEqual(['A', 'B'])
+    await applyProjectDesignDisciplineDeclaration(db, 1, [
+      { discipline_code: 'A', role_codes: 'A', leader_id: 10 },
+    ])
+    expect(codesForProject(1)).toEqual(['A'])
+    expect(rows.get('1:A')?.leader_id).toBe(10)
+    expect(rows.has('1:B')).toBe(false)
   })
 })
 

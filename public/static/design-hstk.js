@@ -881,6 +881,118 @@
 
   window._pdState = window._pdState || { tab: 'project', selectedProjectId: null }
   window._pdLastData = window._pdLastData || null
+  window._pdProjectSearch = window._pdProjectSearch || ''
+  window._pdProjectStatusFilter = window._pdProjectStatusFilter || 'all'
+
+  const PD_PROJECT_STATUS_CHIPS = [
+    { id: 'all', label: 'Tất cả' },
+    { id: 'active', label: 'Đang làm' },
+    { id: 'on_hold', label: 'Tạm dừng' },
+    { id: 'completed', label: 'HT' },
+  ]
+
+  function pdFoldText(s) {
+    if (typeof _foldVn === 'function') return _foldVn(s)
+    return String(s || '').toLowerCase()
+  }
+
+  function pdProjectMatchesStatusChip(p) {
+    const chip = window._pdProjectStatusFilter || 'all'
+    if (chip === 'all') return true
+    const status = String(p.status || 'active').toLowerCase()
+    if (chip === 'active') return status === 'active'
+    if (chip === 'completed') return status === 'completed'
+    if (chip === 'on_hold') return status === 'on_hold'
+    return true
+  }
+
+  function pdFilteredProjects(projects) {
+    const q = pdFoldText(window._pdProjectSearch)
+    return (projects || []).filter(p => {
+      if (!pdProjectMatchesStatusChip(p)) return false
+      if (q) {
+        const hay = pdFoldText(`${p.code || ''} ${p.name || ''}`)
+        if (!hay.includes(q)) return false
+      }
+      return true
+    })
+  }
+
+  function pdRenderProjectStatusChips() {
+    const host = document.getElementById('pdProjectStatusChips')
+    if (!host) return
+    const active = window._pdProjectStatusFilter || 'all'
+    host.innerHTML = PD_PROJECT_STATUS_CHIPS.map(chip => {
+      const sel = chip.id === active
+      return `<button type="button" role="tab" aria-selected="${sel ? 'true' : 'false'}"
+        class="pd-project-status-chip${sel ? ' active' : ''}"
+        onclick="pdOnProjectStatusFilter('${chip.id}')">${escHtml(chip.label)}</button>`
+    }).join('')
+  }
+
+  function pdListToolbarHtml() {
+    const q = escHtml(window._pdProjectSearch || '')
+    return `<div class="pd-list-toolbar">
+      <input type="text" id="pdProjectSearch" class="input-field" placeholder="🔍 Tìm dự án…" value="${q}" oninput="pdOnProjectSearch(this.value)" autocomplete="off">
+      <div id="pdProjectStatusChips" class="pd-project-status-chips" role="tablist" aria-label="Lọc trạng thái dự án"></div>
+    </div>`
+  }
+
+  function pdApplyClientFilters() {
+    const root = document.getElementById('projectDashboardRoot')
+    if (!root || !window._pdLastData) return
+    const tab = window._pdState?.tab || 'project'
+    const memberId = tab === 'member' ? (document.getElementById('pdMemberFilter')?.value || '') : ''
+    if (tab === 'member' && !memberId) return
+
+    const allProjects = window._pdLastData.projects || []
+    const filtered = pdFilteredProjects(allProjects)
+    let selId = window._pdState.selectedProjectId
+    if (!filtered.some(p => p.id === selId)) {
+      selId = filtered.length ? filtered[0].id : null
+      window._pdState.selectedProjectId = selId
+    }
+
+    const listItemsEl = root.querySelector('.pd-list-items')
+    const detailEl = root.querySelector('.pd-project-detail')
+    const listScroll = listItemsEl ? listItemsEl.scrollTop : 0
+
+    if (listItemsEl) {
+      listItemsEl.innerHTML = filtered.length
+        ? filtered.map(p => renderProjectListItem(p, selId)).join('')
+        : '<p class="pd-empty-hint text-xs">Không có dự án phù hợp bộ lọc.</p>'
+      listItemsEl.scrollTop = listScroll
+    }
+
+    pdRenderProjectStatusChips()
+
+    if (detailEl) {
+      const workloadHtml = tab === 'member' && window._pdLastData.workload ? renderMemberWorkloadBanner(window._pdLastData.workload) : ''
+      if (!selId || !filtered.length) {
+        detailEl.innerHTML = `${workloadHtml}<div class="pd-empty-hint">Chọn dự án ở danh sách bên trái.</div>`
+      } else {
+        const selected = filtered.find(p => p.id === selId) || filtered[0]
+        detailEl.innerHTML = renderProjectDetailPanel(selected, workloadHtml)
+      }
+    }
+
+    if (selId) {
+      const proj = allProjects.find(p => p.id === selId)
+      if (proj && !proj.detail_loaded) void loadProjectDashboardDetail(selId)
+    }
+  }
+
+  window.pdOnProjectSearch = function pdOnProjectSearch(q) {
+    window._pdProjectSearch = (q || '').trim()
+    pdApplyClientFilters()
+  }
+
+  window.pdOnProjectStatusFilter = function pdOnProjectStatusFilter(chipId) {
+    const next = chipId || 'all'
+    if (window._pdProjectStatusFilter === next) return
+    window._pdProjectStatusFilter = next
+    pdApplyClientFilters()
+  }
 
   window.setProjectDashboardTab = function setProjectDashboardTab(tab) {
     window._pdState.tab = tab === 'member' ? 'member' : 'project'
@@ -902,11 +1014,9 @@
   function projectDashboardQueryParams() {
     const tab = window._pdState?.tab || 'project'
     const memberId = tab === 'member' ? (document.getElementById('pdMemberFilter')?.value || '') : ''
-    const status = document.getElementById('pdStatusFilter')?.value || ''
     const stuck = document.getElementById('pdStuckOnly')?.checked ? '1' : ''
     const q = new URLSearchParams()
     if (memberId) q.set('member_id', memberId)
-    if (status) q.set('status', status)
     if (stuck) q.set('stuck', stuck)
     return q
   }
@@ -936,7 +1046,7 @@
       if (window._pdDetailLoading !== reqId) return
       if (data.project) {
         mergeProjectDashboardDetail(projectId, data.project)
-        const listEl = root.querySelector('.pd-project-list')
+        const listEl = root.querySelector('.pd-list-items') || root.querySelector('.pd-project-list')
         const listScroll = listEl ? listEl.scrollTop : 0
         renderProjectDashboard(root, window._pdLastData, { preserveListScroll: listScroll })
       }
@@ -950,7 +1060,7 @@
 
   window.selectProjectDashboard = function selectProjectDashboard(projectId) {
     const root = document.getElementById('projectDashboardRoot')
-    const listEl = root?.querySelector('.pd-project-list')
+    const listEl = root?.querySelector('.pd-list-items') || root?.querySelector('.pd-project-list')
     const listScroll = listEl ? listEl.scrollTop : 0
     window._pdState.selectedProjectId = projectId
     if (window._pdLastData && root) {
@@ -1238,7 +1348,7 @@
     opts = opts || {}
     const tab = window._pdState?.tab || 'project'
     const memberId = tab === 'member' ? (document.getElementById('pdMemberFilter')?.value || '') : ''
-    const projects = data.projects || []
+    const allProjects = data.projects || []
 
     if (tab === 'member' && !memberId) {
       root.innerHTML = `<div class="pd-master-detail">
@@ -1248,27 +1358,37 @@
       return
     }
 
-    if (!projects.length) {
+    if (!allProjects.length) {
       root.innerHTML = '<p class="text-gray-500 text-sm">Không có dự án phù hợp bộ lọc.</p>'
       return
     }
 
+    const projects = pdFilteredProjects(allProjects)
     let selId = window._pdState.selectedProjectId
-    if (!projects.some(p => p.id === selId)) selId = projects[0].id
+    if (!projects.some(p => p.id === selId)) selId = projects.length ? projects[0].id : null
     window._pdState.selectedProjectId = selId
-    const selected = projects.find(p => p.id === selId) || projects[0]
+    const selected = selId ? (projects.find(p => p.id === selId) || projects[0]) : null
 
-    const listHtml = projects.map(p => renderProjectListItem(p, selId)).join('')
+    const listHtml = projects.length
+      ? projects.map(p => renderProjectListItem(p, selId)).join('')
+      : '<p class="pd-empty-hint text-xs">Không có dự án phù hợp bộ lọc.</p>'
     const workloadHtml = tab === 'member' && data.workload ? renderMemberWorkloadBanner(data.workload) : ''
-    const detailHtml = renderProjectDetailPanel(selected, workloadHtml)
+    const detailHtml = selected
+      ? renderProjectDetailPanel(selected, workloadHtml)
+      : `${workloadHtml}<div class="pd-empty-hint">Chọn dự án ở danh sách bên trái.</div>`
 
     root.innerHTML = `<div class="pd-master-detail">
-      <div class="pd-project-list" role="listbox" aria-label="Danh sách dự án">${listHtml}</div>
+      <div class="pd-project-list" role="listbox" aria-label="Danh sách dự án">
+        ${pdListToolbarHtml()}
+        <div class="pd-list-items">${listHtml}</div>
+      </div>
       <div class="pd-project-detail">${detailHtml}</div>
     </div>`
 
+    pdRenderProjectStatusChips()
+
     if (opts.preserveListScroll != null) {
-      const listEl = root.querySelector('.pd-project-list')
+      const listEl = root.querySelector('.pd-list-items')
       if (listEl) listEl.scrollTop = opts.preserveListScroll
     }
   }

@@ -559,7 +559,20 @@
     .pd-tab:hover { color: var(--shell-text, #374151); }
     .pd-tab.pd-tab-active { color: var(--primary, #00A651); border-bottom-color: var(--primary, #00A651); }
     .pd-master-detail { display: flex; gap: 0.85rem; align-items: stretch; min-height: 420px; }
-    .pd-project-list { flex: 0 0 300px; max-width: 320px; min-width: 260px; overflow-y: auto; max-height: calc(100vh - 220px); border: 1px solid var(--shell-border-strong, #e5e7eb); border-radius: 0.65rem; background: var(--shell-surface, #fff); padding: 0.35rem; }
+    .pd-project-list { flex: 0 0 300px; max-width: 320px; min-width: 260px; display: flex; flex-direction: column; max-height: calc(100vh - 220px); border: 1px solid var(--shell-border-strong, #e5e7eb); border-radius: 0.65rem; background: var(--shell-surface, #fff); padding: 0.35rem; }
+    .pd-list-toolbar { flex-shrink: 0; padding: 0.25rem 0.2rem 0.45rem; border-bottom: 1px solid var(--shell-border-strong, #e5e7eb); margin-bottom: 0.35rem; }
+    .pd-list-toolbar .input-field { font-size: 12px; padding: 6px 8px; width: 100%; box-sizing: border-box; }
+    html[data-theme="dark"] #pdProjectSearch::placeholder { color: var(--shell-text-faint, #9ca3af); }
+    .pd-project-status-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .pd-project-status-chip {
+      font-size: 11px; font-weight: 600; line-height: 1.2; padding: 4px 8px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--shell-border, #e5e7eb); background: var(--shell-input-bg, #f9fafb); color: var(--shell-text-muted, #6b7280);
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .pd-project-status-chip:hover { background: var(--shell-row-hover, #f3f4f6); border-color: var(--shell-border-strong, #d1d5db); color: var(--shell-text, #374151); }
+    .pd-project-status-chip.active { background: #00A651; border-color: #00A651; color: #fff; }
+    .pd-project-status-chip.active:hover { background: #009648; border-color: #009648; color: #fff; }
+    .pd-list-items { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
     .pd-project-detail { flex: 1 1 0; min-width: 0; overflow-x: auto; }
     .pd-list-item { display: block; width: 100%; text-align: left; padding: 0.55rem 0.65rem; margin-bottom: 0.2rem; border-radius: 0.45rem; border: 1px solid transparent; background: transparent; cursor: pointer; color: inherit; }
     .pd-list-item:hover { background: var(--shell-table-head-bg, #f9fafb); border-color: var(--shell-border-strong, #e5e7eb); }
@@ -2792,18 +2805,8 @@
             <h1 class="text-2xl font-bold text-gray-800">Dashboard dự án</h1>
             <p class="text-gray-500 text-sm mt-1">Theo dõi tiến độ HSTK mọi dự án (chỉ đọc, không hiển thị tiền)</p>
           </div>
-          <div class="flex flex-wrap gap-2 items-end">
-            <div>
-              <label class="block text-xs text-gray-500 mb-1">Trạng thái DA</label>
-              <select id="pdStatusFilter" class="select-field text-sm" onchange="loadProjectDashboardPage()">
-                <option value="">Tất cả</option>
-                <option value="active">Đang hoạt động</option>
-                <option value="planning">Lập kế hoạch</option>
-                <option value="on_hold">Tạm dừng</option>
-                <option value="completed">Hoàn thành</option>
-              </select>
-            </div>
-            <label class="flex items-center gap-2 text-sm pb-1 cursor-pointer">
+          <div class="flex flex-wrap gap-2 items-center">
+            <label class="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" id="pdStuckOnly" onchange="loadProjectDashboardPage()"> Chỉ dự án đang vướng
             </label>
             <button class="btn-primary text-sm" onclick="loadProjectDashboardPage()"><i class="fas fa-sync mr-1"></i>Tải lại</button>
@@ -8580,7 +8583,7 @@
 
 <!-- Zoom prevention + chart resize handler -->
 <script src="/static/app.js?v=20261001m"></script>
-<script src="/static/design-hstk.js?v=20261001d"></script>
+<script src="/static/design-hstk.js?v=20261001e"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;

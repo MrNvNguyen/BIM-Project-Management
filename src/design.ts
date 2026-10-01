@@ -48,6 +48,38 @@ export function parseBepFileName(rawName: string): BepParsed | { error: string }
   }
 }
 
+/** BEP field 1 (`parseBepFileName().project`) compared to `projects.code` and outgoing `letter_number`. */
+export function bepProjectTokenMatchesOutgoingLetter(bepProjectToken: string, letterNumber: string): boolean {
+  const token = String(bepProjectToken || '').trim().toUpperCase()
+  const letter = String(letterNumber || '').trim().toUpperCase()
+  if (!token || !letter) return false
+  if (token === letter) return true
+  return letter.startsWith(`${token}/`) || letter.startsWith(`${token}-`) || letter.startsWith(`${token} `)
+}
+
+export function modelBepProjectCodeMismatch(
+  bepProjectToken: string,
+  projectCode: string,
+  outgoingLetterNumbers: string[],
+): boolean {
+  const token = String(bepProjectToken || '').trim().toUpperCase()
+  if (!token) return false
+
+  const code = String(projectCode || '').trim().toUpperCase()
+  const letters = (outgoingLetterNumbers || []).map(n => String(n || '').trim()).filter(Boolean)
+
+  if (code && token === code) return false
+
+  if (letters.length === 0) {
+    return !!(projectCode && token !== code)
+  }
+
+  for (const ln of letters) {
+    if (bepProjectTokenMatchesOutgoingLetter(bepProjectToken, ln)) return false
+  }
+  return true
+}
+
 export function roleInCodes(role: string, roleCodes: string): boolean {
   const r = role.toUpperCase()
   const codes = String(roleCodes || '')
@@ -795,6 +827,55 @@ export async function canScanDesignDiscipline(
   return row?.leader_id === user.id
 }
 
+/** Checked discipline codes from Khai báo bộ môn save payload. */
+export function declaredDisciplineCodesFromPayload(
+  disciplines: Array<{ discipline_code?: string | null }>,
+): string[] {
+  const codes: string[] = []
+  for (const d of disciplines) {
+    const code = String(d.discipline_code ?? '').trim()
+    if (code) codes.push(code)
+  }
+  return codes
+}
+
+/** Upsert declared disciplines and remove project rows for codes not in the save set (category paths kept for re-declare). */
+export async function applyProjectDesignDisciplineDeclaration(
+  db: D1Database,
+  projectId: number,
+  disciplines: Array<{ discipline_code: string; role_codes?: string; leader_id?: number | null }>,
+): Promise<void> {
+  const retained = declaredDisciplineCodesFromPayload(disciplines)
+  for (const d of disciplines) {
+    const code = String(d.discipline_code || '').trim()
+    if (!code) continue
+    const roleCodes = String(d.role_codes ?? code).trim() || code
+    const leaderId = d.leader_id ?? null
+    await db
+      .prepare(
+        `INSERT INTO project_design_disciplines (project_id, discipline_code, role_codes, leader_id, updated_at)
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(project_id, discipline_code) DO UPDATE SET
+           role_codes = excluded.role_codes,
+           leader_id = excluded.leader_id,
+           updated_at = CURRENT_TIMESTAMP`,
+      )
+      .bind(projectId, code, roleCodes, leaderId)
+      .run()
+  }
+  if (retained.length === 0) {
+    await db.prepare(`DELETE FROM project_design_disciplines WHERE project_id = ?`).bind(projectId).run()
+    return
+  }
+  const placeholders = retained.map(() => '?').join(', ')
+  await db
+    .prepare(
+      `DELETE FROM project_design_disciplines WHERE project_id = ? AND discipline_code NOT IN (${placeholders})`,
+    )
+    .bind(projectId, ...retained)
+    .run()
+}
+
 export async function canConfigureDesignDisciplines(
   db: D1Database,
   user: any,
@@ -969,20 +1050,7 @@ export function registerDesignRoutes(
       }
       const { disciplines } = await c.req.json() as { disciplines: Array<{ discipline_code: string; role_codes?: string; leader_id?: number | null }> }
       if (!Array.isArray(disciplines)) return c.json({ error: 'disciplines array required' }, 400)
-      for (const d of disciplines) {
-        const code = String(d.discipline_code || '').trim()
-        if (!code) continue
-        const roleCodes = String(d.role_codes ?? code).trim() || code
-        const leaderId = d.leader_id ?? null
-        await db.prepare(
-          `INSERT INTO project_design_disciplines (project_id, discipline_code, role_codes, leader_id, updated_at)
-           VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-           ON CONFLICT(project_id, discipline_code) DO UPDATE SET
-             role_codes = excluded.role_codes,
-             leader_id = excluded.leader_id,
-             updated_at = CURRENT_TIMESTAMP`,
-        ).bind(projectId, code, roleCodes, leaderId).run()
-      }
+      await applyProjectDesignDisciplineDeclaration(db, projectId, disciplines)
       const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin)
       return c.json(body)
     } catch (e: any) {
@@ -1458,6 +1526,12 @@ export async function buildDesignOverview(
   const project = await db.prepare('SELECT code FROM projects WHERE id = ?').bind(projectId).first() as any
   const projectCode = project?.code || ''
 
+  const outgoingLetterRows = await db.prepare(
+    `SELECT letter_number FROM outgoing_letters
+     WHERE project_id = ? AND letter_number IS NOT NULL AND TRIM(letter_number) != ''`,
+  ).bind(projectId).all()
+  const outgoingLetterNumbers = (outgoingLetterRows.results || []).map((r: any) => String(r.letter_number))
+
   const disciplineBlocks = (disciplines.results || []).map((d: any) => {
     const pkgs = pkgByDisc.get(d.discipline_code) || []
     const revMap = revMaps.get(d.discipline_code) || new Map()
@@ -1538,7 +1612,7 @@ export async function buildDesignOverview(
           : null,
         type: parsed.type,
         role: parsed.role,
-        project_code_mismatch: projectCode && parsed.project.toUpperCase() !== projectCode.toUpperCase(),
+        project_code_mismatch: modelBepProjectCodeMismatch(parsed.project, projectCode, outgoingLetterNumbers),
         tasks: relatedTasks,
         primary_task_id: primaryTask?.id ?? null,
         ...cvFields,
