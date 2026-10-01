@@ -3309,13 +3309,14 @@ async function openProjectDetail(id, openChatTab = false) {
             class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-comments mr-1"></i>Chat nhóm
           </button>
+          ${currentUser?.role === 'system_admin' ? `
           <button id="projTab-summary" onclick="switchProjectTab('summary',${project.id})"
             class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
             <i class="fas fa-table mr-1"></i>Tổng hợp CV
-          </button>
+          </button>` : ''}
           <button id="projTab-qlydesign" onclick="switchProjectTab('qlydesign',${project.id})"
             class="tab-btn text-xs py-2 px-4 mr-1 whitespace-nowrap">
-            <i class="fas fa-folder-tree mr-1"></i>QLy HSTK
+            <i class="fas fa-folder-tree mr-1"></i>Qly Công việc
           </button>
           ${currentUser?.role === 'system_admin' ? `
           <button id="projTab-estimate" onclick="switchProjectTab('estimate',${project.id})"
@@ -3361,10 +3362,11 @@ async function openProjectDetail(id, openChatTab = false) {
           <div id="projectChatPanel_${project.id}" style="height:100%"></div>
         </div>
 
-        <!-- Work Summary panel (lazy-loaded) -->
+        <!-- Work Summary panel (lazy-loaded, system_admin only) -->
+        ${currentUser?.role === 'system_admin' ? `
         <div id="projPanel-summary" class="hidden p-4" style="min-height:400px">
           <div id="workSummaryContainer_${project.id}"></div>
-        </div>
+        </div>` : ''}
         <!-- Estimate panel (lazy-loaded, system_admin only) -->
         ${currentUser?.role === 'system_admin' ? `
         <div id="projPanel-estimate" class="hidden p-4" style="min-height:400px">
@@ -6495,6 +6497,10 @@ function openImageViewer(src, name) {
 // ── Project Detail Tab Switcher ───────────────────────────────────────────
 function switchProjectTab(tab, projectId) {
   const pid = projectId || window._currentProjectDetailId
+  if (tab === 'summary' && currentUser?.role !== 'system_admin') {
+    switchProjectTab('tasks', pid)
+    return
+  }
   // Show/hide panels
   const taskPanel     = $('projPanel-tasks')
   const weeklyPanel   = $('projPanel-weekly')

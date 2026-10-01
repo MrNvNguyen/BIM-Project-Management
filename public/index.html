@@ -594,6 +594,202 @@
     .pd-project-status-chip:hover { background: var(--shell-row-hover, #f3f4f6); border-color: var(--shell-border-strong, #d1d5db); color: var(--shell-text, #374151); }
     .pd-project-status-chip.active { background: #00A651; border-color: #00A651; color: #fff; }
     .pd-project-status-chip.active:hover { background: #009648; border-color: #009648; color: #fff; }
+    /* QLy HSTK (#projPanel-qlydesign) — sheet tab & bộ môn chip */
+    #projPanel-qlydesign .hstk-phase-sheets {
+      display: flex; flex-wrap: wrap; gap: 4px;
+      border-bottom: 1px solid var(--shell-border);
+      padding-bottom: 8px;
+    }
+    #projPanel-qlydesign .hstk-phase-sheet {
+      font-size: 12px; padding: 6px 12px; border-radius: 8px 8px 0 0;
+      border: 1px solid var(--shell-border);
+      background: var(--shell-input-bg);
+      color: var(--shell-text);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    #projPanel-qlydesign .hstk-phase-sheet:hover {
+      background: var(--shell-row-hover);
+      border-color: var(--shell-border-strong, var(--shell-border));
+      color: var(--shell-text);
+    }
+    #projPanel-qlydesign .hstk-phase-sheet.active {
+      background: #00A651;
+      border-color: #00A651;
+      border-bottom-color: #00A651;
+      color: #fff;
+      font-weight: 600;
+    }
+    #projPanel-qlydesign .hstk-phase-sheet.active:hover {
+      background: #009648;
+      border-color: #009648;
+      color: #fff;
+    }
+    #projPanel-qlydesign .hstk-disc-filter .hstk-disc-chip {
+      font-size: 11px; padding: 4px 10px; border-radius: 999px;
+      border: 1px solid var(--shell-border);
+      background: var(--shell-input-bg);
+      color: var(--shell-text);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    #projPanel-qlydesign .hstk-disc-filter .hstk-disc-chip:hover {
+      background: var(--shell-row-hover);
+      border-color: var(--shell-border-strong, var(--shell-border));
+      color: var(--shell-text);
+    }
+    #projPanel-qlydesign .hstk-disc-filter .hstk-disc-chip.active {
+      background: #00A651;
+      border-color: #00A651;
+      color: #fff;
+    }
+    #projPanel-qlydesign .hstk-disc-filter .hstk-disc-chip.active:hover {
+      background: #009648;
+      border-color: #009648;
+      color: #fff;
+    }
+    #projPanel-qlydesign .hstk-disc-block {
+      border-color: var(--shell-border) !important;
+    }
+    #projPanel-qlydesign .hstk-disc-block > div:first-child {
+      background: var(--shell-input-bg) !important;
+      border-bottom: 1px solid var(--shell-border);
+    }
+    #projPanel-qlydesign .hstk-disc-block button.text-gray-500 {
+      color: var(--shell-text-muted) !important;
+    }
+    #projPanel-qlydesign .hstk-disc-block button.text-gray-500:hover {
+      color: var(--primary) !important;
+    }
+    #projPanel-qlydesign .border-dashed.bg-gray-50 {
+      background: var(--shell-input-bg) !important;
+      border-color: var(--shell-border) !important;
+      color: var(--shell-text-muted);
+    }
+    /* QLy HSTK — chế độ Sáng: ma trận không giữ nền navy hardcode từ design-hstk.js */
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block {
+      background: #fff !important;
+      border-color: #d1d5db !important;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block > div:first-child {
+      background: #f9fafb !important;
+      border-bottom-color: #e5e7eb !important;
+      color: #111827;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block > div:first-child .text-gray-600 {
+      color: #4b5563 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block .border-t.border-gray-100 {
+      border-color: #e5e7eb !important;
+      background: #fff;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix {
+      background: #fff !important;
+      border: 1px solid #e5e7eb !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix thead,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix thead.bg-gray-900 {
+      background: #f3f4f6 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix thead th {
+      color: #374151 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody tr {
+      background: #fff !important;
+      border-bottom-color: #e5e7eb !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody tr:hover {
+      background: #f9fafb !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody td {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody td.text-gray-200,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody td.text-gray-100,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix tbody td.text-gray-300 {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-gray-100,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-gray-200,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-gray-300,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-slate-300,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-white {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .tabular-nums.text-gray-200 {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix thead.text-gray-300,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix thead.text-gray-300 th {
+      color: #374151 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix input[type="text"] {
+      background: #fff !important;
+      color: #0f172a !important;
+      border-color: #d1d5db !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-gray-400 {
+      color: #475569 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-gray-500 {
+      color: #64748b !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix td div.text-gray-400 > div:not([class*="text-indigo"]) {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix td div.text-gray-400 > div span.text-gray-500 {
+      color: #64748b !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix [class*="text-indigo-300"] {
+      color: #4338ca !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-green-400,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix .text-primary {
+      color: #047857 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block > div:first-child .font-bold,
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block > div:first-child .font-bold span {
+      color: #0f172a !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign .hstk-disc-block > div:first-child .text-gray-400 {
+      color: #64748b !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-gray-700"] {
+      background-color: #e5e7eb !important;
+      color: #374151 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-blue-900"] {
+      background-color: #dbeafe !important;
+      color: #1d4ed8 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-blue-900"] .text-blue-200,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-blue-900"][class*="text-blue-200"] {
+      color: #1d4ed8 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-amber-900"] {
+      background-color: #fef3c7 !important;
+      color: #b45309 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-amber-900"][class*="text-amber-200"] {
+      color: #b45309 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-green-900"] {
+      background-color: #d1fae5 !important;
+      color: #047857 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-green-900"][class*="text-green-200"] {
+      color: #047857 !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span.bg-gray-800,
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-gray-800"] {
+      background-color: #f3f4f6 !important;
+      color: #64748b !important;
+    }
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-gray-700"][class*="text-gray-200"],
+    html:not([data-theme="dark"]) #projPanel-qlydesign table.design-hstk-model-matrix span[class*="bg-gray-700"] {
+      color: #374151 !important;
+    }
     .pd-list-items { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
     .pd-project-detail { flex: 1 1 0; min-width: 0; overflow-x: auto; align-self: stretch; }
     .pd-list-item { display: block; width: 100%; text-align: left; padding: 0.6rem 0.65rem; margin-bottom: 0.25rem; border-radius: 0.45rem; border: 1px solid transparent; background: transparent; cursor: pointer; color: inherit; box-sizing: border-box; }
@@ -8780,8 +8976,8 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261001n"></script>
-<script src="/static/design-hstk.js?v=20261001h"></script>
+<script src="/static/app.js?v=20261001o"></script>
+<script src="/static/design-hstk.js?v=20261001l"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;

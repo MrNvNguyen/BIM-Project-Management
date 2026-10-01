@@ -35,11 +35,16 @@ import {
   collectDesignPackageNotifyRecipientUserIds,
   summarizeDashboardFromOverview,
   applyProjectDesignDisciplineDeclaration,
+  designDisciplineMatchesPhaseFilter,
+  applyProjectDesignPhases,
+  taskPhaseKeyForDesignSheet,
+  isProjectExecutionPhaseKey,
 } from './design'
 
 function createProjectDesignDisciplineTestDb() {
-  const rows = new Map<string, { role_codes: string; leader_id: number | null }>()
-  const rowKey = (projectId: number, code: string) => `${projectId}:${code}`
+  const rows = new Map<string, { role_codes: string; leader_id: number | null; phase_id: number | null }>()
+  const rowKey = (projectId: number, phaseId: number | null, code: string) =>
+    `${projectId}:${phaseId ?? 'null'}:${code}`
 
   const db = {
     prepare(sql: string) {
@@ -51,19 +56,52 @@ function createProjectDesignDisciplineTestDb() {
         },
         async run() {
           if (sql.includes('INSERT INTO project_design_disciplines')) {
-            const [projectId, code, roleCodes, leaderId] = binds as [number, string, string, number | null]
-            rows.set(rowKey(projectId, code), { role_codes: roleCodes, leader_id: leaderId })
+            if (sql.includes('VALUES (?, NULL,')) {
+              const [projectId, code, roleCodes, leaderId] = binds as [number, string, string, number | null]
+              rows.set(rowKey(projectId, null, code), {
+                role_codes: roleCodes,
+                leader_id: leaderId,
+                phase_id: null,
+              })
+            } else {
+              const [projectId, phaseId, code, roleCodes, leaderId] = binds as [
+                number,
+                number,
+                string,
+                string,
+                number | null,
+              ]
+              rows.set(rowKey(projectId, phaseId, code), {
+                role_codes: roleCodes,
+                leader_id: leaderId,
+                phase_id: phaseId,
+              })
+            }
           } else if (sql.includes('DELETE FROM project_design_disciplines')) {
             const projectId = binds[0] as number
-            if (sql.includes('NOT IN')) {
+            if (sql.includes('phase_id = ?') && sql.includes('NOT IN')) {
+              const phaseId = binds[1] as number
+              const retained = new Set(binds.slice(2) as string[])
+              for (const key of [...rows.keys()]) {
+                const [pid, ph, code] = key.split(':')
+                if (Number(pid) === projectId && ph === String(phaseId) && !retained.has(code)) rows.delete(key)
+              }
+            } else if (sql.includes('phase_id IS NULL') && sql.includes('NOT IN')) {
               const retained = new Set(binds.slice(1) as string[])
               for (const key of [...rows.keys()]) {
-                const [pid, code] = key.split(':')
-                if (Number(pid) === projectId && !retained.has(code)) rows.delete(key)
+                const [pid, ph, code] = key.split(':')
+                if (Number(pid) === projectId && ph === 'null' && !retained.has(code)) rows.delete(key)
               }
-            } else {
+            } else if (sql.includes('phase_id = ?')) {
+              const phaseId = binds[1] as number
               for (const key of [...rows.keys()]) {
-                if (key.startsWith(`${projectId}:`)) rows.delete(key)
+                const [pid, ph] = key.split(':')
+                if (Number(pid) === projectId && ph === String(phaseId)) rows.delete(key)
+              }
+            } else if (sql.includes('phase_id IS NULL')) {
+              for (const key of [...rows.keys()]) {
+                const [pid, ph] = key.split(':')
+                if (Number(pid) === projectId && ph === 'null') rows.delete(key)
               }
             }
           }
@@ -83,10 +121,11 @@ function createProjectDesignDisciplineTestDb() {
   return {
     db: db as unknown as D1Database,
     rows,
-    codesForProject(projectId: number) {
+    codesForProject(projectId: number, phaseId: number | null = null) {
+      const ph = phaseId == null ? 'null' : String(phaseId)
       return [...rows.keys()]
-        .filter(k => k.startsWith(`${projectId}:`))
-        .map(k => k.split(':')[1])
+        .filter(k => k.startsWith(`${projectId}:${ph}:`))
+        .map(k => k.split(':')[2])
         .sort()
     },
   }
@@ -634,8 +673,139 @@ describe('applyProjectDesignDisciplineDeclaration', () => {
       { discipline_code: 'A', role_codes: 'A', leader_id: 10 },
     ])
     expect(codesForProject(1)).toEqual(['A'])
-    expect(rows.get('1:A')?.leader_id).toBe(10)
-    expect(rows.has('1:B')).toBe(false)
+    expect(rows.get('1:null:A')?.leader_id).toBe(10)
+    expect(rows.has('1:null:B')).toBe(false)
+  })
+
+  it('phase A disciplines are not removed when unchecking on phase B', async () => {
+    const { db, codesForProject } = createProjectDesignDisciplineTestDb()
+    await applyProjectDesignDisciplineDeclaration(
+      db,
+      1,
+      [
+        { discipline_code: 'AA', role_codes: 'AA', leader_id: 1 },
+        { discipline_code: 'ES', role_codes: 'ES', leader_id: 2 },
+      ],
+      10,
+    )
+    await applyProjectDesignDisciplineDeclaration(
+      db,
+      1,
+      [{ discipline_code: 'AA', role_codes: 'AA', leader_id: 1 }],
+      20,
+    )
+    expect(codesForProject(1, 10)).toEqual(['AA', 'ES'])
+    expect(codesForProject(1, 20)).toEqual(['AA'])
+  })
+
+  it('unchecking a discipline removes it from that phase only', async () => {
+    const { db, codesForProject } = createProjectDesignDisciplineTestDb()
+    await applyProjectDesignDisciplineDeclaration(
+      db,
+      1,
+      [
+        { discipline_code: 'AA', role_codes: 'AA', leader_id: null },
+        { discipline_code: 'ES', role_codes: 'ES', leader_id: null },
+      ],
+      5,
+    )
+    await applyProjectDesignDisciplineDeclaration(db, 1, [{ discipline_code: 'AA', role_codes: 'AA', leader_id: null }], 5)
+    expect(codesForProject(1, 5)).toEqual(['AA'])
+  })
+})
+
+function createProjectDesignPhaseTestDb() {
+  type PhaseRow = { id: number; project_id: number; name: string; code: string; sort_order: number }
+  let nextId = 1
+  const phases: PhaseRow[] = []
+  const db = {
+    prepare(sql: string) {
+      const binds: unknown[] = []
+      const stmt = {
+        bind(...args: unknown[]) {
+          binds.push(...args)
+          return stmt
+        },
+        async all() {
+          if (sql.includes('FROM project_design_phases WHERE project_id')) {
+            const projectId = binds[0] as number
+            return { results: phases.filter(p => p.project_id === projectId) }
+          }
+          return { results: [] }
+        },
+        async first() {
+          if (sql.includes('SELECT COUNT(*) AS c FROM project_design_disciplines')) {
+            return { c: 0 }
+          }
+          return null
+        },
+        async run() {
+          if (sql.includes('INSERT INTO project_design_phases')) {
+            const [projectId, name, code, sortOrder] = binds as [number, string, string, number]
+            phases.push({ id: nextId++, project_id: projectId, name, code, sort_order: sortOrder })
+          } else if (sql.includes('UPDATE project_design_phases SET name')) {
+            const [name, code, sortOrder, id, projectId] = binds as [string, string, number, number, number]
+            const row = phases.find(p => p.id === id && p.project_id === projectId)
+            if (row) {
+              row.name = name
+              row.code = code
+              row.sort_order = sortOrder
+            }
+          } else if (sql.includes('DELETE FROM project_design_phases')) {
+            const [id, projectId] = binds as [number, number]
+            const idx = phases.findIndex(p => p.id === id && p.project_id === projectId)
+            if (idx >= 0) phases.splice(idx, 1)
+          }
+          return { meta: { last_row_id: nextId - 1 } }
+        },
+      }
+      return stmt
+    },
+  }
+  return { db: db as unknown as D1Database, phases }
+}
+
+describe('applyProjectDesignPhases', () => {
+  it('rejects ad-hoc phase codes not in execution catalog', async () => {
+    const { db, phases } = createProjectDesignPhaseTestDb()
+    const bad = await applyProjectDesignPhases(db, 1, [{ code: 'HIENTAI', name: 'Hiện tại' }])
+    expect(bad.error).toMatch(/giai đoạn thực hiện/)
+    expect(phases).toHaveLength(0)
+  })
+
+  it('creates sheets from execution phase keys (tasks.phase)', async () => {
+    const { db, phases } = createProjectDesignPhaseTestDb()
+    const ok = await applyProjectDesignPhases(db, 1, [
+      { execution_phase_key: 'technical_design' },
+      { execution_phase_key: 'basic_design' },
+    ])
+    expect(ok.error).toBeUndefined()
+    expect(phases.map(p => p.code).sort()).toEqual(['basic_design', 'technical_design'])
+  })
+})
+
+describe('taskPhaseKeyForDesignSheet', () => {
+  it('returns tasks.phase key for active QLy sheet', () => {
+    const phases = [
+      { id: 10, code: 'basic_design', execution_phase_key: 'basic_design' },
+      { id: 11, code: 'technical_design', execution_phase_key: 'technical_design' },
+    ]
+    expect(taskPhaseKeyForDesignSheet(11, phases)).toBe('technical_design')
+    expect(taskPhaseKeyForDesignSheet(null, phases)).toBeNull()
+  })
+
+  it('recognizes TKCS alias as basic_design', () => {
+    expect(isProjectExecutionPhaseKey('TKCS')).toBe(true)
+    expect(isProjectExecutionPhaseKey('HIENTAI')).toBe(false)
+  })
+})
+
+describe('designDisciplineMatchesPhaseFilter', () => {
+  it('null-phase rows match legacy sheet only', () => {
+    expect(designDisciplineMatchesPhaseFilter(null, 'legacy')).toBe(true)
+    expect(designDisciplineMatchesPhaseFilter(null, 3)).toBe(false)
+    expect(designDisciplineMatchesPhaseFilter(3, 3)).toBe(true)
+    expect(designDisciplineMatchesPhaseFilter(3, 'legacy')).toBe(false)
   })
 })
 

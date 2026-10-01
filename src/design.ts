@@ -733,6 +733,7 @@ export async function executeDesignScan(
   opts: {
     projectId: number
     disciplineCode: string
+    phaseId?: number | null
     folderNames: string[]
     folderPath?: string | null
     userId: number
@@ -740,6 +741,7 @@ export async function executeDesignScan(
   },
 ): Promise<ScanResult> {
   const { projectId, disciplineCode, folderNames, userId, updateFolderPath } = opts
+  const phaseId = opts.phaseId === undefined ? null : opts.phaseId
   const folderPath = opts.folderPath ?? null
   const { validNames, skipped } = collectValidYyMmDdFolderNames(folderPath, folderNames)
 
@@ -819,18 +821,27 @@ export async function executeDesignScan(
     }
   }
 
+  const phaseWhere =
+    phaseId === null
+      ? 'project_id = ? AND discipline_code = ? AND phase_id IS NULL'
+      : 'project_id = ? AND discipline_code = ? AND phase_id = ?'
+  const phaseBinds =
+    phaseId === null ? [folderPath, userId, projectId, disciplineCode] : [folderPath, userId, projectId, disciplineCode, phaseId]
+
   if (updateFolderPath && folderPath) {
     await db.prepare(
       `UPDATE project_design_disciplines SET folder_path = ?, last_scanned_at = CURRENT_TIMESTAMP,
        last_scanned_by = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE project_id = ? AND discipline_code = ?`,
-    ).bind(folderPath, userId, projectId, disciplineCode).run()
+       WHERE ${phaseWhere}`,
+    ).bind(...phaseBinds).run()
   } else {
+    const binds =
+      phaseId === null ? [userId, projectId, disciplineCode] : [userId, projectId, disciplineCode, phaseId]
     await db.prepare(
       `UPDATE project_design_disciplines SET last_scanned_at = CURRENT_TIMESTAMP,
        last_scanned_by = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE project_id = ? AND discipline_code = ?`,
-    ).bind(userId, projectId, disciplineCode).run()
+       WHERE ${phaseWhere}`,
+    ).bind(...binds).run()
   }
 
   await db.prepare(
@@ -869,13 +880,36 @@ export async function canScanDesignDiscipline(
   projectId: number,
   disciplineCode: string,
   isProjectLeaderOrAdmin: (db: D1Database, user: any, projectId?: number) => Promise<boolean>,
+  phaseId: number | null = null,
 ): Promise<boolean> {
   if (user.role === 'system_admin') return true
   if (await isProjectLeaderOrAdmin(db, user, projectId)) return true
-  const row = await db.prepare(
-    `SELECT leader_id FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ?`,
-  ).bind(projectId, disciplineCode).first() as any
-  return row?.leader_id === user.id
+  const row =
+    phaseId === null
+      ? await db.prepare(
+          `SELECT leader_id FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ? AND phase_id IS NULL`,
+        ).bind(projectId, disciplineCode).first()
+      : await db.prepare(
+          `SELECT leader_id FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ? AND phase_id = ?`,
+        ).bind(projectId, disciplineCode, phaseId).first()
+  return (row as any)?.leader_id === user.id
+}
+
+export function parseDesignPhaseIdQuery(raw: string | undefined): number | 'legacy' | undefined {
+  if (raw === undefined || raw === '') return undefined
+  if (raw === 'legacy' || raw === 'null') return 'legacy'
+  const n = parseInt(raw, 10)
+  return Number.isFinite(n) ? n : undefined
+}
+
+/** QLy sheet filter — legacy = phase_id IS NULL. */
+export function designDisciplineMatchesPhaseFilter(
+  rowPhaseId: number | null | undefined,
+  filter: number | 'legacy' | undefined,
+): boolean {
+  if (filter === 'legacy') return rowPhaseId == null
+  if (typeof filter === 'number') return rowPhaseId === filter
+  return rowPhaseId == null
 }
 
 /** Checked discipline codes from Khai báo bộ môn save payload. */
@@ -890,11 +924,324 @@ export function declaredDisciplineCodesFromPayload(
   return codes
 }
 
-/** Upsert declared disciplines and remove project rows for codes not in the save set (category paths kept for re-declare). */
+export type ProjectExecutionPhaseDef = {
+  key: string
+  short_code: string
+  name: string
+}
+
+/** Same giai đoạn thực hiện as tasks.phase / categories.phase (PHASE_ORDER in app.js). */
+export const PROJECT_EXECUTION_PHASES: ProjectExecutionPhaseDef[] = [
+  { key: 'basic_design', short_code: 'TKCS', name: 'TKCS — Thiết kế cơ sở' },
+  { key: 'technical_design', short_code: 'TKKT', name: 'TKKT — Thiết kế kỹ thuật' },
+  { key: 'construction_design', short_code: 'TKTC', name: 'TKTC — Thiết kế thi công' },
+  { key: 'as_built', short_code: 'AsBuilt', name: 'Hoàn công' },
+]
+
+const EXECUTION_PHASE_KEY_SET = new Set(PROJECT_EXECUTION_PHASES.map(p => p.key))
+
+const EXECUTION_PHASE_ALIAS: Record<string, string> = {
+  TKCS: 'basic_design',
+  BASIC_DESIGN: 'basic_design',
+  TKKT: 'technical_design',
+  TECHNICAL_DESIGN: 'technical_design',
+  TKTC: 'construction_design',
+  BVTC: 'construction_design',
+  CONSTRUCTION_DESIGN: 'construction_design',
+  AS_BUILT: 'as_built',
+  HOAN_CONG: 'as_built',
+}
+
+export function projectExecutionPhaseCatalog(): ProjectExecutionPhaseDef[] {
+  return PROJECT_EXECUTION_PHASES.map(p => ({ ...p }))
+}
+
+export function isProjectExecutionPhaseKey(raw: string | null | undefined): boolean {
+  return !!resolveProjectExecutionPhaseKey(raw)
+}
+
+/** Map stored design phase code / task phase key / short code (TKCS) → tasks.phase key. */
+export function resolveProjectExecutionPhaseKey(raw: string | null | undefined): string | null {
+  const s = String(raw || '').trim()
+  if (!s) return null
+  if (EXECUTION_PHASE_KEY_SET.has(s)) return s
+  const norm = s.toUpperCase().replace(/[^A-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '')
+  if (EXECUTION_PHASE_KEY_SET.has(norm.toLowerCase())) return norm.toLowerCase()
+  const alias = EXECUTION_PHASE_ALIAS[norm]
+  if (alias) return alias
+  return null
+}
+
+export function isOrphanDesignPhaseCode(raw: string | null | undefined): boolean {
+  const s = String(raw || '').trim()
+  if (!s) return true
+  return !resolveProjectExecutionPhaseKey(s)
+}
+
+export function taskPhaseKeyForDesignSheet(
+  activePhaseId: number | null | undefined,
+  phases: Array<{ id: number; code?: string; execution_phase_key?: string | null }>,
+): string | null {
+  if (activePhaseId == null) return null
+  const row = phases.find(p => p.id === activePhaseId)
+  if (!row) return null
+  return row.execution_phase_key || resolveProjectExecutionPhaseKey(row.code)
+}
+
+export type DesignPhaseInput = {
+  id?: number | null
+  name?: string
+  code?: string
+  execution_phase_key?: string
+}
+
+function executionPhaseDef(key: string): ProjectExecutionPhaseDef | undefined {
+  return PROJECT_EXECUTION_PHASES.find(p => p.key === key)
+}
+
+function executionPhaseSortIndex(key: string): number {
+  const i = PROJECT_EXECUTION_PHASES.findIndex(p => p.key === key)
+  return i >= 0 ? i : 999
+}
+
+function parseDeclaredExecutionPhaseKeys(
+  phases: DesignPhaseInput[],
+): { error?: string; keys: string[] } {
+  const keys: string[] = []
+  const seen = new Set<string>()
+  for (const p of phases) {
+    const raw = String(p.execution_phase_key ?? p.code ?? p.name ?? '').trim()
+    if (!raw) continue
+    const key = resolveProjectExecutionPhaseKey(raw)
+    if (!key) {
+      return { error: 'Chỉ chọn giai đoạn thực hiện có sẵn (TKCS, TKKT, …)' }
+    }
+    if (seen.has(key)) return { error: 'Mã giai đoạn không được trùng' }
+    seen.add(key)
+    keys.push(key)
+  }
+  if (!keys.length) return { error: 'Chọn ít nhất một giai đoạn' }
+  keys.sort((a, b) => executionPhaseSortIndex(a) - executionPhaseSortIndex(b))
+  return { keys }
+}
+
+function findExistingPhaseIdForKey(
+  key: string,
+  existingRows: Array<{ id: number; code: string }>,
+): number | null {
+  for (const r of existingRows) {
+    if (resolveProjectExecutionPhaseKey(r.code) === key) return r.id
+  }
+  return null
+}
+
+async function migrateOrphanDesignPhaseRows(
+  db: D1Database,
+  projectId: number,
+  orphanPhaseIds: number[],
+  targetPhaseId: number | null,
+): Promise<void> {
+  if (!orphanPhaseIds.length) return
+  if (targetPhaseId != null) {
+    for (const oid of orphanPhaseIds) {
+      await db
+        .prepare(
+          `UPDATE project_design_disciplines SET phase_id = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE project_id = ? AND phase_id = ?`,
+        )
+        .bind(targetPhaseId, projectId, oid)
+        .run()
+      await db
+        .prepare(
+          `UPDATE project_design_category_paths SET phase_id = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE project_id = ? AND phase_id = ?`,
+        )
+        .bind(targetPhaseId, projectId, oid)
+        .run()
+    }
+  } else {
+    for (const oid of orphanPhaseIds) {
+      await db
+        .prepare(
+          `UPDATE project_design_disciplines SET phase_id = NULL, updated_at = CURRENT_TIMESTAMP
+           WHERE project_id = ? AND phase_id = ?`,
+        )
+        .bind(projectId, oid)
+        .run()
+      await db
+        .prepare(
+          `UPDATE project_design_category_paths SET phase_id = NULL, updated_at = CURRENT_TIMESTAMP
+           WHERE project_id = ? AND phase_id = ?`,
+        )
+        .bind(projectId, oid)
+        .run()
+    }
+  }
+  for (const oid of orphanPhaseIds) {
+    await db.prepare(`DELETE FROM project_design_phases WHERE id = ? AND project_id = ?`).bind(oid, projectId).run()
+  }
+}
+
+/** Sync giai đoạn QLy HSTK; gắn bộ môn/category path phase_id NULL vào giai đoạn đầu khi lưu lần đầu. */
+export async function applyProjectDesignPhases(
+  db: D1Database,
+  projectId: number,
+  phases: DesignPhaseInput[],
+): Promise<{ error?: string }> {
+  const parsed = parseDeclaredExecutionPhaseKeys(phases)
+  if (parsed.error) return { error: parsed.error }
+
+  const cleaned = parsed.keys.map((key, idx) => {
+    const def = executionPhaseDef(key)!
+    return { key, name: def.name, code: key, sort_order: idx }
+  })
+
+  const existing = (await db
+    .prepare(`SELECT id, code FROM project_design_phases WHERE project_id = ?`)
+    .bind(projectId)
+    .all()) as { results?: Array<{ id: number; code: string }> }
+  const existingRows = existing.results || []
+  const orphanPhaseIds = existingRows
+    .filter(r => isOrphanDesignPhaseCode(r.code))
+    .map(r => r.id)
+  const keepIds = new Set<number>()
+
+  for (const p of cleaned) {
+    const byKey = findExistingPhaseIdForKey(p.key, existingRows)
+    if (byKey) keepIds.add(byKey)
+  }
+
+  for (const ex of existingRows) {
+    if (keepIds.has(ex.id)) continue
+    if (orphanPhaseIds.includes(ex.id)) continue
+    const cnt = (await db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM project_design_disciplines WHERE project_id = ? AND phase_id = ?`,
+      )
+      .bind(projectId, ex.id)
+      .first()) as { c?: number } | null
+    if (Number(cnt?.c) > 0) {
+      return { error: 'Không xóa được giai đoạn còn bộ môn khai báo.' }
+    }
+    await db.prepare(`DELETE FROM project_design_phases WHERE id = ? AND project_id = ?`).bind(ex.id, projectId).run()
+  }
+
+  const nullDisc = (await db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM project_design_disciplines WHERE project_id = ? AND phase_id IS NULL`,
+    )
+    .bind(projectId)
+    .first()) as { c?: number } | null
+  const shouldAttachLegacy = Number(nullDisc?.c) > 0 && cleaned.length > 0
+
+  let firstPhaseId: number | null = null
+
+  for (const p of cleaned) {
+    let phaseId = findExistingPhaseIdForKey(p.key, existingRows)
+    if (phaseId) {
+      await db
+        .prepare(
+          `UPDATE project_design_phases SET name = ?, code = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND project_id = ?`,
+        )
+        .bind(p.name, p.code, p.sort_order, phaseId, projectId)
+        .run()
+    } else {
+      const ins = await db
+        .prepare(
+          `INSERT INTO project_design_phases (project_id, name, code, sort_order) VALUES (?, ?, ?, ?)`,
+        )
+        .bind(projectId, p.name, p.code, p.sort_order)
+        .run()
+      phaseId = ins.meta.last_row_id as number
+      existingRows.push({ id: phaseId, code: p.code })
+    }
+    if (p.sort_order === 0) firstPhaseId = phaseId
+  }
+
+  if (orphanPhaseIds.length) {
+    const orphanTarget = cleaned.length === 1 ? firstPhaseId : null
+    await migrateOrphanDesignPhaseRows(db, projectId, orphanPhaseIds, orphanTarget)
+  }
+
+  if (shouldAttachLegacy && firstPhaseId) {
+    await db
+      .prepare(
+        `UPDATE project_design_disciplines SET phase_id = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE project_id = ? AND phase_id IS NULL`,
+      )
+      .bind(firstPhaseId, projectId)
+      .run()
+    await db
+      .prepare(
+        `UPDATE project_design_category_paths SET phase_id = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE project_id = ? AND phase_id IS NULL`,
+      )
+      .bind(firstPhaseId, projectId)
+      .run()
+  }
+
+  return {}
+}
+
+export function enrichDesignPhasesForOverview(
+  phaseRows: Array<{ id: number; name: string; code: string; sort_order: number }>,
+): {
+  phases: Array<{
+    id: number
+    name: string
+    code: string
+    sort_order: number
+    execution_phase_key: string
+    short_code: string
+  }>
+  orphan_phase_ids: number[]
+} {
+  const phases: Array<{
+    id: number
+    name: string
+    code: string
+    sort_order: number
+    execution_phase_key: string
+    short_code: string
+  }> = []
+  const orphan_phase_ids: number[] = []
+  for (const row of phaseRows) {
+    const key = resolveProjectExecutionPhaseKey(row.code)
+    if (!key) {
+      orphan_phase_ids.push(row.id)
+      continue
+    }
+    const def = executionPhaseDef(key)!
+    phases.push({
+      ...row,
+      code: key,
+      name: def.name,
+      execution_phase_key: key,
+      short_code: def.short_code,
+    })
+  }
+  phases.sort(
+    (a, b) =>
+      executionPhaseSortIndex(a.execution_phase_key) - executionPhaseSortIndex(b.execution_phase_key) ||
+      a.sort_order - b.sort_order ||
+      a.id - b.id,
+  )
+  return { phases, orphan_phase_ids }
+}
+
+function phaseScopeSql(phaseId: number | null | undefined): { clause: string; bind: unknown } {
+  if (phaseId === undefined) return { clause: '', bind: undefined }
+  if (phaseId === null) return { clause: ' AND phase_id IS NULL', bind: undefined }
+  return { clause: ' AND phase_id = ?', bind: phaseId }
+}
+
+/** Upsert declared disciplines for one phase; remove unchecked codes from that phase only. */
 export async function applyProjectDesignDisciplineDeclaration(
   db: D1Database,
   projectId: number,
   disciplines: Array<{ discipline_code: string; role_codes?: string; leader_id?: number | null }>,
+  phaseId: number | null = null,
 ): Promise<void> {
   const retained = declaredDisciplineCodesFromPayload(disciplines)
   for (const d of disciplines) {
@@ -902,29 +1249,63 @@ export async function applyProjectDesignDisciplineDeclaration(
     if (!code) continue
     const roleCodes = String(d.role_codes ?? code).trim() || code
     const leaderId = d.leader_id ?? null
-    await db
-      .prepare(
-        `INSERT INTO project_design_disciplines (project_id, discipline_code, role_codes, leader_id, updated_at)
-         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-         ON CONFLICT(project_id, discipline_code) DO UPDATE SET
-           role_codes = excluded.role_codes,
-           leader_id = excluded.leader_id,
-           updated_at = CURRENT_TIMESTAMP`,
-      )
-      .bind(projectId, code, roleCodes, leaderId)
-      .run()
+    if (phaseId === null) {
+      await db
+        .prepare(
+          `INSERT INTO project_design_disciplines (project_id, phase_id, discipline_code, role_codes, leader_id, updated_at)
+           VALUES (?, NULL, ?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(project_id, phase_id, discipline_code) DO UPDATE SET
+             role_codes = excluded.role_codes,
+             leader_id = excluded.leader_id,
+             updated_at = CURRENT_TIMESTAMP`,
+        )
+        .bind(projectId, code, roleCodes, leaderId)
+        .run()
+    } else {
+      await db
+        .prepare(
+          `INSERT INTO project_design_disciplines (project_id, phase_id, discipline_code, role_codes, leader_id, updated_at)
+           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(project_id, phase_id, discipline_code) DO UPDATE SET
+             role_codes = excluded.role_codes,
+             leader_id = excluded.leader_id,
+             updated_at = CURRENT_TIMESTAMP`,
+        )
+        .bind(projectId, phaseId, code, roleCodes, leaderId)
+        .run()
+    }
   }
+  const scope = phaseScopeSql(phaseId)
   if (retained.length === 0) {
-    await db.prepare(`DELETE FROM project_design_disciplines WHERE project_id = ?`).bind(projectId).run()
+    if (phaseId === null) {
+      await db
+        .prepare(`DELETE FROM project_design_disciplines WHERE project_id = ? AND phase_id IS NULL`)
+        .bind(projectId)
+        .run()
+    } else {
+      await db
+        .prepare(`DELETE FROM project_design_disciplines WHERE project_id = ? AND phase_id = ?`)
+        .bind(projectId, phaseId)
+        .run()
+    }
     return
   }
   const placeholders = retained.map(() => '?').join(', ')
-  await db
-    .prepare(
-      `DELETE FROM project_design_disciplines WHERE project_id = ? AND discipline_code NOT IN (${placeholders})`,
-    )
-    .bind(projectId, ...retained)
-    .run()
+  if (phaseId === null) {
+    await db
+      .prepare(
+        `DELETE FROM project_design_disciplines WHERE project_id = ? AND phase_id IS NULL AND discipline_code NOT IN (${placeholders})`,
+      )
+      .bind(projectId, ...retained)
+      .run()
+  } else {
+    await db
+      .prepare(
+        `DELETE FROM project_design_disciplines WHERE project_id = ? AND phase_id = ? AND discipline_code NOT IN (${placeholders})`,
+      )
+      .bind(projectId, phaseId, ...retained)
+      .run()
+  }
 }
 
 export async function canConfigureDesignDisciplines(
@@ -960,7 +1341,31 @@ export function registerDesignRoutes(
       if (!(await canAccessProject(db, user, projectId))) {
         return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
       }
-      const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin)
+      const phaseFilter = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+      const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin, { phaseFilter })
+      return c.json(body)
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500)
+    }
+  })
+
+  app.put('/api/projects/:id/design/phases', authMiddleware, async (c: Context) => {
+    try {
+      const db = c.env.DB
+      const user = c.get('user') as any
+      const projectId = parseInt(c.req.param('id'))
+      if (!(await canAccessProject(db, user, projectId))) {
+        return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+      }
+      if (!(await canConfigureDesignDisciplines(db, user, projectId))) {
+        return c.json({ error: 'Không có quyền khai báo giai đoạn' }, 403)
+      }
+      const { phases } = await c.req.json() as { phases?: DesignPhaseInput[] }
+      if (!Array.isArray(phases)) return c.json({ error: 'phases array required' }, 400)
+      const result = await applyProjectDesignPhases(db, projectId, phases)
+      if (result.error) return c.json({ error: result.error }, 400)
+      const phaseFilter = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+      const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin, { phaseFilter })
       return c.json(body)
     } catch (e: any) {
       return c.json({ error: e.message }, 500)
@@ -973,15 +1378,22 @@ export function registerDesignRoutes(
       const user = c.get('user') as any
       const projectId = parseInt(c.req.param('id'))
       const disciplineCode = c.req.param('code')
+      const phaseId = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+      const phaseIdBind = phaseId === 'legacy' || phaseId === undefined ? null : phaseId
       if (!(await canAccessProject(db, user, projectId))) {
         return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
       }
-      if (!(await canScanDesignDiscipline(db, user, projectId, disciplineCode, isProjectLeaderOrAdmin))) {
+      if (!(await canScanDesignDiscipline(db, user, projectId, disciplineCode, isProjectLeaderOrAdmin, phaseIdBind))) {
         return c.json({ error: 'Không có quyền cập nhật folder bộ môn này' }, 403)
       }
-      const row = await db.prepare(
-        `SELECT 1 FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ?`,
-      ).bind(projectId, disciplineCode).first()
+      const row =
+        phaseIdBind === null
+          ? await db.prepare(
+              `SELECT 1 FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ? AND phase_id IS NULL`,
+            ).bind(projectId, disciplineCode).first()
+          : await db.prepare(
+              `SELECT 1 FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ? AND phase_id = ?`,
+            ).bind(projectId, disciplineCode, phaseIdBind).first()
       if (!row) return c.json({ error: 'Chưa khai báo bộ môn' }, 404)
       const { folder_path } = await c.req.json() as { folder_path?: string | null }
       const nasRow = await db.prepare(
@@ -990,10 +1402,17 @@ export function registerDesignRoutes(
       const nasRoot = nasRow?.value ? String(nasRow.value) : ''
       const validated = validateDesignFolderPath(folder_path, nasRoot)
       if (!validated.ok) return c.json({ error: validated.error }, 400)
-      await db.prepare(
-        `UPDATE project_design_disciplines SET folder_path = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE project_id = ? AND discipline_code = ?`,
-      ).bind(validated.path, projectId, disciplineCode).run()
+      if (phaseIdBind === null) {
+        await db.prepare(
+          `UPDATE project_design_disciplines SET folder_path = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE project_id = ? AND discipline_code = ? AND phase_id IS NULL`,
+        ).bind(validated.path, projectId, disciplineCode).run()
+      } else {
+        await db.prepare(
+          `UPDATE project_design_disciplines SET folder_path = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE project_id = ? AND discipline_code = ? AND phase_id = ?`,
+        ).bind(validated.path, projectId, disciplineCode, phaseIdBind).run()
+      }
       if (validated.path) {
         const newFromPath = await ensurePackageFromFolderPathLeaf(db, projectId, disciplineCode, user.id, validated.path)
         if (newFromPath.length) {
@@ -1005,7 +1424,8 @@ export function registerDesignRoutes(
           })
         }
       }
-      const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin)
+      const phaseFilter = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+      const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin, { phaseFilter })
       return c.json(body)
     } catch (e: any) {
       return c.json({ error: e.message }, 500)
@@ -1022,16 +1442,23 @@ export function registerDesignRoutes(
         const projectId = parseInt(c.req.param('id'))
         const disciplineCode = c.req.param('code')
         const categoryId = parseInt(c.req.param('categoryId'))
+        const phaseId = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+        const phaseIdBind = phaseId === 'legacy' || phaseId === undefined ? null : phaseId
         if (!Number.isFinite(categoryId)) return c.json({ error: 'categoryId không hợp lệ' }, 400)
         if (!(await canAccessProject(db, user, projectId))) {
           return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
         }
-        if (!(await canScanDesignDiscipline(db, user, projectId, disciplineCode, isProjectLeaderOrAdmin))) {
+        if (!(await canScanDesignDiscipline(db, user, projectId, disciplineCode, isProjectLeaderOrAdmin, phaseIdBind))) {
           return c.json({ error: 'Không có quyền cập nhật folder hạng mục này' }, 403)
         }
-        const disc = await db.prepare(
-          `SELECT 1 FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ?`,
-        ).bind(projectId, disciplineCode).first()
+        const disc =
+          phaseIdBind === null
+            ? await db.prepare(
+                `SELECT 1 FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ? AND phase_id IS NULL`,
+              ).bind(projectId, disciplineCode).first()
+            : await db.prepare(
+                `SELECT 1 FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ? AND phase_id = ?`,
+              ).bind(projectId, disciplineCode, phaseIdBind).first()
         if (!disc) return c.json({ error: 'Chưa khai báo bộ môn' }, 404)
         const cat = await db.prepare(
           `SELECT id FROM categories WHERE id = ? AND project_id = ?`,
@@ -1046,23 +1473,40 @@ export function registerDesignRoutes(
         const validated = validateDesignFolderPath(folder_path, nasRoot)
         if (!validated.ok) return c.json({ error: validated.error }, 400)
 
-        const prev = (await db.prepare(
-          `SELECT folder_path FROM project_design_category_paths
-           WHERE project_id = ? AND discipline_code = ? AND category_id = ?`,
-        ).bind(projectId, disciplineCode, categoryId).first()) as { folder_path?: string | null } | null
+        const prev =
+          phaseIdBind === null
+            ? ((await db.prepare(
+                `SELECT folder_path FROM project_design_category_paths
+                 WHERE project_id = ? AND discipline_code = ? AND category_id = ? AND phase_id IS NULL`,
+              ).bind(projectId, disciplineCode, categoryId).first()) as { folder_path?: string | null } | null)
+            : ((await db.prepare(
+                `SELECT folder_path FROM project_design_category_paths
+                 WHERE project_id = ? AND discipline_code = ? AND category_id = ? AND phase_id = ?`,
+              ).bind(projectId, disciplineCode, categoryId, phaseIdBind).first()) as { folder_path?: string | null } | null)
 
         if (designStoredPathsEqual(prev?.folder_path, validated.path)) {
-          const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin)
+          const phaseFilter = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+          const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin, { phaseFilter })
           return c.json(body)
         }
 
-        await db.prepare(
-          `INSERT INTO project_design_category_paths (project_id, discipline_code, category_id, folder_path, updated_at)
-           VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-           ON CONFLICT(project_id, discipline_code, category_id) DO UPDATE SET
-             folder_path = excluded.folder_path,
-             updated_at = CURRENT_TIMESTAMP`,
-        ).bind(projectId, disciplineCode, categoryId, validated.path).run()
+        if (phaseIdBind === null) {
+          await db.prepare(
+            `INSERT INTO project_design_category_paths (project_id, phase_id, discipline_code, category_id, folder_path, updated_at)
+             VALUES (?, NULL, ?, ?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(project_id, phase_id, discipline_code, category_id) DO UPDATE SET
+               folder_path = excluded.folder_path,
+               updated_at = CURRENT_TIMESTAMP`,
+          ).bind(projectId, disciplineCode, categoryId, validated.path).run()
+        } else {
+          await db.prepare(
+            `INSERT INTO project_design_category_paths (project_id, phase_id, discipline_code, category_id, folder_path, updated_at)
+             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(project_id, phase_id, discipline_code, category_id) DO UPDATE SET
+               folder_path = excluded.folder_path,
+               updated_at = CURRENT_TIMESTAMP`,
+          ).bind(projectId, phaseIdBind, disciplineCode, categoryId, validated.path).run()
+        }
 
         if (validated.path) {
           const newFromPath = await ensurePackageFromFolderPathLeaf(
@@ -1080,7 +1524,8 @@ export function registerDesignRoutes(
           }
         }
 
-        const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin)
+        const phaseFilter = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+        const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin, { phaseFilter })
         return c.json(body)
       } catch (e: any) {
         return c.json({ error: e.message }, 500)
@@ -1099,10 +1544,22 @@ export function registerDesignRoutes(
       if (!(await canConfigureDesignDisciplines(db, user, projectId))) {
         return c.json({ error: 'Không có quyền khai báo bộ môn' }, 403)
       }
-      const { disciplines } = await c.req.json() as { disciplines: Array<{ discipline_code: string; role_codes?: string; leader_id?: number | null }> }
+      const payload = await c.req.json() as {
+        disciplines: Array<{ discipline_code: string; role_codes?: string; leader_id?: number | null }>
+        phase_id?: number | null
+      }
+      const { disciplines } = payload
       if (!Array.isArray(disciplines)) return c.json({ error: 'disciplines array required' }, 400)
-      await applyProjectDesignDisciplineDeclaration(db, projectId, disciplines)
-      const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin)
+      let phaseId: number | null = null
+      if (payload.phase_id !== undefined && payload.phase_id !== null) {
+        const n = parseInt(String(payload.phase_id), 10)
+        if (Number.isFinite(n)) phaseId = n
+      }
+      await applyProjectDesignDisciplineDeclaration(db, projectId, disciplines, phaseId)
+      const phaseFilter = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+      const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin, {
+        phaseFilter: phaseFilter ?? (phaseId === null ? 'legacy' : phaseId),
+      })
       return c.json(body)
     } catch (e: any) {
       return c.json({ error: e.message }, 500)
@@ -1115,21 +1572,27 @@ export function registerDesignRoutes(
       const user = c.get('user') as any
       const projectId = parseInt(c.req.param('id'))
       const disciplineCode = c.req.param('code')
-      const { mode } = await c.req.json().catch(() => ({ mode: 'pick' })) as { mode?: string }
+      const bodyJson = await c.req.json().catch(() => ({})) as { mode?: string; phase_id?: number | null }
+      const { mode } = bodyJson
       const scanMode = mode === 'rescan' ? 'rescan' : 'pick'
+      let scanPhaseId: number | null = null
+      if (bodyJson.phase_id !== undefined && bodyJson.phase_id !== null) {
+        const n = parseInt(String(bodyJson.phase_id), 10)
+        if (Number.isFinite(n)) scanPhaseId = n
+      }
       if (!(await canAccessProject(db, user, projectId))) {
         return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
       }
-      if (!(await canScanDesignDiscipline(db, user, projectId, disciplineCode, isProjectLeaderOrAdmin))) {
+      if (!(await canScanDesignDiscipline(db, user, projectId, disciplineCode, isProjectLeaderOrAdmin, scanPhaseId))) {
         return c.json({ error: 'Không có quyền quét bộ môn này' }, 403)
       }
       const rawToken = crypto.randomUUID() + crypto.randomUUID()
       const tokenHash = await sha256Hex(rawToken)
       const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString()
       await db.prepare(
-        `INSERT INTO design_scan_tokens (token_hash, user_id, project_id, discipline_code, mode, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).bind(tokenHash, user.id, projectId, disciplineCode, scanMode, expires).run()
+        `INSERT INTO design_scan_tokens (token_hash, user_id, project_id, discipline_code, phase_id, mode, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(tokenHash, user.id, projectId, disciplineCode, scanPhaseId, scanMode, expires).run()
       const origin = new URL(c.req.url).origin
       const nasRow = await db.prepare(
         `SELECT value FROM system_config WHERE key = 'nas_root_path'`,
@@ -1217,6 +1680,7 @@ export function registerDesignRoutes(
       const scan = await executeDesignScan(db, {
         projectId: tok.project_id,
         disciplineCode: tok.discipline_code,
+        phaseId: tok.phase_id ?? null,
         folderNames: folder_names,
         folderPath: tok.mode === 'pick' ? folderPath : undefined,
         userId: tok.user_id,
@@ -1331,7 +1795,8 @@ export function registerDesignRoutes(
       updates.push('updated_by = ?', 'updated_at = CURRENT_TIMESTAMP')
       values.push(user.id, pkgId)
       await db.prepare(`UPDATE design_packages SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run()
-      const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin)
+      const phaseFilter = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+      const body = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin, { phaseFilter })
       return c.json(body)
     } catch (e: any) {
       return c.json({ error: e.message }, 500)
@@ -1495,23 +1960,66 @@ async function notifyDesignPackageNew(
   }
 }
 
+export type BuildDesignOverviewOpts = {
+  phaseFilter?: number | 'legacy'
+  forDashboard?: boolean
+}
+
 export async function buildDesignOverview(
   db: D1Database,
   projectId: number,
   user: any,
   isProjectLeaderOrAdmin: (db: D1Database, user: any, projectId?: number) => Promise<boolean>,
+  opts?: BuildDesignOverviewOpts,
 ) {
   const canConfigure = await canConfigureDesignDisciplines(db, user, projectId)
   const canScanAny = await isProjectLeaderOrAdmin(db, user, projectId)
 
-  const disciplines = await db.prepare(
-    `SELECT pdd.*, d.name AS discipline_name, u.full_name AS leader_name
+  const phaseRows = await db.prepare(
+    `SELECT id, name, code, sort_order FROM project_design_phases
+     WHERE project_id = ? ORDER BY sort_order, id`,
+  ).bind(projectId).all()
+  const { phases, orphan_phase_ids } = enrichDesignPhasesForOverview(
+    (phaseRows.results || []) as Array<{ id: number; name: string; code: string; sort_order: number }>,
+  )
+
+  let disciplineSql = `SELECT pdd.*, d.name AS discipline_name, u.full_name AS leader_name
      FROM project_design_disciplines pdd
      LEFT JOIN disciplines d ON d.code = pdd.discipline_code
      LEFT JOIN users u ON u.id = pdd.leader_id
-     WHERE pdd.project_id = ?
-     ORDER BY pdd.discipline_code`,
-  ).bind(projectId).all()
+     WHERE pdd.project_id = ?`
+  const disciplineBinds: unknown[] = [projectId]
+
+  if (opts?.forDashboard) {
+    disciplineSql += ` AND pdd.id IN (
+      SELECT p2.id FROM project_design_disciplines p2
+      WHERE p2.project_id = pdd.project_id AND p2.discipline_code = pdd.discipline_code
+      ORDER BY CASE WHEN p2.phase_id IS NULL THEN 0 ELSE 1 END, p2.id
+      LIMIT 1
+    )`
+  } else if (opts?.phaseFilter === 'legacy') {
+    if (orphan_phase_ids.length) {
+      disciplineSql += ` AND (pdd.phase_id IS NULL OR pdd.phase_id IN (${orphan_phase_ids.map(() => '?').join(',')}))`
+      disciplineBinds.push(...orphan_phase_ids)
+    } else {
+      disciplineSql += ' AND pdd.phase_id IS NULL'
+    }
+  } else if (typeof opts?.phaseFilter === 'number') {
+    disciplineSql += ' AND pdd.phase_id = ?'
+    disciplineBinds.push(opts.phaseFilter)
+  } else {
+    disciplineSql += ' AND pdd.phase_id IS NULL'
+  }
+  disciplineSql += ' ORDER BY pdd.discipline_code'
+
+  const disciplines = await db.prepare(disciplineSql).bind(...disciplineBinds).all()
+
+  const activePhaseKey =
+    opts?.phaseFilter === 'legacy' || opts?.phaseFilter === undefined
+      ? null
+      : typeof opts?.phaseFilter === 'number'
+        ? opts.phaseFilter
+        : null
 
   for (const d of (disciplines.results || []) as Array<{ discipline_code: string; folder_path?: string | null }>) {
     if (d.folder_path) {
@@ -1520,14 +2028,23 @@ export async function buildDesignOverview(
   }
 
   const categoryPathRows = await db.prepare(
-    `SELECT discipline_code, category_id, folder_path FROM project_design_category_paths WHERE project_id = ?`,
+    `SELECT phase_id, discipline_code, category_id, folder_path FROM project_design_category_paths WHERE project_id = ?`,
   ).bind(projectId).all()
   const categoryPathByDisc = new Map<string, Map<number, string | null>>()
   for (const row of (categoryPathRows.results || []) as Array<{
+    phase_id?: number | null
     discipline_code: string
     category_id: number
     folder_path?: string | null
   }>) {
+    const rowPhase = row.phase_id ?? null
+    if (!opts?.forDashboard) {
+      if (opts?.phaseFilter === 'legacy') {
+        const onLegacy =
+          rowPhase === null || (rowPhase != null && orphan_phase_ids.includes(rowPhase))
+        if (!onLegacy) continue
+      } else if (rowPhase !== activePhaseKey) continue
+    }
     const code = String(row.discipline_code)
     if (!categoryPathByDisc.has(code)) categoryPathByDisc.set(code, new Map())
     const pathNorm = row.folder_path ? normalizeNasPath(String(row.folder_path)) : null
@@ -1723,10 +2240,29 @@ export async function buildDesignOverview(
 
   const nasRow = await db.prepare(`SELECT value FROM system_config WHERE key = 'nas_root_path'`).first() as any
 
+  const legacyNullCount = (await db.prepare(
+    `SELECT COUNT(*) AS c FROM project_design_disciplines WHERE project_id = ? AND phase_id IS NULL`,
+  ).bind(projectId).first()) as { c?: number } | null
+  let orphanDiscCount = 0
+  if (orphan_phase_ids.length) {
+    const oc = (await db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM project_design_disciplines WHERE project_id = ? AND phase_id IN (${orphan_phase_ids.map(() => '?').join(',')})`,
+      )
+      .bind(projectId, ...orphan_phase_ids)
+      .first()) as { c?: number } | null
+    orphanDiscCount = Number(oc?.c) > 0 ? Number(oc?.c) : 0
+  }
+
   return {
     project_id: projectId,
     nas_root: nasRow?.value || null,
     can_configure_disciplines: canConfigure,
+    execution_phase_catalog: projectExecutionPhaseCatalog(),
+    phases,
+    legacy_sheet:
+      Number(legacyNullCount?.c) > 0 || orphanDiscCount > 0 || (phases.length === 0 && Number(legacyNullCount?.c) > 0),
+    active_phase_id: typeof opts?.phaseFilter === 'number' ? opts.phaseFilter : null,
     disciplines: disciplineBlocks,
     scan_logs: scanLogs.results || [],
     package_suggestions: Object.fromEntries(
@@ -2020,7 +2556,7 @@ export async function buildProjectDashboardDetail(
   ).bind(projectId, projectId).first() as any
   if (!p) return null
 
-  const overview = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin)
+  const overview = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin, { forDashboard: true })
   const { totalRevChanges, discSummaries, categoryMatrix, blockers } = summarizeDashboardFromOverview(overview, p)
   const openTaskPreview = await fetchOpenTaskPreviewForDashboard(db, user, projectId, canAccessProject)
 

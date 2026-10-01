@@ -1,8 +1,25 @@
 /** QLy HSTK tab + Dashboard dự án */
 ;(function () {
   const HSTK_PKG_TYPES = { issue: 'Phát hành', revise: 'Sửa đổi', response: 'Phản hồi góp ý' }
+  const HSTK_EXECUTION_PHASES_FALLBACK = [
+    { key: 'basic_design', short_code: 'TKCS', name: 'TKCS — Thiết kế cơ sở' },
+    { key: 'technical_design', short_code: 'TKKT', name: 'TKKT — Thiết kế kỹ thuật' },
+    { key: 'construction_design', short_code: 'TKTC', name: 'TKTC — Thiết kế thi công' },
+    { key: 'as_built', short_code: 'AsBuilt', name: 'Hoàn công' },
+  ]
   const HSTK_REVIEW = { pending: 'Chờ soát', commented: 'Đã góp ý', approved: 'Chấp thuận' }
   const HSTK_SOURCE = { TVTK: 'TVTK', CDT: 'CĐT', internal: 'Nội bộ' }
+
+  /** Nhãn giai đoạn: tránh lặp mã khi name đã chứa short_code (vd. TKCS — Thiết kế cơ sở). */
+  function formatExecutionPhaseDisplayLabel(code, name) {
+    const c = String(code || '').trim()
+    const n = String(name || '').trim()
+    if (!n) return c
+    if (!c || c === n) return n
+    const prefix = `${c} — `
+    if (n.startsWith(prefix) || n === c) return n
+    return `${c} — ${n}`
+  }
 
   window._designPackageSuggestions = {}
   window._taskDesignPackageId = null
@@ -247,8 +264,8 @@
     })
   }
 
-  function repaintScanLogPanel(code) {
-    const el = document.getElementById(`scanLog_${code}`)
+  function repaintScanLogPanel(phaseKey, code) {
+    const el = document.getElementById(`scanLog_${phaseKey}_${code}`)
     if (!el || !window._lastDesignData) return
     const rows = (window._lastDesignData.scan_logs || []).filter(l => l.discipline_code === code)
     el.innerHTML = rows.length
@@ -257,12 +274,15 @@
       : '<p>Chưa có lịch sử quét.</p>'
   }
 
-  function restoreOpenScanLogPanels(openCodes) {
-    if (!openCodes?.length) return
-    for (const code of openCodes) {
-      const el = document.getElementById(`scanLog_${code}`)
+  function restoreOpenScanLogPanels(openKeys) {
+    if (!openKeys?.length) return
+    for (const key of openKeys) {
+      const el = document.getElementById(`scanLog_${key}`)
       if (!el) continue
-      repaintScanLogPanel(code)
+      const parts = String(key).split('_')
+      const code = parts.pop()
+      const phaseKey = parts.join('_') || qlyHstkPhaseSheetKey(window._lastDesignData?.project_id)
+      repaintScanLogPanel(phaseKey, code)
       el.classList.remove('hidden')
     }
   }
@@ -276,9 +296,10 @@
       return { ok: false, reason: 'helper_down' }
     }
     try {
+      const phaseId = qlyHstkActivePhaseId(projectId)
       const { link } = await api(`/projects/${projectId}/design/disciplines/${encodeURIComponent(code)}/scan-token`, {
         method: 'post',
-        data: { mode: 'rescan' },
+        data: { mode: 'rescan', phase_id: phaseId },
       })
       const rawToken = decodeURIComponent((link.match(/token=([^&]+)/) || [])[1] || '')
       const nas = nasRootForHelper()
@@ -293,6 +314,72 @@
     }
   }
 
+  window._qlyHstkUi = window._qlyHstkUi || {}
+
+  function qlyHstkGetUi(projectId) {
+    if (!window._qlyHstkUi[projectId]) {
+      window._qlyHstkUi[projectId] = { activeSheet: 'legacy', discFilter: 'all', collapsed: {} }
+    }
+    return window._qlyHstkUi[projectId]
+  }
+
+  function qlyHstkPhaseQuery(projectId) {
+    const sheet = qlyHstkGetUi(projectId).activeSheet
+    if (sheet === 'legacy') return 'legacy'
+    return String(sheet)
+  }
+
+  function qlyHstkPhaseSheetKey(projectId) {
+    const sheet = qlyHstkGetUi(projectId).activeSheet
+    return sheet === 'legacy' ? 'legacy' : String(sheet)
+  }
+
+  function qlyHstkActivePhaseId(projectId) {
+    const sheet = qlyHstkGetUi(projectId).activeSheet
+    return sheet === 'legacy' ? null : sheet
+  }
+
+  function qlyHstkExecutionPhaseCatalog(data) {
+    return data?.execution_phase_catalog?.length ? data.execution_phase_catalog : HSTK_EXECUTION_PHASES_FALLBACK
+  }
+
+  function qlyHstkActiveTaskPhaseKey(projectId) {
+    const sheet = qlyHstkGetUi(projectId).activeSheet
+    if (sheet === 'legacy') return null
+    const phases = window._lastDesignData?.phases || []
+    const row = phases.find(p => p.id === sheet)
+    if (!row) return null
+    return row.execution_phase_key || row.code || null
+  }
+
+  window.qlyHstkSelectSheet = function (projectId, sheet) {
+    const ui = qlyHstkGetUi(projectId)
+    ui.activeSheet = sheet === 'legacy' ? 'legacy' : parseInt(String(sheet), 10) || sheet
+    ui.discFilter = 'all'
+    const c = document.getElementById(`qlyHstkContainer_${projectId}`)
+    if (c) void initQlyHstkTab(c, projectId, { preserveScroll: true })
+  }
+
+  window.qlyHstkSetDiscFilter = function (projectId, code) {
+    qlyHstkGetUi(projectId).discFilter = code || 'all'
+    const c = document.getElementById(`qlyHstkContainer_${projectId}`)
+    if (c && window._lastDesignData) renderQlyHstk(c, projectId, window._lastDesignData)
+  }
+
+  window.qlyHstkToggleDiscCollapse = function (projectId, code) {
+    const ui = qlyHstkGetUi(projectId)
+    const key = `${qlyHstkPhaseSheetKey(projectId)}:${code}`
+    ui.collapsed[key] = !ui.collapsed[key]
+    const c = document.getElementById(`qlyHstkContainer_${projectId}`)
+    if (c && window._lastDesignData) renderQlyHstk(c, projectId, window._lastDesignData)
+  }
+
+  function qlyHstkDiscCollapsed(projectId, code) {
+    const ui = qlyHstkGetUi(projectId)
+    const key = `${qlyHstkPhaseSheetKey(projectId)}:${code}`
+    return ui.collapsed[key] === true
+  }
+
   window.initQlyHstkTab = async function initQlyHstkTab(container, projectId, opts = {}) {
     const preserveScroll = opts.preserveScroll === true
     const hadContent =
@@ -303,7 +390,13 @@
       container.innerHTML = `<div class="py-8 text-center text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải QLy HSTK…</div>`
     }
     try {
-      const data = await api(`/projects/${projectId}/design`)
+      const phaseQ = qlyHstkPhaseQuery(projectId)
+      const data = await api(`/projects/${projectId}/design?phase_id=${encodeURIComponent(phaseQ)}`)
+      const ui = qlyHstkGetUi(projectId)
+      if (data.phases?.length && !data.legacy_sheet && ui.activeSheet === 'legacy') {
+        ui.activeSheet = data.phases[0].id
+        return initQlyHstkTab(container, projectId, opts)
+      }
       window._designPackageSuggestions = data.package_suggestions || {}
       renderQlyHstk(container, projectId, data)
       if (uiState) {
@@ -598,45 +691,114 @@
     if (c) await initQlyHstkTab(c, projectId, { preserveScroll: true })
   }
 
+  function renderQlyHstkPhaseSheets(projectId, data) {
+    const ui = qlyHstkGetUi(projectId)
+    const active = ui.activeSheet
+    const tabs = []
+    if (data.legacy_sheet || (!data.phases?.length && (data.disciplines?.length || active === 'legacy'))) {
+      tabs.push({ id: 'legacy', label: data.phases?.length ? 'Hiện tại (dữ liệu cũ)' : 'Hiện tại' })
+    }
+    for (const p of data.phases || []) {
+      const short = p.short_code || p.code
+      tabs.push({ id: p.id, label: formatExecutionPhaseDisplayLabel(short, p.name) })
+    }
+    if (!tabs.length) return ''
+    return `<div class="hstk-phase-sheets mb-3" role="tablist" aria-label="Giai đoạn QLy HSTK">
+      ${tabs.map(t => {
+        const sel = (t.id === 'legacy' && active === 'legacy') || t.id === active
+        return `<button type="button" role="tab" aria-selected="${sel ? 'true' : 'false'}"
+          class="hstk-phase-sheet${sel ? ' active' : ''}"
+          onclick="qlyHstkSelectSheet(${projectId}, ${t.id === 'legacy' ? "'legacy'" : t.id})">${escHtml(t.label)}</button>`
+      }).join('')}
+    </div>`
+  }
+
+  function renderQlyHstkDiscFilter(projectId, disciplines) {
+    const ui = qlyHstkGetUi(projectId)
+    const active = ui.discFilter || 'all'
+    const chips = [{ code: 'all', label: 'Tất cả' }].concat(
+      (disciplines || []).map(d => ({ code: d.discipline_code, label: d.discipline_name || d.discipline_code })),
+    )
+    return `<div class="hstk-disc-filter mb-3 flex flex-wrap gap-1 items-center">
+      <span class="text-xs text-gray-500 mr-1">Lọc bộ môn:</span>
+      ${chips.map(c => {
+        const sel = c.code === active
+        return `<button type="button" class="hstk-disc-chip${sel ? ' active' : ''}"
+          onclick="qlyHstkSetDiscFilter(${projectId}, '${escHtml(c.code)}')">${escHtml(c.label)}</button>`
+      }).join('')}
+    </div>`
+  }
+
   function renderQlyHstk(container, projectId, data) {
     const canCfg = canConfigureDesignDisciplinesUi(data, projectId)
+    const cfgBtns = canCfg
+      ? `<button class="btn-secondary text-xs" onclick="openDesignPhaseConfig(${projectId})"><i class="fas fa-layer-group mr-1"></i>Khai báo giai đoạn</button>
+         <button class="btn-secondary text-xs" onclick="openDesignDisciplineConfig(${projectId})"><i class="fas fa-cog mr-1"></i>Khai báo bộ môn</button>`
+      : ''
     let html = `<div class="flex flex-wrap justify-between items-center gap-2 mb-4">
       <div>
         <h3 class="font-bold text-gray-800">QLy HSTK — quét folder NAS</h3>
         <p class="text-xs text-gray-500">Gốc NAS: ${escHtml(data.nas_root || '(chưa cấu hình nas_root_path)')}</p>
       </div>
-      ${canCfg ? `<button class="btn-secondary text-xs" onclick="openDesignDisciplineConfig(${projectId})"><i class="fas fa-cog mr-1"></i>Khai báo bộ môn</button>` : ''}
+      <div class="flex flex-wrap gap-2">${cfgBtns}</div>
     </div>`
+
+    html += renderQlyHstkPhaseSheets(projectId, data)
+
+    const ui = qlyHstkGetUi(projectId)
+    const hasPhases = (data.phases || []).length > 0
+    const onLegacy = ui.activeSheet === 'legacy'
+    if (hasPhases && onLegacy && !data.legacy_sheet) {
+      html += `<div class="text-sm text-gray-600 border border-dashed rounded-xl p-4 bg-gray-50 mb-3">
+        <p>Chọn giai đoạn ở sheet phía trên để quản lý bộ môn và folder.</p>
+      </div>`
+      container.innerHTML = html
+      window._lastDesignData = data
+      return
+    }
 
     if (!data.disciplines?.length) {
       html += `<div class="text-sm text-gray-600 border border-dashed rounded-xl p-4 bg-gray-50">
-        <p class="mb-2">Chưa khai báo bộ môn — cần khai báo trước khi dán đường dẫn folder và quét.</p>
-        ${canCfg ? `<button class="btn-primary text-xs" onclick="openDesignDisciplineConfig(${projectId})"><i class="fas fa-plus mr-1"></i>Khai báo bộ môn</button>` : '<p class="text-xs text-gray-500">Liên hệ QLTK/admin dự án để khai báo.</p>'}
+        <p class="mb-2">${hasPhases && !onLegacy ? 'Chưa khai báo bộ môn cho giai đoạn này.' : 'Chưa khai báo bộ môn — cần khai báo trước khi dán đường dẫn folder và quét.'}</p>
+        ${canCfg && (!hasPhases || !onLegacy) ? `<button class="btn-primary text-xs" onclick="openDesignDisciplineConfig(${projectId})"><i class="fas fa-plus mr-1"></i>Khai báo bộ môn</button>` : ''}
+        ${canCfg && hasPhases && onLegacy ? `<button class="btn-secondary text-xs" onclick="openDesignPhaseConfig(${projectId})"><i class="fas fa-layer-group mr-1"></i>Khai báo giai đoạn</button>` : ''}
       </div>`
       container.innerHTML = html
+      window._lastDesignData = data
       return
     }
+
+    html += renderQlyHstkDiscFilter(projectId, data.disciplines)
 
     window._designAssignRows = {}
     const canAssign = canAssignDesignTask(projectId)
     const globalInvalid = new Map()
+    const discFilter = ui.discFilter || 'all'
+    const phaseKey = qlyHstkPhaseSheetKey(projectId)
 
     for (const d of data.disciplines) {
+      if (discFilter !== 'all' && d.discipline_code !== discFilter) continue
       for (const inv of d.invalid_names || []) {
         if (!globalInvalid.has(inv.model_id)) globalInvalid.set(inv.model_id, inv)
       }
-      html += `<div class="border rounded-xl mb-4 overflow-hidden">
-        <div class="bg-gray-50 px-4 py-3 flex flex-wrap gap-3 items-center justify-between">
-          <div>
-            <div class="font-bold text-sm">${escHtml(d.discipline_name || d.discipline_code)} <span class="text-gray-400 font-normal">(${escHtml(d.discipline_code)})</span></div>
+      const collapsed = qlyHstkDiscCollapsed(projectId, d.discipline_code)
+      const headline = formatLatestPackageLabel(d.latest_package)
+      const collapseBtn = `<button type="button" class="text-gray-500 hover:text-primary mr-2" title="${collapsed ? 'Mở rộng' : 'Thu nhỏ'}" onclick="qlyHstkToggleDiscCollapse(${projectId},'${escHtml(d.discipline_code)}')"><i class="fas fa-chevron-${collapsed ? 'right' : 'down'}"></i></button>`
+      html += `<div class="border rounded-xl mb-4 overflow-hidden hstk-disc-block" data-disc="${escHtml(d.discipline_code)}">
+        <div class="bg-gray-50 dark:bg-gray-900/40 px-4 py-3 flex flex-wrap gap-3 items-center justify-between">
+          <div class="min-w-0 flex-1">
+            <div class="font-bold text-sm flex items-start gap-1">${collapseBtn}
+              <span>${escHtml(d.discipline_name || d.discipline_code)} <span class="text-gray-400 font-normal">(${escHtml(d.discipline_code)})</span></span>
+            </div>
+            ${collapsed ? `<p class="text-xs text-gray-600 mt-1 ml-6">HSTK mới nhất: ${escHtml(headline)}</p>` : ''}
           </div>
           <div class="flex flex-wrap gap-2">
             ${d.can_scan ? `<button class="btn-secondary text-xs" onclick="designRescan(${projectId},'${escHtml(d.discipline_code)}')"><i class="fas fa-sync mr-1"></i>Quét lại</button>` : ''}
-            <button class="btn-secondary text-xs" onclick="toggleDesignScanLog('${d.discipline_code}')"><i class="fas fa-history mr-1"></i>Lịch sử quét</button>
+            <button class="btn-secondary text-xs" onclick="toggleDesignScanLog('${phaseKey}','${d.discipline_code}')"><i class="fas fa-history mr-1"></i>Lịch sử quét</button>
           </div>
         </div>
-        <div id="scanLog_${d.discipline_code}" class="hidden px-4 pb-3 text-xs"></div>
-        ${renderDisciplineModelMatrix(d, projectId, canAssign)}</div>`
+        <div id="scanLog_${phaseKey}_${d.discipline_code}" class="hidden px-4 pb-3 text-xs"></div>
+        ${collapsed ? '' : renderDisciplineModelMatrix(d, projectId, canAssign)}</div>`
     }
 
     html += renderGlobalInvalidModels(globalInvalid)
@@ -645,14 +807,14 @@
     window._lastDesignData = data
   }
 
-  window.toggleDesignScanLog = function (code) {
-    const el = document.getElementById(`scanLog_${code}`)
+  window.toggleDesignScanLog = function (phaseKey, code) {
+    const el = document.getElementById(`scanLog_${phaseKey}_${code}`)
     if (!el || !window._lastDesignData) return
     if (!el.classList.contains('hidden')) {
       el.classList.add('hidden')
       return
     }
-    repaintScanLogPanel(code)
+    repaintScanLogPanel(phaseKey, code)
     el.classList.remove('hidden')
   }
 
@@ -670,8 +832,9 @@
     const prevPath = normalizeWindowsPath(matrixRow?.category_folder_path || '')
     const pathChanged = path !== prevPath
     try {
+      const phaseQ = encodeURIComponent(qlyHstkPhaseQuery(projectId))
       await api(
-        `/projects/${projectId}/design/disciplines/${encodeURIComponent(code)}/categories/${categoryId}/folder-path`,
+        `/projects/${projectId}/design/disciplines/${encodeURIComponent(code)}/categories/${categoryId}/folder-path?phase_id=${phaseQ}`,
         { method: 'put', data: { folder_path: path || null } },
       )
       toast(path ? 'Đã lưu đường dẫn hạng mục' : 'Đã xóa đường dẫn hạng mục', 'success')
@@ -767,6 +930,8 @@
     }
     populateHstkDatalist(disciplineCode)
     applyHstkRequiredUi()
+    const phaseKey = qlyHstkActiveTaskPhaseKey(projectId)
+    if (phaseKey && $('taskPhase')) $('taskPhase').value = phaseKey
     if (typeof syncTaskTitle === 'function') syncTaskTitle()
   }
 
@@ -777,9 +942,71 @@
     dl.innerHTML = pkgs.map(p => `<option value="${escHtml(p.folder_name)}">${escHtml(p.label)} — ${escHtml(p.folder_name)}</option>`).join('')
   }
 
+  window.openDesignPhaseConfig = async function (projectId) {
+    const phaseQ = qlyHstkPhaseQuery(projectId)
+    const cur = await api(`/projects/${projectId}/design?phase_id=${encodeURIComponent(phaseQ)}`)
+    const catalog = qlyHstkExecutionPhaseCatalog(cur)
+    const selected = new Set((cur.phases || []).map(p => p.execution_phase_key || p.code).filter(Boolean))
+    const modalId = `designPhaseModal_${projectId}`
+    let old = document.getElementById(modalId)
+    if (old) old.remove()
+    const checkHtml = catalog
+      .map(
+        def => `<label class="flex items-start gap-2 py-2 border-b border-gray-100 cursor-pointer design-phase-check">
+      <input type="checkbox" class="mt-1 design-phase-key" value="${escHtml(def.key)}" ${selected.has(def.key) ? 'checked' : ''} />
+      <span class="font-medium text-sm text-gray-800">${escHtml(formatExecutionPhaseDisplayLabel(def.short_code, def.name))}</span></span>
+    </label>`,
+      )
+      .join('')
+    const wrap = document.createElement('div')
+    wrap.id = modalId
+    wrap.className = 'fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4'
+    wrap.innerHTML = `<div class="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[85vh] overflow-y-auto p-4">
+      <h4 class="font-bold text-gray-800 mb-1">Khai báo giai đoạn</h4>
+      <p class="text-xs text-gray-500 mb-3">Chọn giai đoạn thực hiện (cùng danh mục với task). Mỗi giai đoạn là một sheet QLy HSTK. Lần lưu đầu sẽ gắn bộ môn hiện có vào giai đoạn đầu tiên đã chọn.</p>
+      <div id="${modalId}_rows" class="mb-2">${checkHtml}</div>
+      <div class="flex justify-end gap-2">
+        <button type="button" class="btn-secondary text-xs" id="${modalId}_cancel">Hủy</button>
+        <button type="button" class="btn-primary text-xs" id="${modalId}_save">Lưu</button>
+      </div>
+    </div>`
+    document.body.appendChild(wrap)
+    wrap.querySelector(`#${modalId}_cancel`)?.addEventListener('click', () => wrap.remove())
+    wrap.addEventListener('click', e => { if (e.target === wrap) wrap.remove() })
+    wrap.querySelector(`#${modalId}_save`)?.addEventListener('click', async () => {
+      const payload = []
+      wrap.querySelectorAll('.design-phase-key:checked').forEach(inp => {
+        payload.push({ execution_phase_key: inp.value })
+      })
+      if (!payload.length) {
+        toast('Chọn ít nhất một giai đoạn', 'warning')
+        return
+      }
+      try {
+        await api(`/projects/${projectId}/design/phases?phase_id=${encodeURIComponent(phaseQ)}`, {
+          method: 'put',
+          data: { phases: payload },
+        })
+        toast('Đã lưu giai đoạn', 'success')
+        wrap.remove()
+        const c = document.getElementById(`qlyHstkContainer_${projectId}`)
+        if (c) await initQlyHstkTab(c, projectId, { preserveScroll: true })
+      } catch (e) {
+        toast(e.response?.data?.error || e.message, 'error')
+      }
+    })
+  }
+
   window.openDesignDisciplineConfig = async function (projectId) {
+    const ui = qlyHstkGetUi(projectId)
+    const phaseQ = qlyHstkPhaseQuery(projectId)
+    if (ui.activeSheet === 'legacy' && window._lastDesignData?.phases?.length && !window._lastDesignData?.legacy_sheet) {
+      toast('Chọn giai đoạn trước khi khai báo bộ môn', 'warning')
+      return
+    }
+    const phaseId = qlyHstkActivePhaseId(projectId)
     const discs = await api('/disciplines')
-    const cur = await api(`/projects/${projectId}/design`)
+    const cur = await api(`/projects/${projectId}/design?phase_id=${encodeURIComponent(phaseQ)}`)
     let members = window._currentProjectDetailId === projectId ? window._currentProjectDetailMembers : null
     if (!members?.length) {
       try {
@@ -848,7 +1075,10 @@
         return
       }
       try {
-        await api(`/projects/${projectId}/design/disciplines`, { method: 'put', data: { disciplines: payload } })
+        await api(`/projects/${projectId}/design/disciplines?phase_id=${encodeURIComponent(phaseQ)}`, {
+          method: 'put',
+          data: { disciplines: payload, phase_id: phaseId },
+        })
         toast('Đã lưu bộ môn', 'success')
         wrap.remove()
         const c = document.getElementById(`qlyHstkContainer_${projectId}`)
