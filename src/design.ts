@@ -48,7 +48,7 @@ export function parseBepFileName(rawName: string): BepParsed | { error: string }
   }
 }
 
-/** BEP field 1 (`parseBepFileName().project`) compared to `projects.code` and outgoing `letter_number`. */
+/** BEP field 1 (`parseBepFileName().project`) vs `projects.code`, `projects.project_code_letter`, outgoing `letter_number`. */
 export function bepProjectTokenMatchesOutgoingLetter(bepProjectToken: string, letterNumber: string): boolean {
   const token = String(bepProjectToken || '').trim().toUpperCase()
   const letter = String(letterNumber || '').trim().toUpperCase()
@@ -57,25 +57,35 @@ export function bepProjectTokenMatchesOutgoingLetter(bepProjectToken: string, le
   return letter.startsWith(`${token}/`) || letter.startsWith(`${token}-`) || letter.startsWith(`${token} `)
 }
 
+function bepTokenMatchesProjectCode(token: string, projectCode: string): boolean {
+  const code = String(projectCode || '').trim().toUpperCase()
+  if (!code || !token) return false
+  if (token === code) return true
+  return code.endsWith(`-${token}`) || code.endsWith(`_${token}`)
+}
+
 export function modelBepProjectCodeMismatch(
   bepProjectToken: string,
   projectCode: string,
   outgoingLetterNumbers: string[],
+  projectCodeLetter?: string,
 ): boolean {
   const token = String(bepProjectToken || '').trim().toUpperCase()
   if (!token) return false
 
-  const code = String(projectCode || '').trim().toUpperCase()
+  const code = String(projectCode || '').trim()
+  const docLetter = String(projectCodeLetter || '').trim()
   const letters = (outgoingLetterNumbers || []).map(n => String(n || '').trim()).filter(Boolean)
 
-  if (code && token === code) return false
-
-  if (letters.length === 0) {
-    return !!(projectCode && token !== code)
-  }
+  if (bepTokenMatchesProjectCode(token, code)) return false
+  if (docLetter && token === docLetter.toUpperCase()) return false
 
   for (const ln of letters) {
     if (bepProjectTokenMatchesOutgoingLetter(bepProjectToken, ln)) return false
+  }
+
+  if (letters.length === 0) {
+    return !!(code || docLetter)
   }
   return true
 }
@@ -1523,8 +1533,9 @@ export async function buildDesignOverview(
      WHERE t.project_id = ? AND t.model_filename IS NOT NULL AND TRIM(t.model_filename) != ''`,
   ).bind(projectId).all()
 
-  const project = await db.prepare('SELECT code FROM projects WHERE id = ?').bind(projectId).first() as any
+  const project = await db.prepare('SELECT code, project_code_letter FROM projects WHERE id = ?').bind(projectId).first() as any
   const projectCode = project?.code || ''
+  const projectCodeLetter = project?.project_code_letter || ''
 
   const outgoingLetterRows = await db.prepare(
     `SELECT letter_number FROM outgoing_letters
@@ -1612,7 +1623,12 @@ export async function buildDesignOverview(
           : null,
         type: parsed.type,
         role: parsed.role,
-        project_code_mismatch: modelBepProjectCodeMismatch(parsed.project, projectCode, outgoingLetterNumbers),
+        project_code_mismatch: modelBepProjectCodeMismatch(
+          parsed.project,
+          projectCode,
+          outgoingLetterNumbers,
+          projectCodeLetter,
+        ),
         tasks: relatedTasks,
         primary_task_id: primaryTask?.id ?? null,
         ...cvFields,

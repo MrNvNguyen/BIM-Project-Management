@@ -125,6 +125,12 @@ describe('modelBepProjectCodeMismatch', () => {
     expect(modelBepProjectCodeMismatch('BV38.4', '', [])).toBe(false)
   })
 
+  it('matches project_code_letter (Số hiệu văn bản dự án) and code suffix BCA-C03 vs C03', () => {
+    expect(modelBepProjectCodeMismatch('C03', 'BCA-C03', [], 'C03')).toBe(false)
+    expect(modelBepProjectCodeMismatch('C03', 'BCA-C03', [], '')).toBe(false)
+    expect(modelBepProjectCodeMismatch('ZZZ', 'BCA-C03', [], 'C03')).toBe(true)
+  })
+
   it('matches letter prefix with separator not loose substring', () => {
     expect(bepProjectTokenMatchesOutgoingLetter('BV', 'BV38.4/2026')).toBe(false)
     expect(bepProjectTokenMatchesOutgoingLetter('BV38.4', 'BV38.4/2026/CV-01')).toBe(true)
