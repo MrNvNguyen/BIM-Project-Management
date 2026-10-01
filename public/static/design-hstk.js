@@ -224,7 +224,11 @@
     )
     const active = document.activeElement
     const focusInputId =
-      active?.id && String(active.id).startsWith('designCatFolder_') ? active.id : null
+      active?.id &&
+      (String(active.id).startsWith('designCatFolder_') ||
+        String(active.id).startsWith('designDiscBulkFolder_'))
+        ? active.id
+        : null
     const inputCaret =
       focusInputId && typeof active.selectionStart === 'number'
         ? { start: active.selectionStart, end: active.selectionEnd }
@@ -798,13 +802,18 @@
       const collapsed = qlyHstkDiscCollapsed(projectId, d.discipline_code)
       const headline = formatLatestPackageLabel(d.latest_package)
       const collapseBtn = `<button type="button" class="text-gray-500 hover:text-primary mr-2" title="${collapsed ? 'Mở rộng' : 'Thu nhỏ'}" onclick="qlyHstkToggleDiscCollapse(${projectId},'${escHtml(d.discipline_code)}')"><i class="fas fa-chevron-${collapsed ? 'right' : 'down'}"></i></button>`
+      const bulkFolderInput =
+        !collapsed && d.can_scan
+          ? renderDisciplineBulkFolderInput(projectId, d.discipline_code, d.model_matrix, d.can_scan)
+          : ''
       html += `<div class="border rounded-xl mb-4 overflow-hidden hstk-disc-block" data-disc="${escHtml(d.discipline_code)}">
         <div class="bg-gray-50 dark:bg-gray-900/40 px-4 py-3 flex flex-wrap gap-3 items-center justify-between">
-          <div class="min-w-0 flex-1">
-            <div class="font-bold text-sm flex items-start gap-1">${collapseBtn}
+          <div class="min-w-0 flex-1 flex flex-wrap items-center gap-x-3 gap-y-2">
+            <div class="font-bold text-sm flex items-start gap-1 shrink-0">${collapseBtn}
               <span>${escHtml(d.discipline_name || d.discipline_code)} <span class="text-gray-400 font-normal">(${escHtml(d.discipline_code)})</span></span>
             </div>
-            ${collapsed ? `<p class="text-xs text-gray-600 mt-1 ml-6">HSTK mới nhất: ${escHtml(headline)}</p>` : ''}
+            ${bulkFolderInput}
+            ${collapsed ? `<p class="text-xs text-gray-600 mt-1 ml-6 w-full">HSTK mới nhất: ${escHtml(headline)}</p>` : ''}
           </div>
           <div class="flex flex-wrap gap-2">
             ${d.can_scan ? `<button class="btn-secondary text-xs" onclick="designRescan(${projectId},'${escHtml(d.discipline_code)}')"><i class="fas fa-sync mr-1"></i>Quét lại</button>` : ''}
@@ -854,6 +863,76 @@
       toast(path ? 'Đã lưu đường dẫn hạng mục' : 'Đã xóa đường dẫn hạng mục', 'success')
       const c = document.getElementById(`qlyHstkContainer_${projectId}`)
       if (path && pathChanged) await designScanSavedPath(projectId, code, path, { quiet: false })
+      if (c) await initQlyHstkTab(c, projectId, { preserveScroll: true })
+    } catch (e) {
+      toast(e.response?.data?.error || e.message, 'error')
+    }
+  }
+
+  function disciplineCommonCategoryFolderPath(matrix) {
+    const byCat = new Map()
+    for (const row of matrix || []) {
+      if (!row.category_id) continue
+      if (byCat.has(row.category_id)) continue
+      byCat.set(row.category_id, normalizeWindowsPath(row.category_folder_path || ''))
+    }
+    if (byCat.size === 0) return ''
+    const paths = [...byCat.values()]
+    const first = paths[0]
+    for (const p of paths) {
+      if (p !== first) return ''
+    }
+    return first
+  }
+
+  function categoryIdsForDisciplineBulkPath(matrix, newPath) {
+    const target = normalizeWindowsPath(newPath)
+    const byCat = new Map()
+    for (const row of matrix || []) {
+      if (!row.category_id) continue
+      if (byCat.has(row.category_id)) continue
+      byCat.set(row.category_id, normalizeWindowsPath(row.category_folder_path || ''))
+    }
+    const ids = []
+    for (const [catId, prev] of byCat) {
+      if (prev !== target) ids.push(catId)
+    }
+    return ids
+  }
+
+  function renderDisciplineBulkFolderInput(projectId, disciplineCode, matrix, canScan) {
+    if (!canScan) return ''
+    const common = disciplineCommonCategoryFolderPath(matrix)
+    const inputId = `designDiscBulkFolder_${disciplineCode}`
+    return `<input type="text" id="${inputId}" class="hstk-disc-bulk-folder-input flex-1 min-w-[200px] max-w-xl text-[11px] border border-gray-600 rounded px-2 py-1 font-mono bg-gray-900 text-gray-100" placeholder="Đường dẫn chung mọi hạng mục" value="${escHtml(common)}" title="Áp dụng cho mọi hạng mục trên sheet này — Enter để lưu" onkeydown="designDiscBulkFolderInputKeydown(event,${projectId},'${escHtml(disciplineCode)}')" />`
+  }
+
+  window.designDiscBulkFolderInputKeydown = function (ev, projectId, code) {
+    if (ev.key !== 'Enter' || ev.isComposing) return
+    ev.preventDefault()
+    void designSaveDisciplineBulkCategoryFolderPath(projectId, code)
+  }
+
+  window.designSaveDisciplineBulkCategoryFolderPath = async function (projectId, code) {
+    const input = document.getElementById(`designDiscBulkFolder_${code}`)
+    const path = normalizeWindowsPath((input?.value ?? '').trim())
+    const disc = window._lastDesignData?.disciplines?.find(d => d.discipline_code === code)
+    const matrix = disc?.model_matrix || []
+    const categoryIds = categoryIdsForDisciplineBulkPath(matrix, path)
+    if (!categoryIds.length) {
+      toast(path ? 'Đường dẫn đã đúng cho mọi hạng mục' : 'Không có hạng mục để cập nhật', 'info')
+      return
+    }
+    const willChange = categoryIds.length
+    try {
+      const phaseQ = encodeURIComponent(qlyHstkPhaseQuery(projectId))
+      await api(
+        `/projects/${projectId}/design/disciplines/${encodeURIComponent(code)}/category-folder-paths?phase_id=${phaseQ}`,
+        { method: 'put', data: { folder_path: path || null, category_ids: categoryIds } },
+      )
+      toast(path ? 'Đã lưu đường dẫn chung cho mọi hạng mục' : 'Đã xóa đường dẫn chung', 'success')
+      const c = document.getElementById(`qlyHstkContainer_${projectId}`)
+      if (path && willChange) await designScanSavedPath(projectId, code, path, { quiet: false })
       if (c) await initQlyHstkTab(c, projectId, { preserveScroll: true })
     } catch (e) {
       toast(e.response?.data?.error || e.message, 'error')

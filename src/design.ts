@@ -244,6 +244,79 @@ export function designStoredPathsEqual(
   return na === nb
 }
 
+export type DesignCategoryFolderMatrixRow = {
+  category_id?: number | null
+  category_folder_path?: string | null
+}
+
+/** One entry per category_id in model_matrix (first row wins). */
+export function uniqueCategoryFolderPathsById(
+  rows: DesignCategoryFolderMatrixRow[],
+): Map<number, string | null> {
+  const map = new Map<number, string | null>()
+  for (const row of rows) {
+    const id = row.category_id
+    if (id == null || !Number.isFinite(Number(id))) continue
+    const catId = Number(id)
+    if (map.has(catId)) continue
+    const p = row.category_folder_path ? normalizeNasPath(String(row.category_folder_path)) : null
+    map.set(catId, p)
+  }
+  return map
+}
+
+/** Shared path when every category on the sheet matches; otherwise null (header stays empty). */
+export function designCommonCategoryFolderPath(rows: DesignCategoryFolderMatrixRow[]): string | null {
+  const byId = uniqueCategoryFolderPathsById(rows)
+  if (byId.size === 0) return null
+  const paths = [...byId.values()]
+  const first = paths[0] ?? null
+  for (const p of paths) {
+    if (!designStoredPathsEqual(p, first)) return null
+  }
+  return first
+}
+
+/** Category ids whose stored path differs from the bulk target (scoped to supplied matrix rows). */
+export function categoryIdsNeedingFolderPathUpdate(
+  rows: DesignCategoryFolderMatrixRow[],
+  newPath: string | null,
+): number[] {
+  const byId = uniqueCategoryFolderPathsById(rows)
+  const out: number[] = []
+  for (const [catId, prev] of byId) {
+    if (!designStoredPathsEqual(prev, newPath)) out.push(catId)
+  }
+  return out.sort((a, b) => a - b)
+}
+
+async function upsertDesignCategoryFolderPathRow(
+  db: D1Database,
+  projectId: number,
+  disciplineCode: string,
+  categoryId: number,
+  phaseIdBind: number | null,
+  path: string | null,
+): Promise<void> {
+  if (phaseIdBind === null) {
+    await db.prepare(
+      `INSERT INTO project_design_category_paths (project_id, phase_id, discipline_code, category_id, folder_path, updated_at)
+       VALUES (?, NULL, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(project_id, phase_id, discipline_code, category_id) DO UPDATE SET
+         folder_path = excluded.folder_path,
+         updated_at = CURRENT_TIMESTAMP`,
+    ).bind(projectId, disciplineCode, categoryId, path).run()
+  } else {
+    await db.prepare(
+      `INSERT INTO project_design_category_paths (project_id, phase_id, discipline_code, category_id, folder_path, updated_at)
+       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(project_id, phase_id, discipline_code, category_id) DO UPDATE SET
+         folder_path = excluded.folder_path,
+         updated_at = CURRENT_TIMESTAMP`,
+    ).bind(projectId, phaseIdBind, disciplineCode, categoryId, path).run()
+  }
+}
+
 /** Same date format as QLy HSTK tab status line (dd/mm/yyyy). */
 export function formatIsoDateVi(iso: string | null | undefined): string {
   if (!iso) return '—'
@@ -1450,6 +1523,113 @@ export function registerDesignRoutes(
   })
 
   app.put(
+    '/api/projects/:id/design/disciplines/:code/category-folder-paths',
+    authMiddleware,
+    async (c: Context) => {
+      try {
+        const db = c.env.DB
+        const user = c.get('user') as any
+        const projectId = parseInt(c.req.param('id'))
+        const disciplineCode = c.req.param('code')
+        const phaseId = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+        const phaseIdBind = phaseId === 'legacy' || phaseId === undefined ? null : phaseId
+        if (!(await canAccessProject(db, user, projectId))) {
+          return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+        }
+        if (!(await canScanDesignDiscipline(db, user, projectId, disciplineCode, isProjectLeaderOrAdmin, phaseIdBind))) {
+          return c.json({ error: 'Không có quyền cập nhật folder hạng mục này' }, 403)
+        }
+        const disc =
+          phaseIdBind === null
+            ? await db.prepare(
+                `SELECT 1 FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ? AND phase_id IS NULL`,
+              ).bind(projectId, disciplineCode).first()
+            : await db.prepare(
+                `SELECT 1 FROM project_design_disciplines WHERE project_id = ? AND discipline_code = ? AND phase_id = ?`,
+              ).bind(projectId, disciplineCode, phaseIdBind).first()
+        if (!disc) return c.json({ error: 'Chưa khai báo bộ môn' }, 404)
+
+        const body = await c.req.json() as { folder_path?: string | null; category_ids?: number[] }
+        const categoryIds = Array.isArray(body.category_ids)
+          ? [...new Set(body.category_ids.map(id => parseInt(String(id), 10)).filter(Number.isFinite))]
+          : []
+        if (!categoryIds.length) return c.json({ error: 'category_ids array required' }, 400)
+
+        const nasRow = await db.prepare(
+          `SELECT value FROM system_config WHERE key = 'nas_root_path'`,
+        ).first() as { value?: string } | null
+        const nasRoot = nasRow?.value ? String(nasRow.value) : ''
+        const validated = validateDesignFolderPath(body.folder_path, nasRoot)
+        if (!validated.ok) return c.json({ error: validated.error }, 400)
+
+        for (const categoryId of categoryIds) {
+          const cat = await db.prepare(
+            `SELECT id FROM categories WHERE id = ? AND project_id = ?`,
+          ).bind(categoryId, projectId).first()
+          if (!cat) return c.json({ error: `Hạng mục ${categoryId} không thuộc dự án` }, 404)
+        }
+
+        const allNewPackages: Array<{ id: number; folder_name: string; revLabel: string }> = []
+        const seenPkgIds = new Set<number>()
+        let anyChanged = false
+
+        for (const categoryId of categoryIds) {
+          const prev =
+            phaseIdBind === null
+              ? ((await db.prepare(
+                  `SELECT folder_path FROM project_design_category_paths
+                   WHERE project_id = ? AND discipline_code = ? AND category_id = ? AND phase_id IS NULL`,
+                ).bind(projectId, disciplineCode, categoryId).first()) as { folder_path?: string | null } | null)
+              : ((await db.prepare(
+                  `SELECT folder_path FROM project_design_category_paths
+                   WHERE project_id = ? AND discipline_code = ? AND category_id = ? AND phase_id = ?`,
+                ).bind(projectId, disciplineCode, categoryId, phaseIdBind).first()) as { folder_path?: string | null } | null)
+
+          if (designStoredPathsEqual(prev?.folder_path, validated.path)) continue
+
+          anyChanged = true
+          await upsertDesignCategoryFolderPathRow(
+            db, projectId, disciplineCode, categoryId, phaseIdBind, validated.path,
+          )
+
+          if (validated.path) {
+            const newFromPath = await ensurePackageFromFolderPathLeaf(
+              db, projectId, disciplineCode, user.id, validated.path,
+            )
+            for (const pkg of newFromPath) {
+              if (seenPkgIds.has(pkg.id)) continue
+              seenPkgIds.add(pkg.id)
+              allNewPackages.push(pkg)
+            }
+          }
+        }
+
+        if (allNewPackages.length) {
+          await notifyDesignPackageNew(db, c.env, sendEmail, getUserEmailInfo, {
+            projectId,
+            disciplineCode,
+            newPackages: allNewPackages,
+            scannedByUserId: user.id,
+            notifyBasePath: validated.path ?? undefined,
+          })
+        }
+
+        if (!anyChanged) {
+          const phaseFilter = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+          const overview = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin, { phaseFilter })
+          return c.json(overview)
+        }
+
+        const phaseFilter = parseDesignPhaseIdQuery(c.req.query('phase_id'))
+        const overview = await buildDesignOverview(db, projectId, user, isProjectLeaderOrAdmin, { phaseFilter })
+        return c.json(overview)
+      } catch (e: any) {
+        return c.json({ error: e.message }, 500)
+      }
+    },
+  )
+
+  app.put(
     '/api/projects/:id/design/disciplines/:code/categories/:categoryId/folder-path',
     authMiddleware,
     async (c: Context) => {
@@ -1507,23 +1687,9 @@ export function registerDesignRoutes(
           return c.json(body)
         }
 
-        if (phaseIdBind === null) {
-          await db.prepare(
-            `INSERT INTO project_design_category_paths (project_id, phase_id, discipline_code, category_id, folder_path, updated_at)
-             VALUES (?, NULL, ?, ?, ?, CURRENT_TIMESTAMP)
-             ON CONFLICT(project_id, phase_id, discipline_code, category_id) DO UPDATE SET
-               folder_path = excluded.folder_path,
-               updated_at = CURRENT_TIMESTAMP`,
-          ).bind(projectId, disciplineCode, categoryId, validated.path).run()
-        } else {
-          await db.prepare(
-            `INSERT INTO project_design_category_paths (project_id, phase_id, discipline_code, category_id, folder_path, updated_at)
-             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-             ON CONFLICT(project_id, phase_id, discipline_code, category_id) DO UPDATE SET
-               folder_path = excluded.folder_path,
-               updated_at = CURRENT_TIMESTAMP`,
-          ).bind(projectId, phaseIdBind, disciplineCode, categoryId, validated.path).run()
-        }
+        await upsertDesignCategoryFolderPathRow(
+          db, projectId, disciplineCode, categoryId, phaseIdBind, validated.path,
+        )
 
         if (validated.path) {
           const newFromPath = await ensurePackageFromFolderPathLeaf(

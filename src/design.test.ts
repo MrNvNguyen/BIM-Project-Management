@@ -25,6 +25,8 @@ import {
   dashboardTimelinePackages,
   dashboardPackageMissingNasBlockers,
   designStoredPathsEqual,
+  designCommonCategoryFolderPath,
+  categoryIdsNeedingFolderPathUpdate,
   designScanWouldChangePackages,
   collectValidYyMmDdFolderNames,
   taskEligibleForCategoryPackageNotify,
@@ -217,6 +219,30 @@ describe('revision', () => {
     ]
     const map = assignRevisionNumbers(pkgs)
     expect(displayRevision(pkgs[2], map)).toBe('R2')
+  })
+})
+
+describe('category bulk folder path helpers', () => {
+  it('shows common path only when every category matches', () => {
+    const mep = [
+      { category_id: 10, category_folder_path: 'Z:\\FY2026\\MEP\\NLV' },
+      { category_id: 11, category_folder_path: 'Z:\\FY2026\\MEP\\NLV' },
+    ]
+    expect(designCommonCategoryFolderPath(mep)).toBe('Z:\\FY2026\\MEP\\NLV')
+    mep[1].category_folder_path = 'Z:\\other'
+    expect(designCommonCategoryFolderPath(mep)).toBeNull()
+  })
+
+  it('bulk apply targets only categories in the supplied matrix rows', () => {
+    const mepAsBuilt = [
+      { category_id: 10, category_folder_path: 'Z:\\old' },
+      { category_id: 11, category_folder_path: 'Z:\\old' },
+    ]
+    const aaAsBuilt = [{ category_id: 99, category_folder_path: 'Z:\\aa-only' }]
+    expect(categoryIdsNeedingFolderPathUpdate(mepAsBuilt, 'Z:\\new')).toEqual([10, 11])
+    expect(categoryIdsNeedingFolderPathUpdate(mepAsBuilt, 'Z:\\old')).toEqual([])
+    expect(categoryIdsNeedingFolderPathUpdate(aaAsBuilt, 'Z:\\new')).toEqual([99])
+    expect(categoryIdsNeedingFolderPathUpdate(mepAsBuilt, 'Z:\\new')).not.toContain(99)
   })
 })
 
