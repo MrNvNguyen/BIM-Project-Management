@@ -25,6 +25,8 @@ import {
   dashboardTimelinePackages,
   dashboardPackageMissingNasBlockers,
   designStoredPathsEqual,
+  designScanWouldChangePackages,
+  collectValidYyMmDdFolderNames,
   taskEligibleForCategoryPackageNotify,
   formatLatestPackageHeadline,
   buildCategoryDossierStatus,
@@ -144,6 +146,12 @@ describe('parseYyMmDdFolder', () => {
       description: 'Phát hành TKCS',
     })
   })
+  it('parses underscore separator', () => {
+    expect(parseYyMmDdFolder('260518_Canh quan+HTKT')).toEqual({
+      packageDate: '2026-05-18',
+      description: 'Canh quan+HTKT',
+    })
+  })
   it('skips invalid', () => {
     expect(parseYyMmDdFolder('abc')).toBeNull()
     expect(parseYyMmDdFolder('261345-x')).toBeNull()
@@ -240,6 +248,26 @@ describe('parsePackageFromFolderPath', () => {
       description: 'Canh quan+HTKT',
     })
   })
+  it('reads YYMMDD_name from last path segment (underscore form)', () => {
+    const path = 'C:\\Users\\NguyenNguyenVan\\Downloads\\01 TKCS\\260518_Canh quan+HTKT'
+    expect(parsePackageFromFolderPath(path)).toEqual({
+      folderName: '260518_Canh quan+HTKT',
+      packageDate: '2026-05-18',
+      description: 'Canh quan+HTKT',
+    })
+  })
+  it('uses last segment only when parent also looks like a package', () => {
+    const path = 'Z:\\NAS\\260101-Old parent\\260518_Canh quan+HTKT'
+    expect(parsePackageFromFolderPath(path)).toEqual({
+      folderName: '260518_Canh quan+HTKT',
+      packageDate: '2026-05-18',
+      description: 'Canh quan+HTKT',
+    })
+  })
+  it('returns null when last segment has no YYMMDD prefix', () => {
+    expect(parsePackageFromFolderPath('C:\\01 TKCS\\Ho So TKCS')).toBeNull()
+    expect(parsePackageFromFolderPath('C:\\01 TKCS\\abc518-Not a date')).toBeNull()
+  })
 })
 
 describe('buildCategoryDossierStatus', () => {
@@ -307,6 +335,37 @@ describe('designStoredPathsEqual', () => {
   it('treats normalized paths as unchanged for save skip', () => {
     expect(designStoredPathsEqual('Z:\\A\\\\B', 'Z:\\A\\B')).toBe(true)
     expect(designStoredPathsEqual('Z:\\A\\B', 'Z:\\A\\C')).toBe(false)
+  })
+})
+
+describe('designScanWouldChangePackages', () => {
+  const existing = [
+    { folder_name: '260506-Ho So TKCS', missing_since: null },
+    { folder_name: '250905-Old', missing_since: '2026-09-01' },
+  ]
+
+  it('unchanged when present set matches scan and missing stay missing', () => {
+    expect(designScanWouldChangePackages(existing, ['260506-Ho So TKCS'])).toBe(false)
+  })
+
+  it('changed when scan adds a new package folder', () => {
+    expect(designScanWouldChangePackages(existing, ['260506-Ho So TKCS', '260915-Phát hành TKCS'])).toBe(true)
+  })
+
+  it('changed when a present package disappears from scan', () => {
+    expect(designScanWouldChangePackages(existing, [])).toBe(true)
+  })
+
+  it('changed when a previously missing package reappears', () => {
+    expect(designScanWouldChangePackages(existing, ['250905-Old'])).toBe(true)
+  })
+})
+
+describe('collectValidYyMmDdFolderNames', () => {
+  it('includes path leaf when valid YYMMDD', () => {
+    const { validNames } = collectValidYyMmDdFolderNames('Z:\\a\\260518-Canh quan', ['260915-Phát hành TKCS'])
+    expect(validNames.map(n => n.toLowerCase())).toContain('260518-canh quan')
+    expect(validNames).toContain('260915-Phát hành TKCS')
   })
 })
 

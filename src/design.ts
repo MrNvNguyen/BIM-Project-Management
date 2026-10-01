@@ -21,7 +21,7 @@ export type BepParsed = {
 }
 
 const MODEL_TYPES = new Set(['M2', 'M3', 'CM'])
-const PACKAGE_FOLDER_RE = /^(\d{6})-(.+)$/
+const PACKAGE_FOLDER_RE = /^(\d{6})[-_](.+)$/
 
 export function stripModelExtension(name: string): string {
   return name.replace(/\.(rvt|nwc|ifc|dwg|pdf|nwd|nwf)$/i, '')
@@ -186,7 +186,7 @@ export function folderPathPackageLeaf(folderPath: string | null | undefined): st
   return norm.split(/[/\\]/).pop() || ''
 }
 
-/** Package identity from saved path: pattern ^(\\d{6})-(.+)$ on last segment only. */
+/** Package identity from saved path: ^(\\d{6})-(.+)$ or ^(\\d{6})_(.+)$ on last segment only. */
 export function parsePackageFromFolderPath(folderPath: string | null | undefined): {
   folderName: string
   packageDate: string
@@ -683,6 +683,49 @@ export type ScanResult = {
   newCount: number
   missingCount: number
   totalCount: number
+  /** True when disk listing matched DB — no log row or package writes. */
+  unchanged?: boolean
+}
+
+/** YYMMDD package folder names from scan listing (+ optional path leaf). */
+export function collectValidYyMmDdFolderNames(
+  folderPath: string | null | undefined,
+  folderNames: string[],
+): { validNames: string[]; skipped: string[] } {
+  const names = mergeScanFolderNames(folderPath, folderNames).slice(0, 500)
+  const seen = new Set<string>()
+  const validNames: string[] = []
+  const skipped: string[] = []
+  for (const n of names) {
+    const key = n.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    if (!parseYyMmDdFolder(n)) {
+      skipped.push(n)
+      continue
+    }
+    validNames.push(n)
+  }
+  return { validNames, skipped }
+}
+
+/** Whether applying a scan would insert, mark missing, or restore packages. */
+export function designScanWouldChangePackages(
+  existingRows: Array<{ folder_name: string; missing_since?: string | null }>,
+  validNames: string[],
+): boolean {
+  const validSet = new Set(validNames.map(n => n.toLowerCase()))
+  const byName = new Map(existingRows.map(r => [String(r.folder_name).toLowerCase(), r]))
+  for (const name of validNames) {
+    if (!byName.has(name.toLowerCase())) return true
+  }
+  for (const row of existingRows) {
+    const fn = String(row.folder_name).toLowerCase()
+    const inScan = validSet.has(fn)
+    if (inScan && row.missing_since) return true
+    if (!inScan && !row.missing_since) return true
+  }
+  return false
 }
 
 export async function executeDesignScan(
@@ -697,28 +740,26 @@ export async function executeDesignScan(
   },
 ): Promise<ScanResult> {
   const { projectId, disciplineCode, folderNames, userId, updateFolderPath } = opts
-  let folderPath = opts.folderPath ?? null
-  const names = mergeScanFolderNames(folderPath, folderNames).slice(0, 500)
-  const seen = new Set<string>()
-  const validNames: string[] = []
-  const skipped: string[] = []
-
-  for (const n of names) {
-    if (seen.has(n.toLowerCase())) continue
-    seen.add(n.toLowerCase())
-    const parsed = parseYyMmDdFolder(n)
-    if (!parsed) {
-      skipped.push(n)
-      continue
-    }
-    validNames.push(n)
-  }
+  const folderPath = opts.folderPath ?? null
+  const { validNames, skipped } = collectValidYyMmDdFolderNames(folderPath, folderNames)
 
   const existing = await db.prepare(
     `SELECT id, folder_name, package_date, revision_label, missing_since FROM design_packages
      WHERE project_id = ? AND discipline_code = ?`,
   ).bind(projectId, disciplineCode).all()
   const existingRows = (existing.results || []) as PackageRow[]
+
+  if (!updateFolderPath && !designScanWouldChangePackages(existingRows, validNames)) {
+    return {
+      newPackages: [],
+      skipped,
+      newCount: 0,
+      missingCount: 0,
+      totalCount: validNames.length,
+      unchanged: true,
+    }
+  }
+
   const byName = new Map(existingRows.map(r => [String(r.folder_name).toLowerCase(), r]))
 
   let newCount = 0

@@ -294,7 +294,6 @@
   }
 
   window.initQlyHstkTab = async function initQlyHstkTab(container, projectId, opts = {}) {
-    const skipAutoScan = opts.skipAutoScan === true
     const preserveScroll = opts.preserveScroll === true
     const hadContent =
       preserveScroll &&
@@ -304,31 +303,8 @@
       container.innerHTML = `<div class="py-8 text-center text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Đang tải QLy HSTK…</div>`
     }
     try {
-      let data = await api(`/projects/${projectId}/design`)
+      const data = await api(`/projects/${projectId}/design`)
       window._designPackageSuggestions = data.package_suggestions || {}
-      if (!skipAutoScan) {
-        const scanJobs = []
-        for (const d of data.disciplines || []) {
-          if (!d.can_scan) continue
-          const seen = new Set()
-          for (const row of d.model_matrix || []) {
-            const p = normalizeWindowsPath(row.category_folder_path || '')
-            if (!p || seen.has(p)) continue
-            seen.add(p)
-            scanJobs.push({ code: d.discipline_code, path: p })
-          }
-        }
-        if (scanJobs.length) {
-          if (!hadContent) {
-            container.innerHTML = `<div class="py-8 text-center text-gray-500 text-sm"><i class="fas fa-sync fa-spin mr-2"></i>Đang quét folder hồ sơ trên máy…</div>`
-          }
-          for (const job of scanJobs) {
-            await designScanSavedPath(projectId, job.code, job.path, { quiet: true })
-          }
-          data = await api(`/projects/${projectId}/design`)
-          window._designPackageSuggestions = data.package_suggestions || {}
-        }
-      }
       renderQlyHstk(container, projectId, data)
       if (uiState) {
         restoreOpenScanLogPanels(uiState.openScanLogs)
@@ -619,7 +595,7 @@
     const panel = document.getElementById('projPanel-qlydesign')
     if (!panel || panel.style.display === 'none') return
     const c = document.getElementById(`qlyHstkContainer_${projectId}`)
-    if (c) await initQlyHstkTab(c, projectId, { skipAutoScan: true, preserveScroll: true })
+    if (c) await initQlyHstkTab(c, projectId, { preserveScroll: true })
   }
 
   function renderQlyHstk(container, projectId, data) {
@@ -689,6 +665,10 @@
   window.designSaveCategoryFolderPath = async function (projectId, code, categoryId) {
     const input = document.getElementById(`designCatFolder_${code}_${categoryId}`)
     const path = normalizeWindowsPath((input?.value ?? '').trim())
+    const disc = window._lastDesignData?.disciplines?.find(d => d.discipline_code === code)
+    const matrixRow = disc?.model_matrix?.find(r => r.category_id === categoryId)
+    const prevPath = normalizeWindowsPath(matrixRow?.category_folder_path || '')
+    const pathChanged = path !== prevPath
     try {
       await api(
         `/projects/${projectId}/design/disciplines/${encodeURIComponent(code)}/categories/${categoryId}/folder-path`,
@@ -696,8 +676,8 @@
       )
       toast(path ? 'Đã lưu đường dẫn hạng mục' : 'Đã xóa đường dẫn hạng mục', 'success')
       const c = document.getElementById(`qlyHstkContainer_${projectId}`)
-      if (path) await designScanSavedPath(projectId, code, path, { quiet: false })
-      if (c) await initQlyHstkTab(c, projectId, { skipAutoScan: true, preserveScroll: true })
+      if (path && pathChanged) await designScanSavedPath(projectId, code, path, { quiet: false })
+      if (c) await initQlyHstkTab(c, projectId, { preserveScroll: true })
     } catch (e) {
       toast(e.response?.data?.error || e.message, 'error')
     }
@@ -731,7 +711,7 @@
     }
     if (anyOk) {
       const c = document.getElementById(`qlyHstkContainer_${projectId}`)
-      if (c) await initQlyHstkTab(c, projectId, { skipAutoScan: true, preserveScroll: true })
+      if (c) await initQlyHstkTab(c, projectId, { preserveScroll: true })
     }
   }
 

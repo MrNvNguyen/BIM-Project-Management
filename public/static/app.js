@@ -20094,7 +20094,7 @@ async function _legalAfterProjectListFilterChange() {
   _legalShowProjectShell(false)
   if ($('legalKPIRow')) $('legalKPIRow').style.display = 'none'
   if ($('legalTabs')) $('legalTabs').style.display = 'none'
-  ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnCopyFromLegal'].forEach(id => {
+  ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnCopyFromLegal', 'btnLegalChangeLog'].forEach(id => {
     if ($(id)) $(id).style.display = 'none'
   })
   if ($('legalProjectSelectCombobox') && typeof _cbAssignValue === 'function') {
@@ -20273,7 +20273,7 @@ async function loadLegal() {
     _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
   }
 }
 
@@ -20284,7 +20284,7 @@ async function _onLegalProjectComboChange(val) {
     _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
     renderLegalProjectList()
     return
   }
@@ -20368,6 +20368,7 @@ async function loadLegalProject(projectId) {
       if ($('btnAddLetter')) $('btnAddLetter').style.display = ''
       if ($('btnAddDoc')) $('btnAddDoc').style.display = ''
       ;['btnLetterConfig', 'btnImportExcel'].forEach(id => { if($(id)) $(id).style.display = 'none' })
+      if ($('btnLegalChangeLog')) $('btnLegalChangeLog').style.display = ''
       // Ẩn KPI cards liên quan đến stages và payments
       const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
       if (kpiCards) {
@@ -20384,7 +20385,7 @@ async function loadLegalProject(projectId) {
         const btn = $('ltab-' + t)
         if (btn) btn.style.display = ''
       })
-      ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel'].forEach(id => { if($(id)) $(id).style.display = '' })
+      ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display = '' })
       // Khôi phục tất cả KPI cards
       const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
       if (kpiCards) kpiCards.forEach(card => card.style.display = '')
@@ -24676,6 +24677,92 @@ async function onLegalCopyFromSourceChange() {
     list.innerHTML = `<p class="text-red-600 text-sm">${escHtml(e.message)}</p>`
     _legalCopyFillInnerSourcePkgOptions([])
     wrap.style.display = ''
+  }
+}
+
+const LEGAL_AUDIT_AREA_LABELS = {
+  project_info: 'Thông tin dự án',
+  dossier: 'Theo dõi hồ sơ',
+  payment: 'Tình trạng thanh toán',
+  fee_a: 'Chi phí A',
+  contact: 'Contact Liên Hệ',
+}
+const LEGAL_AUDIT_ACTION_LABELS = { create: 'Thêm', update: 'Sửa', delete: 'Xóa' }
+
+function _legalAuditFormatWhen(raw) {
+  if (!raw) return '—'
+  const d = new Date(String(raw).replace(' ', 'T') + (String(raw).includes('Z') ? '' : 'Z'))
+  if (Number.isNaN(d.getTime())) return escHtml(String(raw))
+  return escHtml(d.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' }))
+}
+
+function _legalAuditFormatDiff(entry) {
+  const oldV = entry.old_value != null ? String(entry.old_value) : ''
+  const newV = entry.new_value != null ? String(entry.new_value) : ''
+  if (entry.action === 'create') {
+    return `<span class="new">${escHtml(newV || '—')}</span>`
+  }
+  if (entry.action === 'delete') {
+    return `<span class="old">${escHtml(oldV || '—')}</span>`
+  }
+  if (!oldV && !newV) return '—'
+  return `<span class="old">${escHtml(oldV || '—')}</span> → <span class="new">${escHtml(newV || '—')}</span>`
+}
+
+async function openLegalChangeLogModal() {
+  if (!_legalCurrentProjectId) {
+    toast('Chọn dự án trước', 'warning')
+    return
+  }
+  const modal = $('modalLegalChangeLog')
+  if (!modal) return
+  modal.classList.remove('hidden')
+  modal.style.display = 'flex'
+  await loadLegalChangeLog()
+}
+
+function closeLegalChangeLogModal() {
+  const modal = $('modalLegalChangeLog')
+  if (!modal) return
+  modal.classList.add('hidden')
+  modal.style.display = 'none'
+}
+
+async function loadLegalChangeLog() {
+  const list = $('legalChangeLogList')
+  if (!list || !_legalCurrentProjectId) return
+  list.innerHTML = '<div class="text-gray-500 text-sm py-6 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải…</div>'
+  try {
+    const data = await api(`/legal/${_legalCurrentProjectId}/change-log`)
+    const entries = data?.entries || []
+    if (!entries.length) {
+      list.innerHTML = '<p class="text-center py-10" style="color:var(--shell-text-muted)">Chưa có thay đổi.</p>'
+      return
+    }
+    const rows = entries.map(e => {
+      const area = LEGAL_AUDIT_AREA_LABELS[e.area] || e.area || '—'
+      const action = LEGAL_AUDIT_ACTION_LABELS[e.action] || e.action || '—'
+      const actor = escHtml(e.actor_name || `#${e.actor_user_id}`)
+      const field = escHtml(e.field || '—')
+      const label = escHtml(e.entity_label || '—')
+      return `<tr>
+        <td style="white-space:nowrap">${_legalAuditFormatWhen(e.created_at)}</td>
+        <td>${actor}</td>
+        <td>${escHtml(area)}</td>
+        <td>${label}</td>
+        <td>${field}</td>
+        <td>${escHtml(action)}</td>
+        <td class="legal-change-log-diff">${_legalAuditFormatDiff(e)}</td>
+      </tr>`
+    }).join('')
+    list.innerHTML = `<table class="legal-change-log-table">
+      <thead><tr>
+        <th>Thời gian</th><th>Người sửa</th><th>Mục</th><th>Nhãn</th><th>Trường</th><th>Thao tác</th><th>Cũ → Mới</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`
+  } catch (err) {
+    list.innerHTML = `<p class="text-center py-8 text-red-500">${escHtml(err.message || 'Không tải được lịch sử')}</p>`
   }
 }
 

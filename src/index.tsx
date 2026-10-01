@@ -67,6 +67,16 @@ import {
   isLegalSupportMember,
 } from './legal-auth'
 import { copyLegalPackageInnerContent, planLegalCopyFromBody } from './legal-copy'
+import {
+  auditCostAFields,
+  auditLegalItemFields,
+  auditPackageCreateEntries,
+  auditPackageUpdateEntries,
+  auditPaymentFields,
+  buildFieldChangeEntries,
+  diffContactBookEntries,
+  insertLegalAuditLogs,
+} from './legal-audit'
 
 // ---- Types ----
 type Bindings = {
@@ -12996,7 +13006,15 @@ app.put('/api/legal/stages/:id', authMiddleware, async (c) => {
   const { name } = await c.req.json()
   if (!name || !name.trim()) return c.json({ error: 'Tên giai đoạn không được để trống' }, 400)
   try {
+    const stage = await c.env.DB.prepare('SELECT project_id, name FROM legal_stages WHERE id = ?').bind(id).first() as any
+    if (!stage?.project_id) return c.json({ error: 'Không tìm thấy giai đoạn' }, 404)
     await c.env.DB.prepare('UPDATE legal_stages SET name=? WHERE id=?').bind(name.trim(), id).run()
+    await insertLegalAuditLogs(c.env.DB, stage.project_id, user.id, buildFieldChangeEntries({
+      area: 'dossier',
+      entityLabel: `Giai đoạn: ${String(stage.name || '').trim() || id}`,
+      action: 'update',
+      fields: { 'Tên giai đoạn': { old: stage.name, new: name.trim() } },
+    }))
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -13049,6 +13067,13 @@ app.post('/api/legal/:projectId/stages', authMiddleware, async (c) => {
       'INSERT INTO legal_stages (project_id, package_id, code, name, sort_order) VALUES (?,?,?,?,?)'
     ).bind(projectId, package_id || null, newCode, name.trim(), maxOrder + 1).run()
 
+    await insertLegalAuditLogs(c.env.DB, projectId, user.id, buildFieldChangeEntries({
+      area: 'dossier',
+      entityLabel: `Giai đoạn: ${name.trim()}`,
+      action: 'create',
+      fields: { 'Tên giai đoạn': { new: name.trim() } },
+    }))
+
     return c.json({ success: true, id: result.meta.last_row_id, code: newCode, name: name.trim() })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -13063,6 +13088,9 @@ app.delete('/api/legal/stages/:id', authMiddleware, async (c) => {
   const id = parseInt(c.req.param('id'))
   try {
     const db = c.env.DB
+    const stage = await db.prepare('SELECT project_id, name FROM legal_stages WHERE id = ?').bind(id).first() as any
+    if (!stage?.project_id) return c.json({ error: 'Không tìm thấy giai đoạn' }, 404)
+    const stageName = String(stage.name || '').trim() || 'Giai đoạn'
     // Đếm items để trả về thông tin
     const itemCount = await db.prepare(
       'SELECT COUNT(*) as cnt FROM legal_items WHERE stage_id = ?'
@@ -13071,6 +13099,16 @@ app.delete('/api/legal/stages/:id', authMiddleware, async (c) => {
     await db.prepare('DELETE FROM legal_items WHERE stage_id = ? AND parent_id IS NOT NULL').bind(id).run()
     await db.prepare('DELETE FROM legal_items WHERE stage_id = ?').bind(id).run()
     await db.prepare('DELETE FROM legal_stages WHERE id=?').bind(id).run()
+    await insertLegalAuditLogs(db, stage.project_id, user.id, [
+      {
+        area: 'dossier',
+        entityLabel: `Giai đoạn: ${stageName}`,
+        action: 'delete',
+        field: 'Giai đoạn',
+        oldValue: stageName,
+        newValue: '',
+      },
+    ])
     return c.json({ success: true, deleted_items: itemCount?.cnt || 0 })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -13256,6 +13294,12 @@ app.post('/api/legal/:projectId/packages', authMiddleware, async (c) => {
       contract.code, contract.start_date, contract.end_date, contract.contract_value, contract.contract_signed
     ).run()
     const packageId = pkgResult.meta.last_row_id as number
+    await insertLegalAuditLogs(
+      c.env.DB,
+      projectId,
+      user.id,
+      auditPackageCreateEntries(name.trim(), contract),
+    )
     const synced = await syncProjectContractFromPackages(c.env.DB, projectId)
     return c.json({ success: true, id: packageId, name: name.trim(), blank: true, ...synced })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
@@ -13272,8 +13316,9 @@ app.put('/api/legal/packages/:id', authMiddleware, async (c) => {
   const signedOnly = !String(name || '').trim() && Object.prototype.hasOwnProperty.call(body, 'contract_signed')
   if (!signedOnly && (!name || !String(name).trim())) return c.json({ error: 'Tên gói thầu không được để trống' }, 400)
   try {
-    const pkg = await c.env.DB.prepare('SELECT project_id FROM legal_packages WHERE id = ?').bind(id).first() as { project_id?: number } | null
-    if (!pkg?.project_id) return c.json({ error: 'Không tìm thấy gói thầu' }, 404)
+    const pkgRow = await c.env.DB.prepare('SELECT * FROM legal_packages WHERE id = ?').bind(id).first() as any
+    if (!pkgRow?.project_id) return c.json({ error: 'Không tìm thấy gói thầu' }, 404)
+    const pkg = { project_id: pkgRow.project_id as number }
     const sets = ['updated_at=CURRENT_TIMESTAMP']
     const vals: any[] = []
     if (!signedOnly) {
@@ -13302,6 +13347,13 @@ app.put('/api/legal/packages/:id', authMiddleware, async (c) => {
     }
     vals.push(id)
     await c.env.DB.prepare(`UPDATE legal_packages SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run()
+    const auditLabel = String(body.name || '').trim() || String(pkgRow.name || '').trim() || 'Gói thầu'
+    await insertLegalAuditLogs(
+      c.env.DB,
+      pkg.project_id,
+      user.id,
+      auditPackageUpdateEntries(auditLabel, pkgRow, body, legalPackageContractInput),
+    )
     if (signedOnly) return c.json({ success: true, contract_signed: legalPackageContractInput(body).contract_signed })
     const synced = await syncProjectContractFromPackages(c.env.DB, pkg.project_id)
     return c.json({ success: true, ...synced })
@@ -13315,8 +13367,9 @@ app.delete('/api/legal/packages/:id', authMiddleware, async (c) => {
     return c.json({ error: 'Forbidden' }, 403)
   const id = parseInt(c.req.param('id'))
   try {
-    const pkg = await c.env.DB.prepare('SELECT project_id FROM legal_packages WHERE id = ?').bind(id).first() as { project_id?: number } | null
+    const pkg = await c.env.DB.prepare('SELECT project_id, name FROM legal_packages WHERE id = ?').bind(id).first() as { project_id?: number; name?: string } | null
     if (!pkg?.project_id) return c.json({ error: 'Không tìm thấy gói thầu' }, 404)
+    const pkgName = String(pkg.name || '').trim() || 'Gói thầu'
     // Lấy danh sách stage_id trong gói
     const stages = await c.env.DB.prepare(
       'SELECT id FROM legal_stages WHERE package_id = ?'
@@ -13338,6 +13391,16 @@ app.delete('/api/legal/packages/:id', authMiddleware, async (c) => {
     // Xóa stages rồi xóa package
     await c.env.DB.prepare('DELETE FROM legal_stages WHERE package_id = ?').bind(id).run()
     await c.env.DB.prepare('DELETE FROM legal_packages WHERE id = ?').bind(id).run()
+    await insertLegalAuditLogs(c.env.DB, pkg.project_id, user.id, [
+      {
+        area: 'project_info',
+        entityLabel: pkgName,
+        action: 'delete',
+        field: 'Gói thầu',
+        oldValue: pkgName,
+        newValue: '',
+      },
+    ])
     const synced = await syncProjectContractFromPackages(c.env.DB, pkg.project_id)
     return c.json({ success: true, ...synced })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
@@ -13560,6 +13623,29 @@ app.post('/api/legal/:projectId/copy-from', authMiddleware, async (c) => {
       for (const stageId of inner_content_result.affected_stage_ids) {
         await recalculateSiblingsStt(db, stageId, null)
       }
+    }
+
+    const summaryParts: string[] = []
+    if (copiedPackages.length) {
+      summaryParts.push(`${copiedPackages.length} gói thầu (${copiedPackages.map(p => p.name).join(', ')})`)
+    }
+    if (inner_content_result) {
+      const ic = inner_content_result
+      summaryParts.push(
+        `Nội dung gói: +${ic.copied_items ?? 0} hạng mục, ${ic.skipped_items ?? 0} bỏ qua`,
+      )
+    }
+    if (summaryParts.length) {
+      await insertLegalAuditLogs(db, destProjectId, user.id, [
+        {
+          area: 'project_info',
+          entityLabel: 'Sao chép từ dự án',
+          action: 'create',
+          field: 'Tóm tắt',
+          oldValue: '',
+          newValue: `Từ dự án #${sourceProjectId}: ${summaryParts.join('; ')}`,
+        },
+      ])
     }
 
     return c.json({
@@ -13790,6 +13876,18 @@ app.post('/api/legal/:projectId/items', authMiddleware, async (c) => {
       body.status || 'pending',
       body.notes || null, sortOrder, user.id
     ).run()
+    await insertLegalAuditLogs(
+      c.env.DB,
+      projectId,
+      user.id,
+      auditLegalItemFields(String(body.title || '').trim() || 'Hạng mục', null, {
+        title: body.title,
+        item_type: body.item_type || 'task',
+        due_date: body.due_date,
+        status: body.status || 'pending',
+        notes: body.notes,
+      }),
+    )
     return c.json({ id: result.meta.last_row_id, stt: autoStt, success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -13797,13 +13895,22 @@ app.post('/api/legal/:projectId/items', authMiddleware, async (c) => {
 })
 
 app.put('/api/legal/items/:id', authMiddleware, async (c) => {
+  const user = c.get('user') as any
   const id = parseInt(c.req.param('id'))
   const body = await c.req.json()
   try {
+    const current = await c.env.DB.prepare('SELECT * FROM legal_items WHERE id = ?').bind(id).first() as any
+    if (!current) return c.json({ error: 'not found' }, 404)
     // stt do hệ thống quản lý tự động, chỉ cập nhật các field nội dung
     await c.env.DB.prepare(
       `UPDATE legal_items SET title=?, item_type=?, due_date=?, actual_completion_date=?, status=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
     ).bind(body.title, body.item_type, body.due_date || null, body.actual_completion_date || null, body.status, body.notes || null, id).run()
+    await insertLegalAuditLogs(
+      c.env.DB,
+      current.project_id,
+      user.id,
+      auditLegalItemFields(String(current.title || '').trim() || 'Hạng mục', current, body),
+    )
     return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -13819,11 +13926,23 @@ app.delete('/api/legal/items/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     // Lấy thông tin item trước khi xóa để recalculate
-    const item = await db.prepare('SELECT stage_id, parent_id FROM legal_items WHERE id = ?').bind(id).first() as any
+    const item = await db.prepare('SELECT project_id, stage_id, parent_id, title FROM legal_items WHERE id = ?').bind(id).first() as any
+    if (!item) return c.json({ error: 'not found' }, 404)
+    const itemTitle = String(item.title || '').trim() || 'Hạng mục'
     // Cascade: xóa children trước (sub-items)
     await db.prepare('DELETE FROM legal_items WHERE parent_id = ?').bind(id).run()
     // Xóa item chính
     await db.prepare('DELETE FROM legal_items WHERE id = ?').bind(id).run()
+    await insertLegalAuditLogs(db, item.project_id, user.id, [
+      {
+        area: 'dossier',
+        entityLabel: itemTitle,
+        action: 'delete',
+        field: 'Hạng mục',
+        oldValue: itemTitle,
+        newValue: '',
+      },
+    ])
     // Recalculate stt + sort_order của các items cùng cấp sau khi xóa
     if (item) {
       await recalculateSiblingsStt(db, item.stage_id, item.parent_id)
@@ -14631,6 +14750,21 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
       }
     }
 
+    await insertLegalAuditLogs(
+      c.env.DB,
+      projectId,
+      user.id,
+      auditPaymentFields(String(description).trim(), null, {
+        description,
+        request_number,
+        request_date,
+        amount: amount || 0,
+        paid_amount: paid_amount || 0,
+        status: status || 'pending',
+        payment_phase,
+      }),
+    )
+
     return c.json({ id: paymentId, revenue_id: revenueId, success: true })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -14773,6 +14907,13 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
       } catch (_) { /* ignore email errors */ }
     }
 
+    await insertLegalAuditLogs(
+      c.env.DB,
+      current.project_id,
+      user.id,
+      auditPaymentFields(String(current.description || '').trim(), current, merged),
+    )
+
     return c.json({ success: true, revenue_id: revenueId })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -14785,14 +14926,25 @@ app.delete('/api/legal/payments/:id', authMiddleware, async (c) => {
   const user = c.get('user') as any
   try {
     const payment = await c.env.DB.prepare(
-      'SELECT id, project_id, revenue_id FROM payment_requests WHERE id = ?'
+      'SELECT id, project_id, revenue_id, description FROM payment_requests WHERE id = ?'
     ).bind(id).first() as any
     if (!payment) return c.json({ error: 'not found' }, 404)
     if (!(await canManageLegal(c.env.DB, user, payment.project_id))) {
       return c.json({ error: 'Chỉ admin dự án mới được xóa thanh toán' }, 403)
     }
+    const payLabel = String(payment.description || '').trim() || 'Đợt thanh toán'
 
     await c.env.DB.prepare('DELETE FROM payment_requests WHERE id = ?').bind(id).run()
+    await insertLegalAuditLogs(c.env.DB, payment.project_id, user.id, [
+      {
+        area: 'payment',
+        entityLabel: payLabel,
+        action: 'delete',
+        field: 'Đợt thanh toán',
+        oldValue: payLabel,
+        newValue: '',
+      },
+    ])
 
     if (payment.revenue_id) {
       await c.env.DB.prepare('DELETE FROM project_revenues WHERE id = ?')
@@ -14809,6 +14961,30 @@ function legalCostAPackageKey(packageName: string | null | undefined): string {
   const s = (packageName || '').trim()
   return s || 'Chung'
 }
+
+// GET /api/legal/:projectId/change-log — lịch sử thay đổi HSPL (5 tab)
+app.get('/api/legal/:projectId/change-log', authMiddleware, async (c) => {
+  const projectId = parseInt(c.req.param('projectId'))
+  const user = c.get('user') as any
+  try {
+    const db = c.env.DB
+    if (!(await canAccessLegalProject(db, user, projectId))) {
+      return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+    }
+    const rows = await db.prepare(
+      `SELECT l.id, l.project_id, l.actor_user_id, l.created_at, l.area, l.entity_label,
+              l.action, l.field, l.old_value, l.new_value, u.full_name AS actor_name
+       FROM legal_change_logs l
+       LEFT JOIN users u ON u.id = l.actor_user_id
+       WHERE l.project_id = ?
+       ORDER BY l.created_at DESC, l.id DESC
+       LIMIT 100`
+    ).bind(projectId).all()
+    return c.json({ entries: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
 
 // GET /api/legal/:projectId/cost-a — Chi phí A (system_admin only)
 app.get('/api/legal/:projectId/contacts', authMiddleware, async (c) => {
@@ -14855,6 +15031,14 @@ app.put('/api/legal/:projectId/contacts', authMiddleware, async (c) => {
          logs_json = excluded.logs_json,
          updated_at = CURRENT_TIMESTAMP`
     ).bind(projectId, JSON.stringify(contacts), JSON.stringify(contactLogs)).run()
+    const prevContacts = parseContactJson(existing?.contacts_json) as Record<string, unknown>[]
+    const prevLogs = parseContactJson(existing?.logs_json) as Record<string, unknown>[]
+    await insertLegalAuditLogs(
+      db,
+      projectId,
+      user.id,
+      diffContactBookEntries(prevContacts, contacts as Record<string, unknown>[], prevLogs, contactLogs as Record<string, unknown>[]),
+    )
     return c.json({ contacts, contactLogs })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
@@ -15061,6 +15245,19 @@ app.patch('/api/legal/payments/:id/cost-a', authMiddleware, async (c) => {
          note = excluded.note,
          updated_at = datetime('now')`
     ).bind(id, amountOverride, costAPct, spendStatus, note).run()
+
+    const costLabel = String(payment.description || '').trim() || `Phiếu #${id}`
+    await insertLegalAuditLogs(
+      db,
+      payment.project_id,
+      user.id,
+      auditCostAFields(costLabel, existing, {
+        amount_override: amountOverride,
+        cost_a_pct: costAPct,
+        spend_status: spendStatus,
+        note,
+      }),
+    )
 
     const vatPct = Number(payment.vat_pct) || 0
     const gross = Number(payment.amount) || 0
