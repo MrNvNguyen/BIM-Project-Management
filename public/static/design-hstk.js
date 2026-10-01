@@ -1277,14 +1277,6 @@
     const hidden = taskPayload.hidden_counts_by_project || {}
     const summaryLine = `${w.project_count} dự án tham gia · ${w.open_tasks} task mở · ${w.overdue_tasks} trễ · ${Math.round(w.open_hours || 0)}h dự kiến · Hạn gần: ${escHtml(w.nearest_due || '—')}`
 
-    const byProjectRows = (w.by_project || []).map(bp => {
-      return `<tr class="pd-workload-summary-row">
-        <td class="pd-workload-proj">${escHtml(bp.project_name)}</td>
-        <td class="pd-workload-task"><span class="text-xs">Tổng theo dự án</span></td>
-        <td class="pd-workload-stat">${bp.open_tasks} mở · ${bp.overdue_tasks} trễ</td>
-      </tr>`
-    }).join('')
-
     const taskRows = visibleTasks.map(t => {
       const pct = t.progress != null ? Math.round(Number(t.progress)) : 0
       const status = PD_TASK_STATUS[t.status] || t.status || '—'
@@ -1306,8 +1298,8 @@
       </tr>`
     }).join('')
 
-    const emptyRow = !byProjectRows && !taskRows && !hiddenRows
-      ? '<tr><td colspan="3" class="text-center pd-empty-hint" style="padding:0.75rem">Không có task mở</td></tr>'
+    const emptyRow = !taskRows && !hiddenRows
+      ? '<tr><td colspan="3" class="text-center pd-empty-hint" style="padding:0.75rem">Không có task đang mở.</td></tr>'
       : ''
 
     return `<div class="pd-workload-card">
@@ -1318,7 +1310,7 @@
       <div class="pd-workload-body pd-table-wrap">
         <table class="pd-table pd-workload-table">
           <thead><tr><th>Dự án</th><th>Task</th><th>% / trạng thái</th></tr></thead>
-          <tbody>${byProjectRows}${taskRows}${hiddenRows}${emptyRow}</tbody>
+          <tbody>${taskRows}${hiddenRows}${emptyRow}</tbody>
         </table>
       </div>
     </div>`

@@ -2080,7 +2080,8 @@ async function buildMemberWorkload(
       SUM(CASE WHEN t.due_date IS NOT NULL AND t.due_date < date('now') AND t.status NOT IN ('completed','review','cancelled') THEN 1 ELSE 0 END) AS overdue_tasks
      FROM tasks t JOIN projects p ON p.id = t.project_id
      WHERE t.assigned_to = ?
-     GROUP BY t.project_id, p.name`,
+     GROUP BY t.project_id, p.name
+     HAVING open_tasks > 0`,
   ).bind(memberId).all()
 
   const taskList = await fetchMemberDashboardTasks(db, viewer, memberId, isProjectLeaderOrAdmin)

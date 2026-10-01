@@ -654,6 +654,161 @@
     html[data-theme="dark"] .badge-planning { background: rgba(59, 130, 246, 0.18); color: #bfdbfe; border: 1px solid rgba(96, 165, 250, 0.35); }
     html[data-theme="dark"] .badge-on_hold { background: rgba(251, 191, 36, 0.16); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.32); }
     html[data-theme="dark"] .badge { border: 1px solid transparent; }
+    /* Dark — Chi tiết dự án: bảng checklist model (Tổng hợp CV / wsSummaryTable) */
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] table {
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] thead tr {
+      background: var(--shell-table-head-bg) !important;
+      color: var(--shell-table-head-text) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] th,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] td {
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary tr.ws-phase-hdr td {
+      background: #243b5c !important;
+      color: #f1f5f9 !important;
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] tbody tr.ws-group-row {
+      background-color: var(--shell-surface) !important;
+      border-bottom-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] tbody tr.ws-group-row td[colspan="6"] {
+      background-color: var(--shell-input-bg) !important;
+      color: var(--shell-text) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] tbody tr.ws-group-row td:not([colspan]) {
+      background-color: inherit !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] tbody tr.ws-group-row:nth-child(even) td:not([colspan]) {
+      background-color: rgba(255, 255, 255, 0.03) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-blue-800,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-blue-500,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-blue-600,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-blue-700 {
+      color: #93c5fd !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-green-800,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-green-500,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-green-600 {
+      color: #86efac !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-gray-800,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-gray-700,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-gray-600 {
+      color: var(--shell-text) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-gray-400,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .text-gray-300 {
+      color: var(--shell-text-muted) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .hstk-display,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .work-notes-display {
+      color: var(--shell-text) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .hstk-display:hover,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .work-notes-display:hover {
+      background: var(--shell-row-hover) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-gray-200 {
+      background-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] td[style*="background:#f0fdf4"],
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] td[style*="background: #f0fdf4"] {
+      background: rgba(52, 211, 153, 0.12) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-blue-100 {
+      background-color: rgba(59, 130, 246, 0.22) !important;
+      color: #bfdbfe !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-gray-100.text-gray-500,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-gray-100 {
+      background-color: rgba(148, 163, 184, 0.22) !important;
+      color: #dbe4ef !important;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-blue-100.text-blue-700,
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-blue-100.text-blue-600 {
+      background-color: rgba(59, 130, 246, 0.22) !important;
+      color: #bfdbfe !important;
+      border: 1px solid rgba(96, 165, 250, 0.35);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-yellow-100.text-yellow-700 {
+      background-color: rgba(251, 191, 36, 0.18) !important;
+      color: #fde68a !important;
+      border: 1px solid rgba(251, 191, 36, 0.35);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .bg-green-100.text-green-700 {
+      background-color: rgba(52, 211, 153, 0.18) !important;
+      color: #a7f3d0 !important;
+      border: 1px solid rgba(52, 211, 153, 0.35);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] span[style*="background:#f3f4f6"] {
+      background: var(--shell-input-bg) !important;
+      color: var(--shell-text-muted) !important;
+      border: 1px solid var(--shell-border);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .cde-toggle {
+      border: 1px solid var(--shell-border);
+      background: var(--shell-input-bg);
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] input[type="text"],
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] textarea {
+      background: var(--shell-input-bg) !important;
+      color: var(--shell-text) !important;
+      border: 1px solid var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .border-blue-200 {
+      border-color: rgba(96, 165, 250, 0.35) !important;
+    }
+    html[data-theme="dark"] #projPanel-summary [id^="wsSummaryTable_"] .file-subtasks .text-gray-500 {
+      color: var(--shell-text-muted) !important;
+    }
+    @media (max-width: 767px) {
+      html[data-theme="dark"] [id^="wsSummaryTable_"] th:first-child,
+      html[data-theme="dark"] [id^="wsSummaryTable_"] td:first-child {
+        background: var(--shell-surface) !important;
+        box-shadow: 2px 0 4px rgba(0, 0, 0, 0.25);
+      }
+      html[data-theme="dark"] [id^="wsSummaryTable_"] tr.ws-phase-hdr td:first-child {
+        background: #243b5c !important;
+      }
+    }
+    /* Dark — Chi tiết dự án: Checklist HSTK (đợt hồ sơ, #hstkTableWrap) */
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap table {
+      color: var(--shell-text);
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap thead tr {
+      background: var(--shell-table-head-bg) !important;
+      color: var(--shell-table-head-text) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap th,
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap td {
+      border-color: var(--shell-border) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr {
+      background: var(--shell-surface) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr.bg-green-50,
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr.bg-yellow-50,
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr.bg-gray-50 {
+      background: var(--shell-input-bg) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr.bg-green-50 {
+      background: rgba(52, 211, 153, 0.1) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap tbody tr.bg-yellow-50 {
+      background: rgba(251, 191, 36, 0.1) !important;
+    }
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap input[type="text"],
+    html[data-theme="dark"] #projPanel-hstk #hstkTableWrap select {
+      background: var(--shell-input-bg) !important;
+      color: var(--shell-text) !important;
+      border-color: var(--shell-border) !important;
+    }
     .task-cat-pill, .task-phase-pill, .task-disc-pill, .task-sub-pill {
       display: inline-block; max-width: 8rem; padding: 2px 8px; border-radius: 6px;
       font-size: 12px; font-weight: 600; line-height: 1.35;
@@ -8626,7 +8781,7 @@
 
 <!-- Zoom prevention + chart resize handler -->
 <script src="/static/app.js?v=20261001n"></script>
-<script src="/static/design-hstk.js?v=20261001g"></script>
+<script src="/static/design-hstk.js?v=20261001h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
