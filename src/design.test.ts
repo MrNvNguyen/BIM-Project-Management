@@ -545,9 +545,12 @@ describe('resolveEmptyTaskDescription', () => {
     package_date: '2026-05-06',
     description: 'Ho So TKCS',
   }
-  it('fills empty description with latest HSTK headline', () => {
-    expect(resolveEmptyTaskDescription('', latest)).toBe('06/05/2026 — Ho So TKCS')
-    expect(resolveEmptyTaskDescription(null, latest)).toBe('06/05/2026 — Ho So TKCS')
+  it('fills empty description with Cập nhật HS + package date', () => {
+    expect(resolveEmptyTaskDescription('', latest)).toBe('Cập nhật HS 06/05/2026')
+    expect(resolveEmptyTaskDescription(null, latest)).toBe('Cập nhật HS 06/05/2026')
+  })
+  it('leaves empty when latest package has no date', () => {
+    expect(resolveEmptyTaskDescription('', { id: 2, folder_name: 'no-date' })).toBeNull()
   })
   it('keeps non-empty description', () => {
     expect(resolveEmptyTaskDescription('Yêu cầu riêng', latest)).toBe('Yêu cầu riêng')

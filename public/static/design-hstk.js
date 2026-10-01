@@ -450,6 +450,13 @@
     return `${formatIsoDateVi(pkg.package_date)} — ${label}`
   }
 
+  function formatTaskCreateDescriptionFromLatestPkg(pkg) {
+    if (!pkg?.package_date) return ''
+    const d = formatIsoDateVi(pkg.package_date)
+    if (d === '—') return ''
+    return `Cập nhật HS ${d}`
+  }
+
   function matrixTasksForActiveSheet(tasks, projectId) {
     const list = tasks || []
     const sheet = qlyHstkGetUi(projectId).activeSheet
@@ -1018,8 +1025,7 @@
     if (hid) hid.value = window._taskDesignPackageId || ''
     if (latest?.folder_name && $('taskHstkDate')) $('taskHstkDate').value = latest.folder_name
     if ($('taskDesc')) {
-      const headline = formatLatestPackageLabel(latest)
-      $('taskDesc').value = headline !== '—' ? headline : ''
+      $('taskDesc').value = formatTaskCreateDescriptionFromLatestPkg(latest)
     }
     populateHstkDatalist(disciplineCode)
     applyHstkRequiredUi()

@@ -375,14 +375,24 @@ export function buildCategoryDossierStatus(
   }
 }
 
-/** At task create: keep user text; else fill from discipline latest package headline. */
+/** At task create: mô tả chỉ ngày hồ sơ — `Cập nhật HS dd/mm/yyyy`. */
+export function formatTaskCreateDescriptionFromLatestPkg(
+  pkg: { package_date?: string | null } | null | undefined,
+): string | null {
+  if (!pkg?.package_date) return null
+  const d = formatIsoDateVi(pkg.package_date)
+  if (d === '—') return null
+  return `Cập nhật HS ${d}`
+}
+
+/** At task create: keep user text; else fill from latest package date. */
 export function resolveEmptyTaskDescription(
   description: unknown,
   latestPkg: PackageRow | null | undefined,
 ): string | null {
   const trimmed = String(description ?? '').trim()
   if (trimmed) return trimmed
-  return formatLatestPackageHeadline(latestPkg)
+  return formatTaskCreateDescriptionFromLatestPkg(latestPkg)
 }
 
 export async function resolveTaskDescriptionOnCreate(
@@ -419,7 +429,7 @@ export async function resolveTaskDescriptionOnCreate(
     .all()
   const packages = (pkgs.results || []) as PackageRow[]
   const latest = pickLatestPackageForDiscipline(discRow?.folder_path, packages)
-  return formatLatestPackageHeadline(latest)
+  return formatTaskCreateDescriptionFromLatestPkg(latest)
 }
 
 /** Include YYMMDD-name leaf of saved path plus child folder names from disk scan. */
