@@ -123,7 +123,7 @@
   }
 
   const BIMFOLDER_HELPER_MSG =
-    'Không kết nối được bimfolder helper (127.0.0.1:8765). Chạy C:\\Onecad\\bimfolder\\bimfolder.ps1 -Listen (hoặc cài lại bimfolder).'
+    'Không kết nối được bimfolder trên máy này (127.0.0.1:8765). Chạy lại install-bimfolder.ps1 và chấp nhận cửa sổ UAC. Nếu Chrome/Edge hỏi quyền mạng nội bộ, chọn Cho phép rồi Ctrl+F5.'
 
   function isBimfolderNetworkError(e) {
     if (!e) return false
