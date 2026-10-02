@@ -17,8 +17,11 @@ import {
   calendarPairsSpan,
   computeBookedRevenue,
   computeLegalCostA,
+  legalCostAAmountInUse,
+  legalCostAInFiscalRange,
   legalCostAFormulaLabel,
   resolveLegalCostAPct,
+  sumSpentLegalCostA,
   computeMonthLaborCost as computeMonthLaborCostCore,
   computeProjectBudget,
   computeProjectLaborFromTimesheets,
@@ -12234,6 +12237,35 @@ app.get('/api/analytics/financial', authMiddleware, adminOnly, async (c) => {
   }
 })
 
+/** Chi phí A đã chi. range = năm tài chính; bỏ range = toàn vòng đời. Không cộng vào direct/labor/shared/profit. */
+async function companySpentLegalCostA(
+  db: any,
+  range?: { start: string; end: string } | null
+): Promise<number> {
+  const rows = await db.prepare(`
+    SELECT pr.amount, pr.status, pr.request_date, pr.paid_date,
+           COALESCE(pr.vat_pct, 0) as vat_pct,
+           lca.amount_override, lca.cost_a_pct
+    FROM payment_requests pr
+    INNER JOIN legal_cost_a lca ON lca.payment_request_id = pr.id
+    WHERE pr.amount > 0 AND pr.status != 'rejected'
+      AND lca.spend_status = 'spent'
+      AND ${paymentOnPackageSql('pr')}
+  `).all()
+  let total = 0
+  for (const raw of (rows.results as any[])) {
+    if (range && !legalCostAInFiscalRange(raw, range.start, range.end)) continue
+    const override = raw.amount_override == null ? null : Number(raw.amount_override)
+    total += legalCostAAmountInUse(
+      Number(raw.amount) || 0,
+      Number(raw.vat_pct) || 0,
+      raw.cost_a_pct == null ? null : Number(raw.cost_a_pct),
+      override
+    )
+  }
+  return total
+}
+
 // ── Analytics: Financial By Project (per-project breakdown) ──────────
 // GET /api/analytics/financial-by-project?year=YYYY
 // Trả về tài chính chi tiết cho tất cả dự án: GTHĐ, doanh thu, chi phí, lợi nhuận
@@ -12459,6 +12491,7 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
     totals.pct_direct = totalsPctBase > 0 ? Math.round((totals.direct_cost  / totalsPctBase) * 100 * 10) / 10 : 0
     totals.pct_labor  = totalsPctBase > 0 ? Math.round((totals.labor_cost   / totalsPctBase) * 100 * 10) / 10 : 0
     totals.pct_shared = totalsPctBase > 0 ? Math.round((totals.shared_cost  / totalsPctBase) * 100 * 10) / 10 : 0
+    totals.legal_cost_a_spent = await companySpentLegalCostA(db, { start: fyStart, end: fyEnd })
 
     return c.json({
       projects: projectData,
@@ -12672,6 +12705,7 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
     totals.pct_direct = totalsPctBaseLT > 0 ? Math.round((totals.direct_cost  / totalsPctBaseLT) * 100 * 10) / 10 : 0
     totals.pct_labor  = totalsPctBaseLT > 0 ? Math.round((totals.labor_cost   / totalsPctBaseLT) * 100 * 10) / 10 : 0
     totals.pct_shared = totalsPctBaseLT > 0 ? Math.round((totals.shared_cost  / totalsPctBaseLT) * 100 * 10) / 10 : 0
+    totals.legal_cost_a_spent = await companySpentLegalCostA(db)
 
     return c.json({
       projects: projectData,
@@ -13294,6 +13328,7 @@ async function applyProjectVatToPayments(db: D1Database, projectId: number, user
       notes: raw.notes || null,
       vat_pct: vat,
       request_date: raw.request_date || null,
+      created_at: raw.created_at || null,
     }, userId)
     await db.prepare('UPDATE payment_requests SET revenue_id = ? WHERE id = ?')
       .bind(revenueId || null, raw.id).run()
@@ -14772,6 +14807,7 @@ app.post('/api/legal/:projectId/payments', authMiddleware, async (c) => {
       payment_phase: payment_phase || null, status: status || 'pending',
       revenue_id: null, notes: notes || null, vat_pct: vatPctVal,
       request_date: request_date || null,
+      created_at: null,
     }, user.id)
 
     // Lưu revenue_id vào payment nếu có
@@ -14888,6 +14924,7 @@ app.put('/api/legal/payments/:id', authMiddleware, async (c) => {
         ? Math.min(100, Math.max(0, parseFloat(merged.vat_pct) || 0))
         : (current.vat_pct || 0),
       request_date: merged.request_date ?? current.request_date ?? null,
+      created_at: current.created_at || null,
     }, user.id)
 
     // Cập nhật revenue_id
@@ -15157,7 +15194,6 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
     ).bind(projectId).all()
 
     const groupMap = new Map<string, any[]>()
-    let pageTotal = 0
 
     for (const raw of rows.results as any[]) {
       const vatPct = Number(raw.vat_pct) || 0
@@ -15173,7 +15209,6 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
           ? Math.round(amountOverride)
           : formulaAmount
       const amountInUse = candidate
-      pageTotal += amountInUse
 
       const row = {
         payment_request_id: raw.id,
@@ -15206,12 +15241,12 @@ app.get('/api/legal/:projectId/cost-a', authMiddleware, async (c) => {
       .map(([package_name, groupRows]) => ({
         package_name,
         rows: groupRows,
-        group_total: groupRows.reduce((s, r) => s + r.amount_in_use, 0),
+        group_total: sumSpentLegalCostA(groupRows),
       }))
 
     return c.json({
       groups,
-      page_total: pageTotal,
+      page_total: groups.reduce((s, g) => s + g.group_total, 0),
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -15348,6 +15383,7 @@ app.post('/api/legal/:projectId/resync-revenues', authMiddleware, adminOnly, asy
         revenue_id: p.revenue_id || null, notes: p.notes || null,
         vat_pct: p.vat_pct || 0,
         request_date: p.request_date || null,
+        created_at: p.created_at || null,
       }, user.id)
       synced++
     }
@@ -15381,6 +15417,7 @@ app.post('/api/legal/resync-revenues-all', authMiddleware, adminOnly, async (c) 
           revenue_id: p.revenue_id || null, notes: p.notes || null,
           vat_pct: p.vat_pct || 0,
           request_date: p.request_date || null,
+          created_at: p.created_at || null,
         }, user.id)
         synced++
       } catch (e: any) {

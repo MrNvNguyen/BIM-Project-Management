@@ -11704,9 +11704,8 @@ function renderCostTable() {
     const revTotalCashAll       = displayRevenues.reduce((s, r) => s + revCash(r), 0)
 
     tbody.innerHTML = displayRevenues.map(r => {
-      // Hiển thị ngày thông minh:
-      // - paid/partial: hiển thị revenue_date (ngày thanh toán thực tế)
-      // - pending: hiển thị request_date (ngày yêu cầu) kèm nhãn, hoặc "Chưa xác định"
+      // Ngày trên dòng đã vào sổ là revenue_date: ngày nghiệm thu, trống thì ngày nhập phiếu.
+      // Phiếu chờ (nếu còn) hiện ngày nghiệm thu.
       let dateCell
       if (r.payment_status === 'pending') {
         dateCell = r.request_date
@@ -19313,7 +19312,7 @@ async function renderProjectFinancialTab(force = false) {
           <i class="fas fa-layer-group mr-2 text-purple-500"></i>Cơ cấu chi phí toàn công ty — ${fyLabel}
           <span class="ml-2 text-xs font-normal bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">% so với GTHĐ</span>
         </h3>
-        <div class="grid grid-cols-3 md:grid-cols-3 gap-4">
+        <div class="grid grid-cols-2 xl:grid-cols-4 gap-4">
           <div class="text-center p-4 bg-blue-50 rounded-xl">
             <div class="text-2xl font-bold text-blue-600">${fmtM(totals.direct_cost)}</div>
             <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí trực tiếp</div>
@@ -19331,6 +19330,12 @@ async function renderProjectFinancialTab(force = false) {
             <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí chung</div>
             <div class="text-xs text-yellow-600 mt-0.5">${_costBase > 0 ? pct(totals.shared_cost, _costBase) : 0}% ${_costBaseLabel}</div>
             ${bar(_costBase > 0 ? (totals.shared_cost / _costBase * 100) : 0,'bg-yellow-400')}
+          </div>
+          <div class="text-center p-4 bg-teal-50 rounded-xl">
+            <div class="text-2xl font-bold text-teal-600">${fmtM(totals.legal_cost_a_spent || 0)}</div>
+            <div class="text-xs text-gray-600 mt-1 font-medium">Chi phí A đã chi</div>
+            <div class="text-xs text-teal-600 mt-0.5">${isLifetime ? 'Toàn vòng đời' : 'Trong năm tài chính'}</div>
+            <div class="text-xs text-gray-400 mt-1">Chỉ hiển thị, không tính vào chi phí hay doanh thu</div>
           </div>
         </div>
       </div>
@@ -21228,12 +21233,12 @@ function renderLegalCostA(data) {
   if (!container) return
   if (!data || !(data.groups || []).length) {
     if (totalEl) totalEl.textContent = 'Tổng trang: ' + fmtMoney(0)
-    if (hintEl) hintEl.textContent = 'Công thức = nghiệm thu trước VAT × % Chi phí A. Giá trị cộng mọi phiếu trong gói.'
+    if (hintEl) hintEl.textContent = 'Công thức = nghiệm thu trước VAT × % Chi phí A. Tổng chỉ cộng phiếu Đã chi.'
     container.innerHTML = '<div class="text-center py-10 text-gray-400">Chưa có phiếu thanh toán phù hợp</div>'
     return
   }
   if (totalEl) totalEl.textContent = 'Tổng trang: ' + fmtMoney(data.page_total || 0)
-  if (hintEl) hintEl.textContent = 'Công thức = nghiệm thu trước VAT × % Chi phí A. Giá trị cộng mọi phiếu trong gói.'
+  if (hintEl) hintEl.textContent = 'Công thức = nghiệm thu trước VAT × % Chi phí A. Tổng chỉ cộng phiếu Đã chi.'
 
   container.innerHTML = (data.groups || []).map(grp => {
     const rows = [...(grp.rows || [])].sort((a, b) => {
