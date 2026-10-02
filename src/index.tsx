@@ -7615,6 +7615,7 @@ app.get('/api/assets', authMiddleware, adminOnly, async (c) => {
 
     let query = `
       SELECT a.*, u.full_name as assigned_to_name, u.department as user_department,
+             u.job_title as assigned_job_title,
              pa.asset_code as parent_asset_code, pa.name as parent_asset_name
       FROM assets a
       LEFT JOIN users u ON a.assigned_to = u.id
@@ -7658,7 +7659,7 @@ app.post('/api/assets', authMiddleware, adminOnly, async (c) => {
     const { asset_code, name, category, brand, model, serial_number, specifications,
       purchase_date, purchase_price, current_value, warranty_expiry, status,
       location, department, assigned_to, notes,
-      depreciation_years, depreciation_start_date, parent_asset_id } = data
+      depreciation_years, depreciation_start_date, parent_asset_id, is_shared } = data
 
     if (!asset_code || !name || !category) return c.json({ error: 'Missing required fields' }, 400)
 
@@ -7672,18 +7673,19 @@ app.post('/api/assets', authMiddleware, adminOnly, async (c) => {
       `INSERT INTO assets (asset_code, name, category, brand, model, serial_number, specifications,
         purchase_date, purchase_price, current_value, warranty_expiry, status, location, department,
         assigned_to, notes, depreciation_years, depreciation_start_date, monthly_depreciation,
-        depreciation_status, net_book_value, created_by, parent_asset_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        depreciation_status, net_book_value, created_by, parent_asset_id, is_shared)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       asset_code, name, category, brand || null, model || null, serial_number || null,
       specifications || null, purchase_date || null, purchase_price || 0, current_value || 0,
       warranty_expiry || null, status || 'active', location || null, department || null,
-      assigned_to || null, notes || null,
+      (is_shared ? null : assigned_to) || null, notes || null,
       depYears, depStart, monthlyDepr,
       depYears > 0 ? 'active' : 'none',
       purchase_price || 0,
       user.id,
-      parentId
+      parentId,
+      is_shared ? 1 : 0
     ).run()
 
     const newId = result.meta.last_row_id as number
@@ -7707,14 +7709,22 @@ app.put('/api/assets/:id', authMiddleware, adminOnly, async (c) => {
     const currentAsset = await db.prepare(`SELECT * FROM assets WHERE id = ?`).bind(id).first() as any
     if (!currentAsset) return c.json({ error: 'Asset not found' }, 404)
 
+    if (data.is_shared) {
+      data.is_shared = 1
+      data.assigned_to = null
+    } else if (data.is_shared !== undefined) {
+      data.is_shared = 0
+    }
+
     const fields = ['asset_code', 'name', 'category', 'brand', 'model', 'serial_number', 'specifications',
       'purchase_date', 'purchase_price', 'current_value', 'warranty_expiry',
       'status', 'location', 'department', 'assigned_to', 'notes',
-      'depreciation_years', 'depreciation_start_date', 'depreciation_status', 'parent_asset_id']
+      'depreciation_years', 'depreciation_start_date', 'depreciation_status', 'parent_asset_id',
+      'is_shared']
 
     // Nếu người dùng set assigned_to nhưng KHÔNG thay đổi status → tự động đổi status sang 'active'
     // Nếu xóa người dùng (assigned_to = null) và không set status → tự động đổi về 'unused'
-    if (data.assigned_to !== undefined && data.status === undefined) {
+    if (data.assigned_to !== undefined && data.status === undefined && !data.is_shared) {
       if (data.assigned_to) {
         if (currentAsset.status === 'unused') data.status = 'active'
       } else {

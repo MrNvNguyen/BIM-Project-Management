@@ -739,6 +739,11 @@ function taskPhasePillClass(phase) {
   return 'task-phase-pill ' + (map[phase] || 'task-phase-na')
 }
 
+function assetAssigneeOptionsHtml() {
+  const people = allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+  return '<option value="">-- Không giao --</option><option value="shared">Dùng chung</option>' + people
+}
+
 function getAssetCategoryName(c) {
   const m = { computer: 'Máy tính', laptop: 'Laptop', software: 'Phần mềm', equipment: 'Thiết bị', furniture: 'Nội thất', vehicle: 'Phương tiện', other: 'Khác' }
   return m[c] || c
@@ -12110,8 +12115,10 @@ function renderAssetsTable(assets) {
   // Render 1 hàng tài sản (dùng chung cho cha và con)
   function renderRow(a, isChild = false) {
     // Ưu tiên dùng assigned_to_name từ API (JOIN sẵn), fallback sang allUsers
-    const assignedName = a.assigned_to_name ||
-      (a.assigned_to ? (allUsers.find(u => u.id == a.assigned_to)?.full_name || null) : null)
+    const assignedName = a.is_shared
+      ? 'Dùng chung'
+      : (a.assigned_to_name ||
+      (a.assigned_to ? (allUsers.find(u => u.id == a.assigned_to)?.full_name || null) : null))
     const deprSt = a.depreciation_status || 'none'
     const netVal = a.net_book_value || a.current_value || 0
     const pctDepr = a.purchase_price > 0 ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100)) : 0
@@ -12289,116 +12296,310 @@ function filterAssets() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Xuất Excel tài sản
+// Xuất Excel tài sản theo mẫu PBIMDD (3 sheet, không đổi form)
 // ─────────────────────────────────────────────────────────────
-function exportAssetsExcel() {
+const ASSET_EXCEL_TEMPLATE = '/static/templates/tai-san-pbimdd.xlsx'
+const ASSET_EXCEL_DATA_START = 8
+const ASSET_EXCEL_DATA_END = 68
+
+function assetExcelCategory(category) {
+  const m = {
+    computer: 'Máy trạm',
+    laptop: 'Laptop',
+    software: 'Phần mềm / bản quyền',
+    equipment: 'Phụ kiện khác',
+    furniture: 'Phụ kiện khác',
+    vehicle: 'Phụ kiện khác',
+    other: 'Phụ kiện khác',
+  }
+  return m[category] || 'Phụ kiện khác'
+}
+
+function assetExcelCondition(status) {
+  const m = {
+    active: 'Tốt',
+    unused: 'Tốt',
+    maintenance: 'Chậm',
+    repair: 'Hỏng một phần',
+    retired: 'Hỏng',
+    lost: 'Hỏng',
+  }
+  return m[status] || 'Tốt'
+}
+
+function assetExcelDatePlusYears(iso, years) {
+  if (!iso) return ''
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return ''
+  const y = Number(m[1]) + years
+  const dt = Date.UTC(y, Number(m[2]) - 1, Number(m[3]))
+  if (Number.isNaN(dt)) return ''
+  return String(Math.round(dt / 86400000) + 25569)
+}
+
+function assetExcelDateSerial(iso) {
+  return assetExcelDatePlusYears(iso, 0)
+}
+
+function assetExcelDisplayDate(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return ''
+  return `${m[3]}/${m[2]}/${m[1]}`
+}
+
+function assetExcelXmlEscape(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function assetExcelSetRow(rowXml, rowNum, values) {
+  return rowXml.replace(/<c r="([A-O])(\d+)"([^>]*?)(?:\/>|>[\s\S]*?<\/c>)/g, (full, col, r, attrs) => {
+    if (Number(r) !== rowNum) return full
+    const spec = values[col]
+    const style = (attrs.match(/\ss="(\d+)"/) || [])[1]
+    const sAttr = style ? ` s="${style}"` : ''
+    if (!spec || spec.v === '' || spec.v == null) return `<c r="${col}${rowNum}"${sAttr}/>`
+    if (spec.t === 'n') return `<c r="${col}${rowNum}"${sAttr}><v>${spec.v}</v></c>`
+    return `<c r="${col}${rowNum}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${assetExcelXmlEscape(spec.v).replace(/\n/g, '&#10;')}</t></is></c>`
+  })
+}
+
+function assetExcelRenumberRow(rowXml, newNum) {
+  return rowXml
+    .replace(/<row\b([^>]*?)\sr="\d+"/, `<row$1 r="${newNum}"`)
+    .replace(/\sr="([A-Z]+)\d+"/g, ` r="$1${newNum}"`)
+}
+
+function assetExcelShiftRefs(xml, fromRow, delta) {
+  if (!delta) return xml
+  const shiftRef = ref => ref.replace(/([A-Z]+)(\d+)/g, (_, c, n) => {
+    const rn = Number(n)
+    return c + (rn >= fromRow ? rn + delta : rn)
+  })
+  let out = xml.replace(/<row\b[^>]*\sr="(\d+)"[^>]*>[\s\S]*?<\/row>/g, (row, n) => {
+    return Number(n) >= fromRow ? assetExcelRenumberRow(row, Number(n) + delta) : row
+  })
+  out = out.replace(/ref="([A-Z]+\d+(?::[A-Z]+\d+)?)"/g, (full, ref) => `ref="${shiftRef(ref)}"`)
+  return out
+}
+
+function assetExcelFillSheet(xml, records) {
+  const need = records.length
+  const capacity = ASSET_EXCEL_DATA_END - ASSET_EXCEL_DATA_START + 1
+  let extra = 0
+  let sheet = xml
+  if (need > capacity) {
+    extra = need - capacity
+    sheet = assetExcelShiftRefs(sheet, ASSET_EXCEL_DATA_END + 1, extra)
+    const protoMatch = sheet.match(new RegExp(`<row\\b[^>]*\\sr="${ASSET_EXCEL_DATA_START}"[^>]*>[\\s\\S]*?<\\/row>`))
+    if (protoMatch) {
+      let inserted = ''
+      for (let i = 0; i < extra; i++) {
+        inserted += assetExcelRenumberRow(protoMatch[0], ASSET_EXCEL_DATA_END + 1 + i)
+      }
+      const anchor = sheet.match(new RegExp(`<row\\b[^>]*\\sr="${ASSET_EXCEL_DATA_END}"[^>]*>[\\s\\S]*?<\\/row>`))
+      if (anchor) sheet = sheet.replace(anchor[0], anchor[0] + inserted)
+    }
+  }
+  const clearUntil = ASSET_EXCEL_DATA_START + Math.max(need, capacity) - 1
+  sheet = sheet.replace(/<row\b[^>]*\sr="(\d+)"[^>]*>[\s\S]*?<\/row>/g, (row, n) => {
+    const rn = Number(n)
+    const idx = rn - ASSET_EXCEL_DATA_START
+    if (rn < ASSET_EXCEL_DATA_START || rn > clearUntil) return row
+    const rec = records[idx]
+    const blank = { A: null, B: null, C: null, D: null, E: null, F: null, G: null, H: null, I: null, J: null, K: null, L: null, M: null, N: null, O: null }
+    return assetExcelSetRow(row, rn, rec || blank)
+  })
+  return sheet
+}
+
+function assetExcelCrc32(bytes) {
+  let c = ~0
+  for (let i = 0; i < bytes.length; i++) {
+    c ^= bytes[i]
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1))
+  }
+  return ~c >>> 0
+}
+
+function assetExcelReadZip(u8) {
+  const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength)
+  let eocd = -1
+  for (let i = u8.length - 22; i >= 0; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break }
+  }
+  if (eocd < 0) throw new Error('File mẫu Excel không hợp lệ')
+  const count = view.getUint16(eocd + 10, true)
+  let cd = view.getUint32(eocd + 16, true)
+  const entries = []
+  for (let n = 0; n < count; n++) {
+    if (view.getUint32(cd, true) !== 0x02014b50) throw new Error('File mẫu Excel không hợp lệ')
+    const method = view.getUint16(cd + 10, true)
+    const flag = view.getUint16(cd + 8, true)
+    const time = view.getUint16(cd + 12, true)
+    const date = view.getUint16(cd + 14, true)
+    const crc = view.getUint32(cd + 16, true)
+    const compSize = view.getUint32(cd + 20, true)
+    const uncompSize = view.getUint32(cd + 24, true)
+    const nameLen = view.getUint16(cd + 28, true)
+    const extraLen = view.getUint16(cd + 30, true)
+    const commentLen = view.getUint16(cd + 32, true)
+    const localOff = view.getUint32(cd + 42, true)
+    const name = new TextDecoder().decode(u8.subarray(cd + 46, cd + 46 + nameLen))
+    const localNameLen = view.getUint16(localOff + 26, true)
+    const localExtraLen = view.getUint16(localOff + 28, true)
+    const dataOff = localOff + 30 + localNameLen + localExtraLen
+    const extra = u8.slice(localOff + 30 + localNameLen, dataOff)
+    const data = u8.slice(dataOff, dataOff + compSize)
+    entries.push({ name, method, flag, time, date, crc, compSize, uncompSize, extra, data })
+    cd += 46 + nameLen + extraLen + commentLen
+  }
+  return entries
+}
+
+function assetExcelWriteZip(entries) {
+  const parts = []
+  const cds = []
+  let offset = 0
+  const enc = new TextEncoder()
+  for (const e of entries) {
+    const nameBytes = enc.encode(e.name)
+    const local = new Uint8Array(30 + nameBytes.length + e.extra.length)
+    const lv = new DataView(local.buffer)
+    lv.setUint32(0, 0x04034b50, true)
+    lv.setUint16(4, 20, true)
+    lv.setUint16(6, e.flag, true)
+    lv.setUint16(8, e.method, true)
+    lv.setUint16(10, e.time, true)
+    lv.setUint16(12, e.date, true)
+    lv.setUint32(14, e.crc, true)
+    lv.setUint32(18, e.data.length, true)
+    lv.setUint32(22, e.uncompSize, true)
+    lv.setUint16(26, nameBytes.length, true)
+    lv.setUint16(28, e.extra.length, true)
+    local.set(nameBytes, 30)
+    local.set(e.extra, 30 + nameBytes.length)
+    const cd = new Uint8Array(46 + nameBytes.length)
+    const cv = new DataView(cd.buffer)
+    cv.setUint32(0, 0x02014b50, true)
+    cv.setUint16(4, 20, true)
+    cv.setUint16(6, 20, true)
+    cv.setUint16(8, e.flag, true)
+    cv.setUint16(10, e.method, true)
+    cv.setUint16(12, e.time, true)
+    cv.setUint16(14, e.date, true)
+    cv.setUint32(16, e.crc, true)
+    cv.setUint32(20, e.data.length, true)
+    cv.setUint32(24, e.uncompSize, true)
+    cv.setUint16(28, nameBytes.length, true)
+    cv.setUint32(42, offset, true)
+    cd.set(nameBytes, 46)
+    parts.push(local, e.data)
+    cds.push(cd)
+    offset += local.length + e.data.length
+  }
+  const cdStart = offset
+  let cdSize = 0
+  cds.forEach(cd => { parts.push(cd); cdSize += cd.length })
+  const eocd = new Uint8Array(22)
+  const ev = new DataView(eocd.buffer)
+  ev.setUint32(0, 0x06054b50, true)
+  ev.setUint16(8, entries.length, true)
+  ev.setUint16(10, entries.length, true)
+  ev.setUint32(12, cdSize, true)
+  ev.setUint32(16, cdStart, true)
+  parts.push(eocd)
+  const total = parts.reduce((s, p) => s + p.length, 0)
+  const out = new Uint8Array(total)
+  let p = 0
+  parts.forEach(part => { out.set(part, p); p += part.length })
+  return out
+}
+
+async function assetExcelInflate(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
+async function assetExcelDeflate(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
+function assetExcelRecords(flatRows) {
+  return flatRows.map(a => {
+    const user = a.assigned_to ? allUsers.find(u => u.id == a.assigned_to) : null
+    const holder = a.is_shared ? 'Dùng chung của phòng' : (a.assigned_to_name || user?.full_name || '')
+    const title = a.is_shared ? '' : (a.assigned_job_title || user?.job_title || '')
+    const brandModel = [a.brand, a.model].filter(Boolean).join(' ')
+    const boughtIso = a.purchase_date ? String(a.purchase_date).substring(0, 10) : ''
+    const bought = boughtIso ? assetExcelDisplayDate(boughtIso) : ''
+    const warranty = boughtIso ? assetExcelDatePlusYears(boughtIso, 3) : ''
+    const note = a._parentName ? `Tài sản con của ${a._parentName}` : ''
+    return {
+      A: null,
+      B: holder ? { t: 's', v: holder } : null,
+      C: title ? { t: 's', v: title } : null,
+      D: { t: 's', v: assetExcelCategory(a.category) },
+      E: brandModel ? { t: 's', v: brandModel } : null,
+      F: a.serial_number ? { t: 's', v: a.serial_number } : null,
+      G: a.specifications ? { t: 's', v: a.specifications } : null,
+      H: bought ? { t: 's', v: bought } : null,
+      I: { t: 'n', v: Number(a.purchase_price) || 0 },
+      J: warranty ? { t: 'n', v: warranty } : null,
+      K: { t: 's', v: assetExcelCondition(a.status) },
+      L: { t: 's', v: 'Công ty cấp' },
+      M: null,
+      N: a.asset_code ? { t: 's', v: a.asset_code } : null,
+      O: note ? { t: 's', v: note } : null,
+    }
+  })
+}
+
+async function exportAssetsExcel() {
   if (!allAssets || allAssets.length === 0) {
     toast('Không có dữ liệu tài sản để xuất', 'warning')
     return
   }
 
-  const statusLabels  = { active: 'Đang sử dụng', unused: 'Chưa sử dụng', maintenance: 'Bảo trì', repair: 'Sửa chữa', retired: 'Thanh lý', lost: 'Mất' }
-  const deprLabels    = { active: 'Đang khấu hao', none: 'Không KH', completed: 'Đã hết KH', paused: 'Tạm dừng' }
-  const locationLabels = { office: 'Văn phòng', home: 'Nhà riêng', site: 'Công trường', other: 'Khác' }
-
-  // Flatten cây cha-con, giữ thứ tự: cha → con ngay sau cha
   const flatRows = []
   ;(allAssets || []).forEach(a => {
-    flatRows.push({ ...a, _level: 0, _parentCode: '' })
+    flatRows.push({ ...a, _parentName: '' })
     ;(a.children || []).forEach(c => {
-      flatRows.push({ ...c, _level: 1, _parentCode: a.asset_code })
+      flatRows.push({ ...c, _parentName: a.name || a.asset_code || '' })
     })
   })
 
-  // Helper
-  const numFmt = n => (n || 0).toLocaleString('vi-VN')
-  const dateFmt = d => d ? d.substring(0, 10) : ''
-  const getUserName = id => id ? (allUsers.find(u => u.id === id)?.full_name || '') : ''
-
-  // Header
-  const headers = [
-    'STT', 'Mã tài sản', 'Tên tài sản', 'Tài sản cha',
-    'Loại', 'Thương hiệu', 'Model', 'Thông số kỹ thuật',
-    'Ngày mua', 'Địa điểm', 'Người sử dụng',
-    'Giá mua (VNĐ)', 'Thời gian KH (năm)', 'KH/tháng (VNĐ)',
-    'Khấu hao luỹ kế (VNĐ)', 'Giá trị còn lại (VNĐ)', '% đã KH',
-    'Bắt đầu KH', 'Kết thúc KH', 'Trạng thái KH',
-    'Trạng thái', 'Ghi chú'
-  ]
-
-  // Rows
-  const rows = flatRows.map((a, i) => {
-    const netVal   = a.net_book_value || a.current_value || 0
-    const pctDepr  = a.purchase_price > 0
-      ? Math.min(100, Math.round((a.accumulated_depreciation || 0) / a.purchase_price * 100))
-      : 0
-    const deprSt   = a.depreciation_status || 'none'
-    const prefix   = a._level === 1 ? '  └ ' : ''
-    return [
-      i + 1,
-      (a._level === 1 ? '  ' : '') + (a.asset_code || ''),
-      prefix + (a.name || ''),
-      a._parentCode || '',
-      getAssetCategoryName(a.category || ''),
-      a.brand || '',
-      a.model || '',
-      a.specifications || '',
-      dateFmt(a.purchase_date),
-      locationLabels[a.location] || (a.location || ''),
-      getUserName(a.assigned_to),
-      a.purchase_price || 0,
-      a.depreciation_years || '',
-      deprSt === 'active' ? (a.monthly_depreciation || 0) : '',
-      a.accumulated_depreciation || 0,
-      netVal,
-      pctDepr + '%',
-      dateFmt(a.depreciation_start),
-      dateFmt(a.depreciation_end),
-      deprLabels[deprSt] || deprSt,
-      statusLabels[a.status] || (a.status || ''),
-      a.notes || ''
-    ]
-  })
-
-  // Tính tổng footer
-  const totalPurchase = flatRows.reduce((s, a) => s + (a.purchase_price || 0), 0)
-  const totalMonthly  = flatRows.filter(a => (a.depreciation_status || 'none') === 'active').reduce((s, a) => s + (a.monthly_depreciation || 0), 0)
-  const totalAccum    = flatRows.reduce((s, a) => s + (a.accumulated_depreciation || 0), 0)
-  const totalNet      = flatRows.reduce((s, a) => s + (a.net_book_value || a.current_value || 0), 0)
-  const footerRow     = ['', 'TỔNG CỘNG', `${flatRows.length} tài sản`, '', '', '', '', '', '', '', '',
-    totalPurchase, '', totalMonthly, totalAccum, totalNet, '', '', '', '', '', '']
-
-  // ── Build CSV (UTF-8 BOM để Excel đọc đúng tiếng Việt) ──
-  const escape = v => {
-    const s = String(v === null || v === undefined ? '' : v)
-    if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`
-    return s
+  try {
+    const res = await fetch(ASSET_EXCEL_TEMPLATE)
+    if (!res.ok) throw new Error('Không tải được file mẫu')
+    const src = new Uint8Array(await res.arrayBuffer())
+    const entries = assetExcelReadZip(src)
+    const sheet = entries.find(e => e.name === 'xl/worksheets/sheet1.xml')
+    if (!sheet) throw new Error('File mẫu thiếu sheet Tài sản')
+    const xmlBytes = sheet.method === 0 ? sheet.data : await assetExcelInflate(sheet.data)
+    const xml = new TextDecoder().decode(xmlBytes)
+    const filled = assetExcelFillSheet(xml, assetExcelRecords(flatRows))
+    const outBytes = new TextEncoder().encode(filled)
+    const packed = await assetExcelDeflate(outBytes)
+    sheet.method = 8
+    sheet.crc = assetExcelCrc32(outBytes)
+    sheet.uncompSize = outBytes.length
+    sheet.data = packed
+    const zip = assetExcelWriteZip(entries)
+    const blob = new Blob([zip], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const today = new Date().toISOString().substring(0, 10).replace(/-/g, '')
+    link.href = url
+    link.download = `Tai_san_PBIMDD_${today}.xlsx`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    toast(`Đã xuất ${flatRows.length} tài sản theo mẫu Excel`, 'success')
+  } catch (err) {
+    toast('Không xuất được Excel: ' + (err.message || err), 'error')
   }
-  const csvLines = [
-    '=== BÁO CÁO TÀI SẢN CÔNG TY ===',
-    `Ngày xuất: ${new Date().toLocaleDateString('vi-VN')} ${new Date().toLocaleTimeString('vi-VN')}`,
-    `Tổng số tài sản: ${allAssets.length} (${flatRows.length} bao gồm linh kiện)`,
-    '',
-    headers.map(escape).join(','),
-    ...rows.map(r => r.map(escape).join(',')),
-    '',
-    footerRow.map(escape).join(',')
-  ]
-
-  const BOM = '\uFEFF'
-  const csvContent = BOM + csvLines.join('\r\n')
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-  const url  = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  const today = new Date().toISOString().substring(0, 10).replace(/-/g, '')
-  link.href     = url
-  link.download = `BIM_TaiSan_${today}.csv`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-
-  toast(`Đã xuất ${flatRows.length} tài sản ra file Excel`, 'success')
 }
 
 async function openAssetModal(assetId = null) {
@@ -12406,8 +12607,7 @@ async function openAssetModal(assetId = null) {
   $('assetModalTitle').textContent = assetId ? 'Chỉnh sửa tài sản' : 'Thêm tài sản mới'
   $('assetId').value = assetId || ''
   $('assetParentId').value = ''
-  $('assetAssignedTo').innerHTML = '<option value="">-- Không giao --</option>' +
-    allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+  $('assetAssignedTo').innerHTML = assetAssigneeOptionsHtml()
 
   // Ẩn banner tài sản cha mặc định
   if ($('assetParentRow')) $('assetParentRow').classList.add('hidden')
@@ -12431,7 +12631,7 @@ async function openAssetModal(assetId = null) {
       setMoneyInput('assetPurchasePrice', asset.purchase_price || 0)
       setMoneyInput('assetCurrentValue', asset.current_value || 0)
       $('assetDepartment').value = asset.department || ''
-      $('assetAssignedTo').value = asset.assigned_to || ''
+      $('assetAssignedTo').value = asset.is_shared ? 'shared' : (asset.assigned_to || '')
       $('assetSpecs').value = asset.specifications || ''
       $('assetDepreciationYears').value = asset.depreciation_years || 0
       $('assetDepreciationStart').value = asset.depreciation_start_date || asset.purchase_date || ''
@@ -12480,8 +12680,7 @@ async function openAssetModalAsChild(parentId) {
   if ($('assignParentRow')) $('assignParentRow').classList.add('hidden')
   if ($('changeParentUI')) $('changeParentUI').classList.add('hidden')
 
-  $('assetAssignedTo').innerHTML = '<option value="">-- Không giao --</option>' +
-    allUsers.filter(u => u.is_active).map(u => `<option value="${u.id}">${u.full_name}</option>`).join('')
+  $('assetAssignedTo').innerHTML = assetAssigneeOptionsHtml()
 
   // Clear các field, inherit phòng ban từ cha
   ;['assetCode','assetName','assetBrand','assetModel','assetSerial','assetSpecs'].forEach(f => { if ($(f)) $(f).value = '' })
@@ -12490,7 +12689,7 @@ async function openAssetModalAsChild(parentId) {
   $('assetCategory').value = parentAsset.category || 'computer'
   $('assetStatus').value = 'active'
   $('assetDepartment').value = parentAsset.department || ''
-  $('assetAssignedTo').value = parentAsset.assigned_to || ''
+  $('assetAssignedTo').value = parentAsset.is_shared ? 'shared' : (parentAsset.assigned_to || '')
   $('assetPurchaseDate').value = today()
   $('assetDepreciationYears').value = '0'
   $('assetDepreciationStart').value = today()
@@ -12620,7 +12819,8 @@ $('assetForm').addEventListener('submit', async (e) => {
     purchase_price: parseMoneyVal('assetPurchasePrice'),
     current_value: parseMoneyVal('assetCurrentValue'),
     department: $('assetDepartment').value,
-    assigned_to: parseInt($('assetAssignedTo').value) || null,
+    assigned_to: $('assetAssignedTo').value === 'shared' ? null : (parseInt($('assetAssignedTo').value) || null),
+    is_shared: $('assetAssignedTo').value === 'shared' ? 1 : 0,
     specifications: $('assetSpecs').value,
     depreciation_years: parseInt($('assetDepreciationYears').value) || 0,
     depreciation_start_date: $('assetDepreciationStart').value || null,
