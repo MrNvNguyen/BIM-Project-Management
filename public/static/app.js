@@ -12284,9 +12284,8 @@ function renderAssetsTable(assets) {
 }
 
 function setAssetPage(p) {
-  const totalPages = Math.max(1, Math.ceil((allAssets || []).length / ASSET_PAGE_SIZE))
-  _assetPage = Math.max(1, Math.min(p, totalPages))
-  renderAssetsTable(allAssets)
+  _assetPage = Math.max(1, p)
+  filterAssets(true)
   const tbl = $('assetsTable'); if (tbl) tbl.closest('.overflow-x-auto')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
 }
 
