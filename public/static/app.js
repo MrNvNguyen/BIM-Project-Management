@@ -12224,7 +12224,7 @@ function renderAssetsTable(assets) {
   // Flatten để phân trang: mỗi "row đơn vị" là 1 cha (kèm con của nó)
   if (!assets || assets.length === 0) {
     tbody.innerHTML = '<tr><td colspan="12" class="text-center py-8 text-gray-400">Không có tài sản</td></tr>'
-    const pgDiv = $('assetPagination'); if (pgDiv) pgDiv.classList.add('hidden')
+    assetShowFilteredTotal(0)
     return
   }
 
@@ -12256,7 +12256,7 @@ function renderAssetsTable(assets) {
   const pgBtns = $('assetPaginationBtns')
   if (pgDiv) {
     if (totalPages <= 1) {
-      pgDiv.classList.add('hidden')
+      assetShowFilteredTotal(totalParents)
     } else {
       pgDiv.classList.remove('hidden')
       if (pgInfo) pgInfo.textContent = `Hiển thị ${start + 1}–${Math.min(start + ASSET_PAGE_SIZE, totalParents)} / ${totalParents} tài sản`
@@ -12281,6 +12281,27 @@ function renderAssetsTable(assets) {
       }
     }
   }
+}
+
+function assetFilterActive() {
+  return !!(($('assetSearch')?.value || '').trim()
+    || $('assetCategoryFilter')?.value
+    || $('assetStatusFilter')?.value
+    || $('assetDeprFilter')?.value)
+}
+
+function assetShowFilteredTotal(total) {
+  const pgDiv = $('assetPagination')
+  const pgInfo = $('assetPaginationInfo')
+  const pgBtns = $('assetPaginationBtns')
+  if (!pgDiv) return
+  if (!assetFilterActive()) {
+    pgDiv.classList.add('hidden')
+    return
+  }
+  pgDiv.classList.remove('hidden')
+  if (pgInfo) pgInfo.textContent = `${total} tài sản`
+  if (pgBtns) pgBtns.innerHTML = ''
 }
 
 function setAssetPage(p) {
