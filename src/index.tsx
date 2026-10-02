@@ -818,13 +818,20 @@ async function countResendSentToday(db: D1Database): Promise<number> {
   }
 }
 
+function normalizeEmailSecret(raw: string | undefined | null) {
+  let value = String(raw || '').trim()
+  if (/^bearer\s+/i.test(value)) value = value.replace(/^bearer\s+/i, '').trim()
+  if (!value || value.includes('****')) return ''
+  return value
+}
+
 async function resolveCloudflareEmailCreds(
   env: Bindings,
   db: D1Database
 ): Promise<{ accountId: string; apiToken: string } | null> {
   const cfg = await getSystemConfigMap(db, ['cloudflare_account_id', 'cloudflare_email_api_token'])
-  const accountId = (env.CF_ACCOUNT_ID || cfg.cloudflare_account_id || '').trim()
-  const apiToken = (env.CF_EMAIL_API_TOKEN || cfg.cloudflare_email_api_token || '').trim()
+  const accountId = (cfg.cloudflare_account_id || env.CF_ACCOUNT_ID || '').trim()
+  const apiToken = normalizeEmailSecret(cfg.cloudflare_email_api_token) || normalizeEmailSecret(env.CF_EMAIL_API_TOKEN)
   if (!accountId || !apiToken) return null
   return { accountId, apiToken }
 }
@@ -973,7 +980,8 @@ async function sendEmail(env: Bindings, opts: {
     return 'skipped'
   }
 
-  let apiKey = env.RESEND_API_KEY || cfg.resend_api_key || ''
+  const resendKeys = [normalizeEmailSecret(cfg.resend_api_key), normalizeEmailSecret(env.RESEND_API_KEY)].filter((key, i, all) => key && all.indexOf(key) === i)
+  const apiKey = resendKeys[0] || ''
   const fromName = (cfg.email_from_name || DEFAULT_EMAIL_FROM_NAME).trim() || DEFAULT_EMAIL_FROM_NAME
   const fromAddress = (cfg.email_from_address || DEFAULT_EMAIL_FROM_ADDRESS).trim() || DEFAULT_EMAIL_FROM_ADDRESS
   const fromHeader = `${fromName} <${fromAddress}>`
@@ -1004,26 +1012,50 @@ async function sendEmail(env: Bindings, opts: {
 
   try {
     if (useResend) {
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: fromHeader,
-          to: [opts.to],
+      let resendOk = false
+      let lastStatus = 0
+      let lastErr = ''
+      for (const key of resendKeys) {
+        const res = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: fromHeader,
+            to: [opts.to],
+            subject,
+            html,
+          }),
+        })
+        if (res.ok) {
+          resendOk = true
+          console.log(`[sendEmail] Resend SUCCESS to=${opts.to} event=${opts.eventType}`)
+          break
+        }
+        lastStatus = res.status
+        lastErr = (await res.text()).slice(0, 500)
+        console.log(`[sendEmail] Resend FAILED HTTP ${res.status}: ${lastErr}`)
+        if (res.status !== 401 && res.status !== 403) break
+      }
+      if (!resendOk && cfCreds && (lastStatus === 401 || lastStatus === 403)) {
+        provider = 'cloudflare'
+        await sendViaCloudflareRest(cfCreds, {
+          to: opts.to,
+          toName: opts.toName,
+          fromAddress,
+          fromName,
           subject,
           html,
-        }),
-      })
-      if (!res.ok) {
-        const err = await res.text()
+          text: plainText || subject,
+        })
+        console.log(`[sendEmail] Cloudflare REST SUCCESS after Resend auth failure to=${opts.to} event=${opts.eventType}`)
+      } else if (!resendOk) {
         status = 'failed'
-        errorMsg = err.slice(0, 500)
-        console.log(`[sendEmail] Resend FAILED HTTP ${res.status}: ${errorMsg}`)
-      } else {
-        console.log(`[sendEmail] Resend SUCCESS to=${opts.to} event=${opts.eventType}`)
+        errorMsg = lastStatus === 401 || lastStatus === 403
+          ? 'Resend từ chối API key. Nhập lại khóa trong Cấu hình hệ thống, hoặc bật Cloudflare Email.'
+          : lastErr
       }
     } else {
       await sendViaCloudflareRest(cfCreds!, {
@@ -8540,9 +8572,11 @@ app.put('/api/system-config', authMiddleware, adminOnly, async (c) => {
     
     for (const [key, value] of Object.entries(data)) {
       if (!allowedKeys.includes(key)) continue
+      if ((key === 'resend_api_key' || key === 'cloudflare_email_api_token') && String(value || '').includes('****')) continue
+      const stored = (key === 'resend_api_key' || key === 'cloudflare_email_api_token') ? String(value || '').trim() : value
       await db.prepare(
         'INSERT OR REPLACE INTO system_config (key, value, updated_by, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)'
-      ).bind(key, value, user.id).run()
+      ).bind(key, stored, user.id).run()
     }
     return c.json({ success: true, message: 'Cấu hình đã được lưu' })
   } catch (e: any) {
