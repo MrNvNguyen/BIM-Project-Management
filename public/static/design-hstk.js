@@ -123,7 +123,7 @@
   }
 
   const BIMFOLDER_HELPER_MSG =
-    'Không kết nối được bimfolder trên máy này (127.0.0.1:8765). Chạy lại install-bimfolder.ps1 và chấp nhận cửa sổ UAC. Nếu Chrome/Edge hỏi quyền mạng nội bộ, chọn Cho phép rồi Ctrl+F5.'
+    'Không kết nối được bimfolder trên máy này (127.0.0.1:8765). Nếu Windows báo Smart App Control: chuột phải CaiDat-MayUser.bat → Properties → tick Unblock (Bỏ chặn), chạy lại và bấm Yes ở UAC. Trình duyệt hỏi mạng nội bộ thì chọn Cho phép, rồi Ctrl+F5.'
 
   function isBimfolderNetworkError(e) {
     if (!e) return false

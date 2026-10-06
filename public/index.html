@@ -8995,8 +8995,8 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261002i"></script>
-<script src="/static/design-hstk.js?v=20261002g"></script>
+<script src="/static/app.js?v=20261005e"></script>
+<script src="/static/design-hstk.js?v=20261005a"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;
@@ -9469,6 +9469,136 @@
     color: #1e293b;
     background: #fff;
   }
+
+  /* Dark — form khai timesheet: chip ngày và chế độ khai báo không để chữ sáng trên nền trắng */
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label {
+    background: var(--shell-input-bg) !important;
+    border-color: var(--shell-border-strong) !important;
+    color: var(--shell-text) !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label span {
+    color: var(--shell-text) !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(input:checked) {
+    background: rgba(16, 185, 129, 0.28) !important;
+    border-color: #4ade80 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(input:checked) span {
+    color: #bbf7d0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(span.text-orange-700) {
+    border-color: #fb923c !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(span.text-orange-700) span {
+    color: #fdba74 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(span.text-orange-700):has(input:checked) {
+    background: rgba(234, 88, 12, 0.35) !important;
+    border-color: #fdba74 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekCopyDays label:has(span.text-orange-700):has(input:checked) span {
+    color: #ffedd5 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWorkFields > .flex.items-center.gap-3 {
+    background: var(--shell-input-bg) !important;
+    border-color: var(--shell-border-strong) !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWorkFields > .flex.items-center.gap-3 span {
+    color: var(--shell-text) !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskRows > div {
+    background: #1e293b !important;
+    border-color: #4d6380 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskRows input[id^="tsMultiReg_"] {
+    background: rgba(37, 99, 235, 0.22) !important;
+    color: #dbeafe !important;
+    border-color: #60a5fa !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskRows input[id^="tsMultiOT_"] {
+    background: rgba(234, 88, 12, 0.22) !important;
+    color: #ffedd5 !important;
+    border-color: #fb923c !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskBlock > .flex > button {
+    background: rgba(99, 102, 241, 0.22) !important;
+    color: #e0e7ff !important;
+    border-color: #818cf8 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList > .rounded-lg {
+    background: #1e293b !important;
+    border-color: #4d6380 !important;
+    color: #e2e8f0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList > div[style*="fff7ed"] {
+    background: rgba(234, 88, 12, 0.22) !important;
+    border-color: #fb923c !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-gray-700,
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-gray-500,
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList label {
+    color: #e2e8f0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-blue-500 { color: #93c5fd !important; }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-orange-500,
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-orange-700 { color: #fdba74 !important; }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .text-indigo-600 { color: #c7d2fe !important; }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .bg-orange-100 {
+    background: rgba(234, 88, 12, 0.35) !important;
+    color: #ffedd5 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .bg-gray-100 {
+    background: rgba(255, 255, 255, 0.08) !important;
+    color: #e2e8f0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekDayEntriesList .bg-amber-100 {
+    background: rgba(245, 158, 11, 0.28) !important;
+    color: #fde68a !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekBanner {
+    background: rgba(16, 185, 129, 0.18) !important;
+    border-color: #4ade80 !important;
+    color: #bbf7d0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsWeekBanner span {
+    color: #bbf7d0 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsLeaveNotice {
+    background: rgba(245, 158, 11, 0.18) !important;
+    border-color: #fbbf24 !important;
+    color: #fde68a !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsLeaveNotice span {
+    color: #fde68a !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsDateHint {
+    background: rgba(245, 158, 11, 0.16) !important;
+    border-color: #fbbf24 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsDateHintRemain { color: #86efac !important; }
+  html[data-theme="dark"] #timesheetModal #tsDateHintProjects { color: #fde68a !important; }
+  html[data-theme="dark"] #timesheetModal #tsTaskLockHint,
+  html[data-theme="dark"] #timesheetModal #tsTaskLockHint span { color: #fcd34d !important; }
+  html[data-theme="dark"] #timesheetModal #tsTaskCategoryBadgeText {
+    background: rgba(59, 130, 246, 0.22) !important;
+    color: #bfdbfe !important;
+    border-color: #60a5fa !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskBlock > div[style*="border-top"] {
+    border-top-color: #4d6380 !important;
+  }
+  html[data-theme="dark"] #timesheetModal #tsMultiTaskRows button[title="Xóa dòng này"]:hover {
+    background: rgba(248, 113, 113, 0.22) !important;
+    color: #fecaca !important;
+  }
+  html[data-theme="dark"] #tsBulkModal .flex.items-center.gap-4.p-3 {
+    background: var(--shell-input-bg) !important;
+    border-color: var(--shell-border-strong) !important;
+  }
+  html[data-theme="dark"] #tsBulkModal .flex.items-center.gap-4.p-3 span {
+    color: var(--shell-text) !important;
+  }
+  html[data-theme="dark"] #tsBulkModal .text-indigo-600 { color: #c7d2fe !important; }
 
   /* ── Timesheet weekend row highlight ── */
   /* Thứ 7: nền cam nhạt (250,192,144) */

@@ -12,6 +12,7 @@ $AllowedAppOrigins = @(
   'http://127.0.0.1:8788',
   'http://localhost:8788',
   'https://ddcn.bimonecadvn.com'
+  'https://htkt.bimonecadvn.com'
 )
 
 Add-Type -AssemblyName System.Web

@@ -2,6 +2,7 @@
 
 $ErrorActionPreference = 'Stop'
 
+Get-ChildItem -LiteralPath $PSScriptRoot -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 $scriptPath = Join-Path $PSScriptRoot 'bimfolder.ps1'
 
 if (-not (Test-Path -LiteralPath $scriptPath)) {

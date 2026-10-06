@@ -11,6 +11,9 @@ function Show-Result([string]$text, [string]$title, $icon) {
   [System.Windows.Forms.MessageBox]::Show($text, $title, 'OK', $icon) | Out-Null
 }
 
+# File copy từ mạng/Zalo/USB thường bị Smart App Control chặn (Mark of the Web).
+Get-ChildItem -LiteralPath $src -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
+
 $needed = @('bimfolder.ps1', 'install-bimfolder.ps1', 'bimfolder.cmd', 'uninstall-bimfolder.reg')
 foreach ($name in $needed) {
   $from = Join-Path $src $name
@@ -23,6 +26,7 @@ foreach ($name in $needed) {
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 foreach ($name in $needed) {
   Copy-Item -LiteralPath (Join-Path $src $name) -Destination (Join-Path $dest $name) -Force
+  Unblock-File -LiteralPath (Join-Path $dest $name) -ErrorAction SilentlyContinue
 }
 
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dest 'install-bimfolder.ps1')

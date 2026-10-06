@@ -4912,6 +4912,7 @@ function renderTaskRows() {
       <td class="py-2 pr-3">${getStatusBadge(t.status)}</td>
       <td class="py-2">
         <div class="flex gap-1">
+          ${canLogTimesheetForTask(t) ? `<button type="button" onclick="openTimesheetForTask(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Khai timesheet cho ${escHtml(t.assigned_to_name || 'người phụ trách')}"><i class="fas fa-clock"></i></button>` : ''}
           ${canEditThisTask ? `<button onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Sửa"><i class="fas fa-edit"></i></button>` : ''}
           ${canDeleteThisTask ? `<button onclick="confirmDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}' )" class="text-red-400 hover:text-red-600 px-2 py-1 text-sm" title="Xóa"><i class="fas fa-trash"></i></button>` : ''}
         </div>
@@ -4954,6 +4955,7 @@ function renderTasksMobileCards(tasks) {
         ${overdue ? '<span class="badge badge-overdue text-xs">Trễ hạn</span>' : ''}
       </div>
       <div class="mlc-actions">
+        ${canLogTimesheetForTask(t) ? `<button type="button" onclick="openTimesheetForTask(${t.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-clock mr-1"></i>Timesheet</button>` : ''}
         ${canEditThisTask ? `<button onclick="openTaskModal(${t.id})" class="btn-secondary text-xs px-3 py-2"><i class="fas fa-edit mr-1"></i>Sửa</button>` : ''}
         ${canDeleteThisTask ? `<button onclick="confirmDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}' )" class="text-red-500 text-xs px-3 py-2"><i class="fas fa-trash mr-1"></i>Xóa</button>` : ''}
       </div>
@@ -8486,15 +8488,52 @@ function _tsSyncTaskLockState() {
 }
 
 // ── Khởi tạo combobox Task ─────────────────────────────────────────────────
+/** Nhân viên đang khai timesheet — danh sách task chỉ lấy task giao cho người này. */
+function _tsTimesheetAssigneeId() {
+  if (!currentUser?.id) return null
+  if (currentUser.role === 'system_admin') {
+    const picked = parseInt($('tsTargetUserHidden')?.value, 10)
+    return picked || currentUser.id
+  }
+  return currentUser.id
+}
+
+function _tsTasksForAssignee(tasks, keepId) {
+  const uid = Number(_tsTimesheetAssigneeId())
+  const editing = !!$('tsId')?.value
+  const keep = editing && keepId ? String(keepId) : ''
+  if (!uid) return tasks || []
+  return (tasks || []).filter(t => Number(t.assigned_to) === uid || (keep && String(t.id) === keep))
+}
+
+function _reloadTsTasksForCurrentAssignee() {
+  if ($('tsId')?.value) return
+  const proj = $('tsProjectHidden')?.value
+  if (proj) {
+    const token = ++_tsProjChangeToken
+    _loadAndInitTsTaskCombobox(proj, $('tsTaskHidden')?.value || null, _tsModalLocked, token)
+  }
+  Object.keys(_tsWeekDayState || {}).forEach(iso => {
+    const lines = _tsWeekDayState[iso]?.lines || []
+    lines.forEach(line => {
+      if (line.project_id) _loadTsWeekDayTasks(iso, line.lid, line.project_id, line.task_id || null)
+    })
+  })
+}
+
 function _initTsTaskCombobox(tasks = [], selectedTaskId = null, locked = false) {
   // Chuẩn hoá selectedTaskId về string để so sánh chính xác
   const selId = selectedTaskId != null ? String(selectedTaskId) : ''
 
   // Build items: có prefix [Hạng mục] để phân biệt task trùng tên
   const taskItems = _buildTsTaskItems(tasks, selId)
+  const catChosen = !!(parseInt($('tsCategoryHidden')?.value) || null)
+  const emptyLabel = (catChosen || !_tsCachedCategories.length)
+    ? '— Không có task được giao —'
+    : '— Chọn hạng mục trước —'
 
   createCombobox('tsTaskCombobox', {
-    placeholder: tasks.length ? '🔍 Tìm & chọn task...' : '— Chọn hạng mục trước —',
+    placeholder: tasks.length ? '🔍 Tìm & chọn task...' : emptyLabel,
     items: taskItems,
     value: selId,
     fullWidth: true,
@@ -8557,21 +8596,27 @@ async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, lock
   if (spinner) spinner.style.display = 'inline'
   if (spinnerMulti) spinnerMulti.style.display = 'inline'
   try {
-    // exclude_done trước LIMIT; hạng mục lọc client trên cache đầy đủ
-    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1`)
+    // exclude_done trước LIMIT; chỉ task giao cho nhân viên đang khai
+    const assigneeId = _tsTimesheetAssigneeId()
+    const assigneeQ = assigneeId ? `&assigned_to=${assigneeId}` : ''
+    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1${assigneeQ}`)
     if (token !== null && token !== _tsProjChangeToken) return
     tasks = Array.isArray(tasks) ? tasks : []
+    tasks = _tsTasksForAssignee(tasks, selectedTaskId)
     // Giữ task đã chọn nếu đã completed (đang sửa timesheet cũ)
     if (selectedTaskId && !tasks.some(t => String(t.id) === String(selectedTaskId))) {
       try {
         const one = await api(`/tasks/${selectedTaskId}`)
-        if (one && one.id) tasks = [one, ...tasks]
+        const uid = Number(_tsTimesheetAssigneeId())
+        const keepForeign = !!$('tsId')?.value
+        if (one && one.id && (keepForeign || Number(one.assigned_to) === uid)) tasks = [one, ...tasks]
       } catch (_) { /* ignore */ }
     }
+    const visibleSel = tasks.some(t => String(t.id) === String(selectedTaskId)) ? selectedTaskId : null
     _tsCachedTasks = tasks
     const selCatId = parseInt($('tsCategoryHidden')?.value) || null
     const tasksToShow = selCatId ? tasks.filter(t => t.category_id === selCatId) : tasks
-    _initTsTaskCombobox(tasksToShow, selectedTaskId, locked)
+    _initTsTaskCombobox(tasksToShow, visibleSel, locked)
     // Re-render multi rows với task mới
     _tsRenderMultiRows()
   } catch (e) {
@@ -8584,6 +8629,36 @@ async function _loadAndInitTsTaskCombobox(projectId, selectedTaskId = null, lock
       if (spinner) spinner.style.display = 'none'
       if (spinnerMulti) spinnerMulti.style.display = 'none'
     }
+  }
+}
+
+let _tsOpenFromTask = null
+
+function canLogTimesheetForTask(t) {
+  if (!t?.assigned_to || !currentUser?.id) return false
+  if (Number(t.assigned_to) === Number(currentUser.id)) return true
+  if (currentUser.role === 'system_admin') return true
+  return getEffectiveRoleForProject(t.project_id) === 'project_admin'
+}
+
+/** Mở form timesheet đã chọn sẵn task và người phụ trách của task đó. */
+async function openTimesheetForTask(taskId) {
+  const id = parseInt(taskId, 10)
+  const t = (_taskAllData || []).find(x => x.id === id) || (allTasks || []).find(x => x.id === id)
+  if (!t) { toast('Không tìm thấy task', 'warning'); return }
+  if (!t.assigned_to) { toast('Task chưa có người phụ trách', 'warning'); return }
+  if (!canLogTimesheetForTask(t)) { toast('Bạn không có quyền khai timesheet cho người này', 'warning'); return }
+  _tsOpenFromTask = {
+    project_id: t.project_id,
+    category_id: t.category_id || null,
+    task_id: t.id,
+    user_id: t.assigned_to,
+    user_name: t.assigned_to_name || ''
+  }
+  try {
+    await openTimesheetModal(null)
+  } finally {
+    _tsOpenFromTask = null
   }
 }
 
@@ -8610,26 +8685,38 @@ async function openTimesheetModal(tsId = null) {
   if (isAdmin && !tsId) {
     // Force re-init combobox mỗi lần mở modal
     if (_cbState['tsUserCombobox']) delete _cbState['tsUserCombobox']
+    const presetUserId = _tsOpenFromTask?.user_id ? Number(_tsOpenFromTask.user_id) : null
     const items = allUsers.map(u => ({
       value: String(u.id),
       label: u.full_name || u.username,
       sub: u.role ? (u.role === 'system_admin' ? 'System Admin' : u.role) : ''
     }))
+    if (presetUserId && !items.some(i => i.value === String(presetUserId))) {
+      items.unshift({ value: String(presetUserId), label: _tsOpenFromTask.user_name || `#${presetUserId}` })
+    }
     createCombobox('tsUserCombobox', {
       placeholder: '🔍 Tìm nhân viên...',
       items,
       fullWidth: true,
       onchange: (val) => {
         $('tsTargetUserHidden').value = val
-        // Cập nhật gợi ý dự án đã khai báo theo nhân viên được chọn
-        _updateTsDateHint($('tsDate').value, null, val ? parseInt(val) : null)
+        const uid = val ? parseInt(val) : null
+        _updateTsDateHint($('tsDate').value, null, uid)
+        _applyTsWeekAssignment($('tsDate').value, uid).then(() => {
+          if (_tsOpenFromTask) return
+          _reloadTsTasksForCurrentAssignee()
+        })
       }
     })
-    // Default: chính mình
     const selfUser = allUsers.find(u => u.id === currentUser.id)
     const selfLabel = selfUser ? (selfUser.full_name || selfUser.username) : String(currentUser.id)
-    _cbSelect('tsUserCombobox', String(currentUser.id), selfLabel)
-    $('tsTargetUserHidden').value = String(currentUser.id)
+    const presetUser = presetUserId ? allUsers.find(u => Number(u.id) === presetUserId) : null
+    const startId = presetUserId || currentUser.id
+    const startLabel = presetUser
+      ? (presetUser.full_name || presetUser.username)
+      : (presetUserId ? (_tsOpenFromTask.user_name || selfLabel) : selfLabel)
+    _cbSelect('tsUserCombobox', String(startId), startLabel)
+    $('tsTargetUserHidden').value = String(startId)
   } else if (isAdmin && tsId) {
     // Khi sửa: hiển thị tên nhân viên nhưng không cho đổi
     if (_cbState['tsUserCombobox']) delete _cbState['tsUserCombobox']
@@ -8789,6 +8876,16 @@ async function openTimesheetModal(tsId = null) {
     // Hiển thị gợi ý dự án đã khai báo cho ngày hôm nay
     const targetUid = isAdmin ? (parseInt($('tsTargetUserHidden').value) || currentUser.id) : null
     _updateTsDateHint(today(), null, targetUid)
+    const fromTask = _tsOpenFromTask
+    if (fromTask?.project_id) {
+      const tokenProj = ++_tsProjChangeToken
+      _initTsProjectCombobox(String(fromTask.project_id), false)
+      await _loadTsCategories(fromTask.project_id, fromTask.category_id || null, false)
+      if (fromTask.category_id && $('tsCategoryHidden')) $('tsCategoryHidden').value = String(fromTask.category_id)
+      await _loadAndInitTsTaskCombobox(fromTask.project_id, fromTask.task_id, false, tokenProj)
+    } else {
+      _applyTsWeekAssignment(today(), targetUid)
+    }
     // Cập nhật giờ HC mặc định = số giờ còn lại hôm nay (CN → OT)
     if (_isSundayIso(today())) {
       _applySundayDefaultsToSingleForm(today())
@@ -9146,6 +9243,12 @@ function _isSundayIso(iso) {
   return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay() === 0
 }
 
+function _isSaturdayIso(iso) {
+  const [y, m, d] = String(iso || '').split('-').map(Number)
+  if (!y || !m || !d) return false
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay() === 6
+}
+
 /** Giờ mặc định theo ngày: CN → OT 8h / HC 0; nửa ngày → HC 4; còn lại HC 8. */
 function _defaultHoursForDate(iso, dayType) {
   if (_isSundayIso(iso)) return { reg: 0, ot: 8 }
@@ -9256,17 +9359,21 @@ async function _loadTsWeekDayTasks(iso, lid, projectId, selectedTaskId = null) {
     onchange: onTaskChange
   })
   try {
-    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1`)
+    const assigneeId = _tsTimesheetAssigneeId()
+    const assigneeQ = assigneeId ? `&assigned_to=${assigneeId}` : ''
+    let tasks = await api(`/tasks?project_id=${projectId}&limit=${TASK_PROJECT_LIMIT}&exclude_done=1${assigneeQ}`)
     if (token !== _tsWeekDayLoadToken[tokenKey]) return
-    tasks = Array.isArray(tasks) ? tasks : []
     const st = _ensureWeekDayState(iso)
     const line = st.lines.find(l => l.lid === lid) || {}
     const sel = selectedTaskId != null ? selectedTaskId : (line.task_id || '')
+    tasks = _tsTasksForAssignee(Array.isArray(tasks) ? tasks : [], sel)
+    const visibleSel = tasks.some(t => String(t.id) === String(sel)) ? sel : ''
+    if (line && line.task_id && !visibleSel) line.task_id = ''
     if (_cbState[taskCbId]) delete _cbState[taskCbId]
     createCombobox(taskCbId, {
       placeholder: tasks.length ? '🔍 Task (tùy chọn)' : '— Không có task —',
-      items: _buildTsWeekDayTaskItems(tasks, sel),
-      value: sel ? String(sel) : '',
+      items: _buildTsWeekDayTaskItems(tasks, visibleSel),
+      value: visibleSel ? String(visibleSel) : '',
       fullWidth: true,
       teleport: true,
       panelMaxWidth: '420px',
@@ -9621,8 +9728,37 @@ function _onTsWeekCopyChange() {
       ? (parseInt($('tsTargetUserHidden')?.value) || currentUser.id) : null
     _applySundayDefaultsToSingleForm($('tsDate').value)
     _updateTsDateHint($('tsDate').value, null, uid)
+    _applyTsWeekAssignment($('tsDate').value, uid)
   }
   _syncTsWeekDayEntriesUI()
+}
+
+let _tsWeekAssignToken = 0
+
+/** Chọn sẵn dự án, hạng mục, task được giao cho nhân viên trong tuần của ngày đang khai. */
+async function _applyTsWeekAssignment(workDate, userId) {
+  if (_tsOpenFromTask) return
+  if ($('tsId')?.value) return
+  if (!workDate) return
+  const dayType = $('tsDayType')?.value || 'work'
+  if (!['work', 'half_day_am', 'half_day_pm', 'business_trip'].includes(dayType)) return
+  const token = ++_tsWeekAssignToken
+  let row
+  try {
+    let url = `/timesheets/week-assignment?work_date=${encodeURIComponent(workDate)}`
+    if (userId) url += `&user_id=${userId}`
+    row = await api(url)
+  } catch (_) {
+    return
+  }
+  if (token !== _tsWeekAssignToken) return
+  if (!row?.project_id) return
+  const tokenProj = ++_tsProjChangeToken
+  _initTsProjectCombobox(String(row.project_id), false)
+  await _loadTsCategories(row.project_id, row.category_id || null, false)
+  if (token !== _tsWeekAssignToken) return
+  if (row.category_id && $('tsCategoryHidden')) $('tsCategoryHidden').value = String(row.category_id)
+  await _loadAndInitTsTaskCombobox(row.project_id, row.task_id || null, false, tokenProj)
 }
 
 function _getSelectedWeekDates() {
@@ -9857,8 +9993,9 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
   }
   const isMultiModeUi = document.querySelector('input[name="tsModeRadio"]:checked')?.value === 'multi'
   const effectiveFormReg = isMultiModeUi ? multiReg : formReg
-  // dayCap=0 (CN): OT được phép ngay
-  const otAllowed = !blocked && (dayCap <= 0 || (usedReg + effectiveFormReg) >= dayCap - 0.001)
+  // CN (dayCap=0) và T7: OT không bắt buộc đủ HC
+  const saturdayOt = _isSaturdayIso(selectedDate)
+  const otAllowed = !blocked && (dayCap <= 0 || saturdayOt || (usedReg + effectiveFormReg) >= dayCap - 0.001)
   const formLocked = $('tsOvertimeHours')?.dataset?.locked === '1'
 
   if (otInput) {
@@ -9870,7 +10007,9 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
     } else {
       otInput.max = remainingOt
       otInput.disabled = !!formLocked
-      otInput.title = dayCap <= 0 ? `Chủ nhật — còn ${remainingOt}h OT` : `Còn ${remainingOt}h OT`
+      otInput.title = dayCap <= 0
+        ? `Chủ nhật — còn ${remainingOt}h OT`
+        : (saturdayOt ? `Thứ 7 — còn ${remainingOt}h OT, không bắt đủ HC` : `Còn ${remainingOt}h OT`)
       const curOt = parseFloat(otInput.value) || 0
       if (curOt > remainingOt) otInput.value = remainingOt
     }
@@ -9889,7 +10028,9 @@ async function _updateTsDateHint(selectedDate, excludeTimesheetId = null, overri
       } else {
         otEl.max = remainingOt
         otEl.disabled = !!formLocked
-        otEl.title = dayCap <= 0 ? `Chủ nhật — còn ${remainingOt}h OT` : `Còn ${remainingOt}h OT`
+        otEl.title = dayCap <= 0
+          ? `Chủ nhật — còn ${remainingOt}h OT`
+          : (saturdayOt ? `Thứ 7 — còn ${remainingOt}h OT, không bắt đủ HC` : `Còn ${remainingOt}h OT`)
       }
     })
     if (typeof _tsUpdateMultiTotals === 'function') _tsUpdateMultiTotals()
@@ -10179,6 +10320,7 @@ $('tsDate').addEventListener('change', () => {
     _applySundayDefaultsToSingleForm($('tsDate').value)
     _updateTsDateHint($('tsDate').value, null, uid)
     _rebuildTsWeekCopyCheckboxes($('tsDate').value)
+    _applyTsWeekAssignment($('tsDate').value, uid)
   }
 })
 
@@ -10319,7 +10461,7 @@ $('tsForm').addEventListener('submit', async (e) => {
       }
       if (submitOt > 0.001) {
         const hcAfter = usedReg + submitReg
-        if (dayCap > 0 && hcAfter < dayCap - 0.001) {
+        if (!_isSaturdayIso(workDate) && dayCap > 0 && hcAfter < dayCap - 0.001) {
           const need = Math.max(0, +(dayCap - hcAfter).toFixed(2))
           toast(`⛔ Chỉ được khai OT khi đã đủ ${dayCap}h hành chính trong ngày. Hiện còn thiếu ${need}h HC.`, 'error')
           return

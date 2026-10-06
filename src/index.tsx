@@ -4080,6 +4080,19 @@ function isSundayIsoDate(isoDate: string): boolean {
   return weekdayOfIsoDate(isoDate) === 0
 }
 
+/** Tuần T2–CN chứa ngày ISO. */
+function weekBoundsOfIsoDate(isoDate: string): { start: string; end: string } | null {
+  const dow = weekdayOfIsoDate(isoDate)
+  if (dow < 0) return null
+  const [y, m, d] = isoDate.split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0))
+  const mondayOffset = dow === 0 ? -6 : 1 - dow
+  dt.setUTCDate(dt.getUTCDate() + mondayOffset)
+  const start = dt.toISOString().slice(0, 10)
+  dt.setUTCDate(dt.getUTCDate() + 6)
+  return { start, end: dt.toISOString().slice(0, 10) }
+}
+
 type TimesheetDayBudget = {
   dayCap: number
   usedReg: number
@@ -4093,6 +4106,8 @@ type TimesheetDayBudget = {
   leaveHint?: string
   /** Chủ nhật: không tính HC, chỉ OT */
   isSunday?: boolean
+  /** Thứ 7: tuần làm hoặc tuần nghỉ — OT không bắt buộc đủ HC */
+  isSaturday?: boolean
 }
 
 /** Ngân sách giờ HC trong ngày: nghỉ cả ngày → chặn; nửa ngày → cap 4h; CN → 0h HC; còn lại 8h − đã khai. */
@@ -4107,7 +4122,9 @@ async function getTimesheetDayBudget(
   } = {}
 ): Promise<TimesheetDayBudget> {
   const isSunday = isSundayIsoDate(workDate)
+  const isSaturday = weekdayOfIsoDate(workDate) === 6
   // Chủ nhật: không có giờ hành chính — chỉ OT (dayCap=0 → ot_requires_hc không chặn)
+  // Thứ 7: vẫn có trần HC 8h, nhưng OT không bắt buộc đủ HC (tuần làm / tuần nghỉ)
   let dayCap = isSunday ? 0 : 8
   let blocked = false
   let blockReason: string | undefined
@@ -4203,7 +4220,7 @@ async function getTimesheetDayBudget(
 
   return {
     dayCap, usedReg, remaining, usedOt, remainingOt, hcFilled,
-    blocked, blockReason, leaveHint, isSunday,
+    blocked, blockReason, leaveHint, isSunday, isSaturday,
   }
 }
 
@@ -4238,14 +4255,14 @@ function validateTimesheetHoursAgainstBudget(
     }
   }
   if (totalOT > 0.001) {
-    // OT chỉ sau khi đủ HC — trừ Chủ nhật (dayCap=0): được khai OT ngay
+    // OT chỉ sau khi đủ HC — trừ Chủ nhật (dayCap=0) và Thứ 7 (tuần làm / tuần nghỉ)
     // Dùng ?? không dùng || — dayCap=0 phải giữ 0 (tránh || 8)
     const dayCap = Number(budget.dayCap ?? 8)
     const used = Number(budget.usedReg) || 0
     const reg = Number(totalReg) || 0
     const ot = Number(totalOT) || 0
     const hcAfter = used + reg
-    if (dayCap > 0 && hcAfter < dayCap - 0.001) {
+    if (!budget.isSaturday && dayCap > 0 && hcAfter < dayCap - 0.001) {
       const need = Math.max(0, +(dayCap - hcAfter).toFixed(2))
       return {
         error: `Chỉ được khai OT khi đã đủ ${dayCap}h hành chính trong ngày. Hiện còn thiếu ${need}h HC (đã có ${used}h + đang nhập ${reg}h HC).`,
@@ -4276,6 +4293,94 @@ function validateTimesheetHoursAgainstBudget(
   return null
 }
 
+/** Việc được giao trong tuần: kế hoạch tuần trước, không có thì task assigned_to có hạn trong tuần. */
+async function findWeekAssignment(
+  db: D1Database,
+  userId: number,
+  workDate: string
+): Promise<{ project_id: number; category_id: number | null; task_id: number | null; source: string } | null> {
+  const bounds = weekBoundsOfIsoDate(workDate)
+  if (!bounds) return null
+
+  const planRow = await db.prepare(`
+    SELECT wp.project_id AS project_id,
+           wpi.linked_task_id AS task_id,
+           wpi.category AS category_name,
+           t.category_id AS task_category_id,
+           t.project_id AS task_project_id
+    FROM weekly_plan_items wpi
+    JOIN weekly_plans wp ON wp.id = wpi.plan_id
+    LEFT JOIN tasks t ON t.id = wpi.linked_task_id
+    WHERE wp.week_start <= ? AND wp.week_end >= ?
+      AND EXISTS (
+        SELECT 1 FROM json_each(CASE WHEN json_valid(wpi.assignee_ids) THEN wpi.assignee_ids ELSE '[]' END) je
+        WHERE CAST(je.value AS INTEGER) = ?
+      )
+    ORDER BY
+      CASE WHEN wpi.target_date = ? THEN 0 WHEN wpi.target_date IS NULL OR wpi.target_date = '' THEN 1 ELSE 2 END,
+      wpi.sort_order,
+      wpi.id
+    LIMIT 1
+  `).bind(bounds.end, bounds.start, userId, workDate).first() as any
+
+  if (planRow?.project_id) {
+    const projectId = Number(planRow.task_project_id) || Number(planRow.project_id)
+    let categoryId = planRow.task_category_id != null ? Number(planRow.task_category_id) : null
+    const taskId = planRow.task_id != null ? Number(planRow.task_id) : null
+    if (categoryId == null && planRow.category_name) {
+      const cat = await db.prepare(`
+        SELECT id FROM categories
+        WHERE project_id = ? AND (name = ? OR code = ?)
+        LIMIT 1
+      `).bind(projectId, planRow.category_name, planRow.category_name).first() as { id?: number } | null
+      if (cat?.id) categoryId = Number(cat.id)
+    }
+    return { project_id: projectId, category_id: categoryId, task_id: taskId, source: 'weekly_plan' }
+  }
+
+  const taskRow = await db.prepare(`
+    SELECT id AS task_id, project_id, category_id
+    FROM tasks
+    WHERE assigned_to = ?
+      AND status NOT IN ('cancelled', 'completed')
+      AND (
+        (due_date IS NOT NULL AND due_date >= ? AND due_date <= ?)
+        OR (start_date IS NOT NULL AND start_date >= ? AND start_date <= ?)
+      )
+    ORDER BY
+      CASE WHEN due_date = ? THEN 0 WHEN start_date = ? THEN 1 ELSE 2 END,
+      due_date ASC,
+      id ASC
+    LIMIT 1
+  `).bind(userId, bounds.start, bounds.end, bounds.start, bounds.end, workDate, workDate).first() as any
+
+  if (!taskRow?.project_id) return null
+  return {
+    project_id: Number(taskRow.project_id),
+    category_id: taskRow.category_id != null ? Number(taskRow.category_id) : null,
+    task_id: Number(taskRow.task_id),
+    source: 'task',
+  }
+}
+
+/** GET /api/timesheets/week-assignment?work_date=&user_id= — dự án/hạng mục/task được giao trong tuần */
+app.get('/api/timesheets/week-assignment', authMiddleware, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const workDate = String(c.req.query('work_date') || '').trim()
+    if (!workDate) return c.json({ error: 'work_date required' }, 400)
+    const effRole = await getEffectiveRole(db, user)
+    const canOther = effRole === 'system_admin' || effRole === 'project_admin'
+    const qUser = parseInt(c.req.query('user_id') || '', 10)
+    const targetUserId = (canOther && Number.isFinite(qUser)) ? qUser : user.id
+    const assignment = await findWeekAssignment(db, targetUserId, workDate)
+    return c.json(assignment || { project_id: null, category_id: null, task_id: null, source: null })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 /** GET /api/timesheets/day-budget?work_date=&user_id= — gợi ý UI còn bao nhiêu giờ HC / OT */
 app.get('/api/timesheets/day-budget', authMiddleware, async (c) => {
   try {
@@ -4298,7 +4403,7 @@ app.get('/api/timesheets/day-budget', authMiddleware, async (c) => {
     return c.json({
       ...budget,
       max_ot: TS_MAX_OT_PER_DAY,
-      ot_allowed: !budget.blocked && budget.hcFilled,
+      ot_allowed: !budget.blocked && (budget.dayCap <= 0 || !!budget.isSaturday || budget.hcFilled),
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
