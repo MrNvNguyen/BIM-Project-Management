@@ -719,6 +719,83 @@ function getStatusBadge(status) {
   return `<span class="badge badge-${badgeClass}">${icon}${labels[status] || status}</span>`
 }
 
+const TASK_ROW_STATUSES = [
+  { value: 'todo', label: 'Chờ làm' },
+  { value: 'in_progress', label: 'Đang làm' },
+  { value: 'review', label: 'Đang duyệt' },
+  { value: 'completed', label: 'Hoàn thành' },
+]
+
+function taskStatusControl(task, canEdit) {
+  if (!canEdit) return getStatusBadge(task.status)
+  return `<button type="button" class="task-status-btn" title="Đổi trạng thái" onclick="openTaskStatusMenu(event, ${Number(task.id)})">${getStatusBadge(task.status)}</button>`
+}
+
+let _taskStatusMenu = null
+
+function closeTaskStatusMenu() {
+  if (_taskStatusMenu) {
+    _taskStatusMenu.remove()
+    _taskStatusMenu = null
+  }
+  document.removeEventListener('click', _closeTaskStatusMenuOutside, true)
+}
+
+function _closeTaskStatusMenuOutside(e) {
+  if (_taskStatusMenu && !_taskStatusMenu.contains(e.target)) closeTaskStatusMenu()
+}
+
+function openTaskStatusMenu(event, taskId) {
+  event.stopPropagation()
+  event.preventDefault()
+  closeTaskStatusMenu()
+  const task = (_taskAllData || []).find(t => t.id === taskId) || allTasks.find(t => t.id === taskId)
+  if (!task) return
+  const current = task.status === 'done' ? 'completed' : task.status
+  const menu = document.createElement('div')
+  menu.className = 'task-status-menu'
+  menu.innerHTML = TASK_ROW_STATUSES.map(opt =>
+    `<button type="button" class="task-status-option${opt.value === current ? ' is-current' : ''}" data-status="${opt.value}">${getStatusBadge(opt.value)}</button>`
+  ).join('')
+  document.body.appendChild(menu)
+  const rect = event.currentTarget.getBoundingClientRect()
+  const menuHeight = 8 + TASK_ROW_STATUSES.length * 32
+  const top = rect.bottom + menuHeight > window.innerHeight ? Math.max(8, rect.top - menuHeight) : rect.bottom + 4
+  menu.style.top = top + 'px'
+  menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 168)) + 'px'
+  _taskStatusMenu = menu
+  menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-status]')
+    if (!btn) return
+    e.stopPropagation()
+    const next = btn.dataset.status
+    closeTaskStatusMenu()
+    if (next && next !== current) setTaskStatusInline(taskId, next)
+  })
+  setTimeout(() => document.addEventListener('click', _closeTaskStatusMenuOutside, true), 0)
+}
+
+async function setTaskStatusInline(taskId, status) {
+  const copies = [_taskAllData, allTasks].filter(Boolean)
+  const prev = (copies[0] || []).find(t => t.id === taskId)?.status
+  copies.forEach(list => {
+    const row = list.find(t => t.id === taskId)
+    if (row) row.status = status
+  })
+  renderTaskRows()
+  try {
+    await api(`/tasks/${taskId}`, { method: 'put', data: { status } })
+    toast('Đã đổi trạng thái')
+  } catch (e) {
+    copies.forEach(list => {
+      const row = list.find(t => t.id === taskId)
+      if (row && prev !== undefined) row.status = prev
+    })
+    renderTaskRows()
+    toast('Lỗi đổi trạng thái: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
 function getPriorityBadge(p) {
   const labels = { low: 'Thấp', medium: 'TB', high: 'Cao', urgent: 'Khẩn' }
   return `<span class="badge badge-${p}">${labels[p] || p}</span>`
@@ -940,8 +1017,16 @@ function navigate(page, opts = {}) {
   }
   else if (page === 'dashboard') loadDashboard()
   else if (page === 'project-dashboard') {
-    if (typeof initProjectDashboardFilters === 'function') initProjectDashboardFilters()
-    if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
+    if (typeof setProjectDashboardTab === 'function' && currentUser?.role === 'system_admin') {
+      const statusBtn = document.getElementById('pdTabStatus')
+      if (statusBtn) statusBtn.classList.remove('hidden')
+    }
+    if (window._pdState?.tab === 'status' && currentUser?.role === 'system_admin') {
+      if (typeof setProjectDashboardTab === 'function') setProjectDashboardTab('status')
+    } else {
+      if (typeof initProjectDashboardFilters === 'function') initProjectDashboardFilters()
+      if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
+    }
   }
   else if (page === 'projects') loadProjects()
   else if (page === 'tasks') loadTasks()
@@ -4909,7 +4994,7 @@ function renderTaskRows() {
           <span class="text-xs text-gray-500">${t.progress||0}%</span>
         </div>
       </td>
-      <td class="py-2 pr-3">${getStatusBadge(t.status)}</td>
+      <td class="py-2 pr-3">${taskStatusControl(t, canEditThisTask)}</td>
       <td class="py-2">
         <div class="flex gap-1">
           ${canLogTimesheetForTask(t) ? `<button type="button" onclick="openTimesheetForTask(${t.id})" class="btn-secondary text-xs px-2 py-1" title="Khai timesheet cho ${escHtml(t.assigned_to_name || 'người phụ trách')}"><i class="fas fa-clock"></i></button>` : ''}
@@ -4950,7 +5035,7 @@ function renderTasksMobileCards(tasks) {
       <div class="mlc-meta">${t.project_code || '—'} · ${t.assigned_to_name || 'Chưa giao'} · Hạn ${fmtDate(t.due_date)}</div>
       <div class="mlc-row">
         ${getPriorityBadge(t.priority)}
-        ${getStatusBadge(t.status)}
+        ${taskStatusControl(t, canEditThisTask)}
         <span class="text-xs text-gray-500">${t.progress || 0}%</span>
         ${overdue ? '<span class="badge badge-overdue text-xs">Trễ hạn</span>' : ''}
       </div>
@@ -14621,15 +14706,7 @@ async function loadProfile() {
       emailCard.classList.add('hidden')
     }
   }
-  // Show weekly report card only for system_admin
-  const weeklyCard = $('weeklyReportCard')
-  if (weeklyCard) {
-    if (user?.role === 'system_admin') {
-      weeklyCard.classList.remove('hidden')
-    } else {
-      weeklyCard.classList.add('hidden')
-    }
-  }
+  // Báo cáo tuần nằm ở Dashboard dự án → Tình trạng thực hiện
 
   // Render browser push notification toggle
   renderPushButton()
@@ -15162,9 +15239,61 @@ async function previewOverdueTasks() {
   }
 }
 
+async function loadZaloOverdueConfig() {
+  const status = $('zaloOverdueStatus')
+  try {
+    const data = await api('/admin/zalo-overdue')
+    const link = $('zaloOverdueGroupLink')
+    if (link && data.group_url) {
+      link.href = data.group_url
+      link.textContent = String(data.group_url).replace(/^https?:\/\//, '')
+    }
+    const idInput = $('zaloGroupChatId')
+    if (idInput && document.activeElement !== idInput) idInput.value = data.chat_id || ''
+    if (status) {
+      status.textContent = data.token_configured
+        ? (data.chat_id ? 'Bot và Chat ID đã lưu. Thứ 6 sẽ gửi vào nhóm khi có task quá hạn.' : 'Đã có Bot Token. Mời bot vào nhóm, gửi một tin, rồi bấm Lấy Chat ID.')
+        : 'Chưa có Bot Token.'
+    }
+  } catch (e) {
+    if (status) status.textContent = e.response?.data?.error || e.message
+  }
+}
+
+async function saveZaloOverdueConfig() {
+  const token = $('zaloBotToken')?.value?.trim() || ''
+  const chatId = $('zaloGroupChatId')?.value?.trim() || ''
+  const data = { zalo_group_chat_id: chatId }
+  if (token && !token.includes('****')) data.zalo_bot_token = token
+  try {
+    await api('/system-config', { method: 'PUT', data })
+    if ($('zaloBotToken')) $('zaloBotToken').value = ''
+    toast('Đã lưu cấu hình Zalo', 'success')
+    await loadZaloOverdueConfig()
+  } catch (e) {
+    toast('Lỗi lưu Zalo: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
+async function captureZaloGroupChat() {
+  const status = $('zaloOverdueStatus')
+  if (status) status.textContent = 'Đang hỏi bot...'
+  try {
+    const res = await api('/admin/zalo-overdue/capture', { method: 'POST', data: {} })
+    const idInput = $('zaloGroupChatId')
+    if (idInput) idInput.value = res.chat_id || ''
+    if (status) status.textContent = 'Đã lấy Chat ID nhóm.'
+    toast('Đã lấy Chat ID nhóm Zalo', 'success')
+  } catch (e) {
+    const msg = e.response?.data?.error || e.message
+    if (status) status.textContent = msg
+    toast(msg, 'error', 5000)
+  }
+}
+
 async function sendOverdueReminders() {
   const resultEl = $('overdueReminderResult')
-  if (!confirm('Gửi email nhắc ⚠️ quá hạn đến tất cả nhân sự phụ trách task chưa hoàn thành?')) return
+  if (!confirm('Gửi email nhắc quá hạn đến nhân sự đang trễ task, leader dự án, System Admin, Project Admin, và nhóm Zalo?')) return
   if (resultEl) resultEl.textContent = 'Đang gửi...'
   try {
     const res = await api('/admin/send-overdue-reminders', { method: 'POST' })
@@ -15172,7 +15301,8 @@ async function sendOverdueReminders() {
       if (res.sent === 0) {
         resultEl.textContent = `✅ ${res.message || 'Không có task quá hạn nào'}`
       } else {
-        resultEl.textContent = `✅ Đã gửi ${res.sent}/${res.total_overdue} email thành công`
+        const zaloNote = res.zalo?.sent ? ', đã gửi nhóm Zalo' : (res.zalo?.error || res.zalo?.skipped ? `. Zalo: ${res.zalo.error || res.zalo.skipped}` : '')
+        resultEl.textContent = `✅ Đã gửi ${res.sent} mail cho người phụ trách` + (res.leader_sent ? `, ${res.leader_sent} mail cho leader` : '') + zaloNote
       }
     }
     toast(`✅ Đã gửi ${res.sent} email nhắc deadline`, 'success', 4000)
@@ -15196,7 +15326,7 @@ async function loadWeeklyReportConfig() {
     const daySelect = $('weeklyReportDay')
     if (daySelect) daySelect.value = cfg.day ?? '5'
     const hourSelect = $('weeklyReportHour')
-    if (hourSelect) hourSelect.value = cfg.hour ?? '8'
+    if (hourSelect) hourSelect.value = cfg.hour ?? '9'
     // Render preview stats
     renderWeeklyReportPreview(data)
   } catch(e) {
@@ -15261,7 +15391,7 @@ function renderWeeklyReportPreview(data) {
 async function saveWeeklyReportConfig() {
   const enabled = $('weeklyReportEnabled')?.checked ? '1' : '0'
   const day     = $('weeklyReportDay')?.value  || '5'
-  const hour    = $('weeklyReportHour')?.value || '8'
+  const hour    = $('weeklyReportHour')?.value || '9'
   try {
     await api('/system-config', { method: 'PUT', data: {
       weekly_report_enabled: enabled,
@@ -15277,13 +15407,13 @@ async function saveWeeklyReportConfig() {
 async function sendWeeklyReportNow() {
   const btn = $('btnSendWeeklyReport')
   const resultEl = $('weeklyReportResult')
-  if (!confirm('Gửi ngay báo cáo task tuần đến tất cả System Admin?')) return
+  if (!confirm('Gửi ngay báo cáo task tuần đến leader dự án, System Admin và Project Admin?')) return
   if (btn) btn.disabled = true
   if (resultEl) resultEl.textContent = 'Đang gửi...'
   try {
     const res = await api('/admin/weekly-task-report/send?force=1', { method: 'POST' })
     const msg = res.sent > 0
-      ? `✅ Đã gửi báo cáo tuần đến ${res.sent} admin (${res.week})`
+      ? `✅ Đã gửi báo cáo tuần đến ${res.sent} người (${res.week})`
       : `ℹ️ ${res.message || 'Đã xử lý'}`
     if (resultEl) resultEl.textContent = msg
     toast(msg, res.sent > 0 ? 'success' : 'info', 5000)
@@ -15300,6 +15430,7 @@ const EMAIL_EVENT_LABELS = {
   task_assigned:        '📌 Giao task',
   task_status_updated:  '🔄 Cập nhật task',
   task_overdue:         '⚠️ Quá hạn',
+  overdue_leader_digest:'⚠️ Quá hạn (leader)',
   weekly_task_report:   '📊 Báo cáo tuần',
   project_added:        '🏗️ Thêm dự án',
   project_updated:      '📝 Cập nhật dự án',

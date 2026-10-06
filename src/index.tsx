@@ -93,6 +93,9 @@ type Bindings = {
   CF_EMAIL_API_TOKEN?: string
   /** Optional. When set, the assistant may call a model once per question. */
   AI_API_KEY?: string
+  /** Zalo Bot token. UI lưu trong system_config; biến này là dự phòng. */
+  ZALO_BOT_TOKEN?: string
+  ZALO_GROUP_CHAT_ID?: string
 }
 
 // ===================================================
@@ -682,6 +685,36 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
       return {
         subject: `🎂 Chúc mừng sinh nhật ${data.recipientName}! — OneCad BIM`,
         html: emailBase('🎂 Chúc Mừng Sinh Nhật!', body)
+      }
+    }
+
+    case 'overdue_leader_digest': {
+      const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      const list = (data.tasks || []) as any[]
+      const rows = list.map((t) => `
+        <tr>
+          <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${esc(t.title)}</td>
+          <td style="padding:6px 8px;font-size:13px;color:#4b5563;">${esc(t.projectName)}</td>
+          <td style="padding:6px 8px;font-size:13px;color:#4b5563;">${esc(t.assigneeName)}</td>
+          <td style="padding:6px 8px;font-size:13px;color:#dc2626;font-weight:700;">${esc(t.deadline)} (+${t.daysOverdue || 0} ngày)</td>
+        </tr>`).join('')
+      const more = data.hiddenCount > 0 ? `<p style="font-size:12px;color:#6b7280;">Và ${data.hiddenCount} task quá hạn khác.</p>` : ''
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;">Xin chào <strong>${esc(data.recipientName)}</strong>,</p>
+        <p style="margin:0 0 12px 0;color:#6b7280;font-size:14px;">Các task quá hạn trong phạm vi <strong>${esc(data.scopeLabel || 'của bạn')}</strong>:</p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr style="background:#fef2f2;">
+            <th style="padding:6px 8px;text-align:left;font-size:12px;">Task</th>
+            <th style="padding:6px 8px;text-align:left;font-size:12px;">Dự án</th>
+            <th style="padding:6px 8px;text-align:left;font-size:12px;">Phụ trách</th>
+            <th style="padding:6px 8px;text-align:left;font-size:12px;">Hạn</th>
+          </tr>
+          ${rows}
+        </table>
+        ${more}`
+      return {
+        subject: `[OneCad BIM] ⚠️ ${data.total || list.length} task quá hạn — ${data.scopeLabel || 'nhắc leader'}`,
+        html: emailBase('⚠️ Task quá hạn cần xử lý', body)
       }
     }
 
@@ -8649,7 +8682,7 @@ app.get('/api/system-config', authMiddleware, adminOnly, async (c) => {
     // Mask API key value for security
     const configs: Record<string, any> = {}
     for (const row of (rows.results as any[])) {
-      if ((row.key === 'resend_api_key' || row.key === 'cloudflare_email_api_token') && row.value) {
+      if ((row.key === 'resend_api_key' || row.key === 'cloudflare_email_api_token' || row.key === 'zalo_bot_token') && row.value) {
         const v = String(row.value)
         const masked = v.length > 12 ? v.slice(0, 6) + '****' + v.slice(-4) : '****'
         configs[row.key] = { value: masked, description: row.description, updated_at: row.updated_at, configured: true }
@@ -8676,12 +8709,13 @@ app.put('/api/system-config', authMiddleware, adminOnly, async (c) => {
       'resend_daily_limit', 'cloudflare_email_enabled',
       'cloudflare_account_id', 'cloudflare_email_api_token',
       'weekly_report_enabled', 'weekly_report_day', 'weekly_report_hour',
+      'zalo_bot_token', 'zalo_group_chat_id',
     ]
     
     for (const [key, value] of Object.entries(data)) {
       if (!allowedKeys.includes(key)) continue
-      if ((key === 'resend_api_key' || key === 'cloudflare_email_api_token') && String(value || '').includes('****')) continue
-      const stored = (key === 'resend_api_key' || key === 'cloudflare_email_api_token') ? String(value || '').trim() : value
+      if ((key === 'resend_api_key' || key === 'cloudflare_email_api_token' || key === 'zalo_bot_token') && String(value || '').includes('****')) continue
+      const stored = (key === 'resend_api_key' || key === 'cloudflare_email_api_token' || key === 'zalo_bot_token') ? String(value || '').trim() : value
       await db.prepare(
         'INSERT OR REPLACE INTO system_config (key, value, updated_by, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)'
       ).bind(key, stored, user.id).run()
@@ -9736,20 +9770,152 @@ app.post('/api/admin/dedup-tasks', authMiddleware, adminOnly, async (c) => {
   }
 })
 
+function daysOverdueOf(dueDate: string) {
+  const due = new Date(dueDate + 'T00:00:00Z')
+  const vn = new Date(Date.now() + 7 * 3600 * 1000)
+  const today = Date.UTC(vn.getUTCFullYear(), vn.getUTCMonth(), vn.getUTCDate())
+  return Math.max(0, Math.floor((today - due.getTime()) / 86400000))
+}
+
+/** Mail tổng hợp quá hạn cho leader dự án và System Admin / Project Admin. */
+async function notifyOverdueLeaders(env: Bindings, db: D1Database, tasks: any[]) {
+  if (!tasks.length) return 0
+  const leaders = await db.prepare(`
+    SELECT DISTINCT u.id, u.full_name, u.email, u.role
+    FROM users u
+    WHERE u.is_active = 1 AND u.email IS NOT NULL AND TRIM(u.email) != ''
+      AND (
+        u.role IN ('system_admin', 'project_admin')
+        OR u.id IN (SELECT leader_id FROM projects WHERE leader_id IS NOT NULL)
+        OR u.id IN (SELECT user_id FROM project_members WHERE role IN ('project_leader', 'leader'))
+      )
+  `).all()
+  const scopeRows = await db.prepare(`
+    SELECT leader_id AS user_id, id AS project_id FROM projects WHERE leader_id IS NOT NULL
+    UNION
+    SELECT user_id, project_id FROM project_members WHERE role IN ('project_leader', 'leader')
+  `).all()
+  const scope = new Map<number, Set<number>>()
+  for (const row of scopeRows.results as any[]) {
+    const uid = Number(row.user_id)
+    if (!scope.has(uid)) scope.set(uid, new Set())
+    scope.get(uid)!.add(Number(row.project_id))
+  }
+  let sent = 0
+  for (const leader of leaders.results as any[]) {
+    const appWide = leader.role === 'system_admin' || leader.role === 'project_admin'
+    const mine = scope.get(Number(leader.id))
+    const scoped = appWide ? tasks : tasks.filter(t => mine?.has(Number(t.project_id)))
+    if (!scoped.length) continue
+    const shown = scoped.slice(0, 30).map(t => ({
+      title: t.title,
+      projectName: `${t.project_code || ''} – ${t.project_name || ''}`.trim(),
+      assigneeName: t.assignee_name,
+      deadline: t.due_date,
+      daysOverdue: daysOverdueOf(t.due_date),
+    }))
+    try {
+      await sendEmail(env, {
+        to: leader.email,
+        toName: leader.full_name,
+        eventType: 'overdue_leader_digest',
+        data: {
+          recipientName: leader.full_name,
+          scopeLabel: appWide ? 'toàn công ty' : 'dự án bạn phụ trách',
+          tasks: shown,
+          total: scoped.length,
+          hiddenCount: Math.max(0, scoped.length - shown.length),
+        },
+        db,
+        userId: leader.id,
+        relatedType: 'system',
+        relatedId: 0,
+      })
+      sent++
+    } catch (_) { /* một leader lỗi không chặn các mail còn lại */ }
+  }
+  return sent
+}
+
+const ZALO_OVERDUE_GROUP_URL = 'https://zalo.me/g/nquvtj706'
+
+async function readZaloOverdueConfig(env: Bindings, db: D1Database) {
+  const rows = await db.prepare(
+    `SELECT key, value FROM system_config WHERE key IN ('zalo_bot_token','zalo_group_chat_id')`
+  ).all()
+  const map: Record<string, string> = {}
+  for (const row of rows.results as any[]) map[row.key] = String(row.value ?? '').trim()
+  return {
+    token: map.zalo_bot_token || String(env.ZALO_BOT_TOKEN || '').trim(),
+    chatId: map.zalo_group_chat_id || String(env.ZALO_GROUP_CHAT_ID || '').trim(),
+    groupUrl: ZALO_OVERDUE_GROUP_URL,
+  }
+}
+
+async function zaloBotCall(token: string, method: string, body?: Record<string, unknown>) {
+  const res = await fetch(`https://bot-api.zaloplatforms.com/bot${token}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  })
+  const json = await res.json().catch(() => ({})) as any
+  return json
+}
+
+function findZaloGroupChatId(node: any): string | null {
+  if (!node || typeof node !== 'object') return null
+  const chat = node.chat
+  if (chat && String(chat.chat_type || chat.type || '') === 'GROUP' && chat.id) return String(chat.id)
+  const list = Array.isArray(node) ? node : Object.values(node)
+  for (const value of list) {
+    if (value && typeof value === 'object') {
+      const found = findZaloGroupChatId(value)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+function overdueZaloText(tasks: any[]) {
+  const lines = tasks.slice(0, 25).map(t => {
+    const days = daysOverdueOf(String(t.due_date || ''))
+    return `• ${t.project_code || ''} — ${t.title} — ${t.assignee_name || 'chưa giao'} — hạn ${t.due_date} (+${days} ngày)`
+  })
+  let text = `⚠️ Task quá hạn (${tasks.length})\n` + lines.join('\n')
+  if (tasks.length > 25) text += `\n… và ${tasks.length - 25} task khác`
+  if (text.length > 2000) text = text.slice(0, 1990) + '…'
+  return text
+}
+
+/** Gửi tóm tắt task quá hạn vào nhóm Zalo. Không chặn mail nếu Zalo lỗi. */
+async function notifyOverdueZalo(env: Bindings, db: D1Database, tasks: any[]) {
+  if (!tasks.length) return { sent: false, skipped: 'Không có task quá hạn' }
+  const cfg = await readZaloOverdueConfig(env, db)
+  if (!cfg.token) return { sent: false, skipped: 'Chưa có Bot Token Zalo' }
+  if (!cfg.chatId) return { sent: false, skipped: 'Chưa có Chat ID nhóm. Mời bot vào nhóm rồi bấm Lấy Chat ID.' }
+  try {
+    const json = await zaloBotCall(cfg.token, 'sendMessage', { chat_id: cfg.chatId, text: overdueZaloText(tasks) })
+    if (json?.ok) return { sent: true }
+    const reason = String(json?.description || json?.message || 'Zalo từ chối tin nhắn').slice(0, 180)
+    return { sent: false, error: reason }
+  } catch (e: any) {
+    return { sent: false, error: String(e?.message || 'Không gọi được Zalo').slice(0, 180) }
+  }
+}
+
 // ===================================================
 // SEND OVERDUE REMINDERS — gửi mail nhắc deadline cho đúng người phụ trách
 // POST /api/admin/send-overdue-reminders
 // Gửi mail task_overdue cho assigned_to của mỗi task quá hạn chưa hoàn thành
 // Có thể gọi từ cron job bên ngoài (VD: Cloudflare CRON, GitHub Actions...)
 // ===================================================
-app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (c) => {
+async function deliverOverdueReminders(env: Bindings, db: D1Database) {
   try {
-    const db = c.env.DB
 
     // Lấy tất cả task quá hạn, chưa hoàn thành, có assigned_to
     const overdueRows = await db.prepare(`
       SELECT
-        t.id, t.title, t.due_date, t.status, t.progress,
+        t.id, t.title, t.due_date, t.status, t.progress, t.project_id,
         t.assigned_to,
         u.email AS assignee_email, u.full_name AS assignee_name,
         p.name AS project_name, p.code AS project_code
@@ -9765,7 +9931,7 @@ app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (
 
     const tasks = overdueRows.results as any[]
     if (tasks.length === 0) {
-      return c.json({ success: true, sent: 0, message: 'Không có task quá hạn nào cần nhắc' })
+      return { status: 200, body: { success: true, sent: 0, leader_sent: 0, message: 'Không có task quá hạn nào cần nhắc' } }
     }
 
     let sent = 0
@@ -9779,7 +9945,7 @@ app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (
         today.setHours(0, 0, 0, 0)
         const daysOverdue = Math.floor((today.getTime() - dueDate.getTime()) / 86400000)
 
-        await sendEmail(c.env, {
+        await sendEmail(env, {
           to:        task.assignee_email,
           toName:    task.assignee_name,
           eventType: 'task_overdue',
@@ -9802,15 +9968,27 @@ app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (
       }
     }
 
-    return c.json({
-      success: true,
-      total_overdue: tasks.length,
-      sent,
-      errors: errors.length ? errors : undefined,
-    })
+    const leaderSent = await notifyOverdueLeaders(env, db, tasks)
+    const zalo = await notifyOverdueZalo(env, db, tasks)
+    return {
+      status: 200,
+      body: {
+        success: true,
+        total_overdue: tasks.length,
+        sent,
+        leader_sent: leaderSent,
+        zalo,
+        errors: errors.length ? errors : undefined,
+      }
+    }
   } catch (e: any) {
-    return c.json({ error: e.message }, 500)
+    return { status: 500, body: { error: e.message } }
   }
+}
+
+app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (c) => {
+  const result = await deliverOverdueReminders(c.env, c.env.DB)
+  return c.json(result.body, result.status as any)
 })
 
 // GET /api/admin/overdue-tasks-preview — xem trước danh sách sẽ nhận mail
@@ -9834,6 +10012,43 @@ app.get('/api/admin/overdue-tasks-preview', authMiddleware, adminOnly, async (c)
     return c.json(rows.results)
   } catch (e: any) {
     return c.json({ error: e.message }, 500) }
+})
+
+app.get('/api/admin/zalo-overdue', authMiddleware, adminOnly, async (c) => {
+  try {
+    const cfg = await readZaloOverdueConfig(c.env, c.env.DB)
+    return c.json({
+      group_url: cfg.groupUrl,
+      chat_id: cfg.chatId,
+      token_configured: !!cfg.token,
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const cfg = await readZaloOverdueConfig(c.env, db)
+    if (!cfg.token) return c.json({ error: 'Chưa có Bot Token Zalo' }, 400)
+    const json = await zaloBotCall(cfg.token, 'getUpdates', { timeout: 1 })
+    if (json?.ok === false) {
+      return c.json({ error: String(json.description || json.message || 'Không đọc được tin nhắn của bot').slice(0, 180) }, 400)
+    }
+    const chatId = findZaloGroupChatId(json)
+    if (!chatId) {
+      return c.json({ error: 'Bot chưa thấy tin nhắn nhóm. Mời bot vào https://zalo.me/g/nquvtj706 rồi gửi một tin bất kỳ.' }, 404)
+    }
+    await db.prepare(
+      `INSERT INTO system_config (key, value, description, updated_by, updated_at) VALUES ('zalo_group_chat_id', ?, 'Chat ID nhóm Zalo nhắc task quá hạn', ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`
+    ).bind(chatId, user.id).run()
+    return c.json({ chat_id: chatId, group_url: cfg.groupUrl })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
 })
 
 // ===================================================
@@ -9880,7 +10095,7 @@ app.get('/api/admin/weekly-task-report/preview', authMiddleware, adminOnly, asyn
       config: {
         enabled:      cfgMap['weekly_report_enabled'] ?? '1',
         day:          cfgMap['weekly_report_day']     ?? '5',
-        hour:         cfgMap['weekly_report_hour']    ?? '8',
+        hour:         cfgMap['weekly_report_hour']    ?? '9',
       },
       memberStats: stats,
       totalMembers: stats.length,
@@ -9895,33 +10110,33 @@ app.get('/api/admin/weekly-task-report/preview', authMiddleware, adminOnly, asyn
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
-// POST /api/admin/weekly-task-report/send
-// Gửi báo cáo task cho tất cả system_admin. Có thể gọi thủ công hoặc từ cron.
-app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async (c) => {
+async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean) {
   try {
-    const db = c.env.DB
-
-    // Kiểm tra enabled (bỏ qua nếu gọi với ?force=1)
-    const force = c.req.query('force') === '1'
     if (!force) {
       const enabledRow = await db.prepare(`SELECT value FROM system_config WHERE key='weekly_report_enabled'`).first() as any
       if (enabledRow?.value === '0') {
-        return c.json({ success: false, message: 'Báo cáo tuần đang bị tắt. Dùng ?force=1 để gửi thủ công.' })
+        return { status: 200, body: { success: false, message: 'Báo cáo tuần đang bị tắt. Dùng ?force=1 để gửi thủ công.' } }
       }
     }
 
-    // Lấy danh sách system_admin có email
-    const admins = await db.prepare(
-      `SELECT id, full_name, email FROM users WHERE role='system_admin' AND is_active=1 AND email IS NOT NULL AND email!=''`
-    ).all()
+    const admins = await db.prepare(`
+      SELECT DISTINCT u.id, u.full_name, u.email
+      FROM users u
+      WHERE u.is_active = 1 AND u.email IS NOT NULL AND TRIM(u.email) != ''
+        AND (
+          u.role IN ('system_admin', 'project_admin')
+          OR u.id IN (SELECT leader_id FROM projects WHERE leader_id IS NOT NULL)
+          OR u.id IN (SELECT user_id FROM project_members WHERE role IN ('project_leader', 'leader'))
+        )
+    `).all()
     if ((admins.results as any[]).length === 0) {
-      return c.json({ success: false, message: 'Không có System Admin nào có email để gửi báo cáo.' })
+      return { status: 200, body: { success: false, message: 'Không có leader hoặc admin nào có email để gửi báo cáo.' } }
     }
 
     // Lấy thống kê task
     const memberStats = await getWeeklyTaskStats(db)
     if (memberStats.length === 0) {
-      return c.json({ success: true, sent: 0, message: 'Không có dữ liệu task nào để báo cáo.' })
+      return { status: 200, body: { success: true, sent: 0, message: 'Không có dữ liệu task nào để báo cáo.' } }
     }
 
     // Tạo nhãn tuần
@@ -9943,7 +10158,7 @@ app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async 
 
     for (const admin of admins.results as any[]) {
       try {
-        await sendEmail(c.env, {
+        await sendEmail(env, {
           to:        admin.email,
           toName:    admin.full_name,
           eventType: 'weekly_task_report',
@@ -9965,15 +10180,23 @@ app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async 
       }
     }
 
-    return c.json({
-      success: true,
-      sent,
-      total_admins: (admins.results as any[]).length,
-      week: weekLabel,
-      total_members: memberStats.length,
-      errors: errors.length ? errors : undefined,
-    })
-  } catch (e: any) { return c.json({ error: e.message }, 500) }
+    return {
+      status: 200,
+      body: {
+        success: true,
+        sent,
+        total_admins: (admins.results as any[]).length,
+        week: weekLabel,
+        total_members: memberStats.length,
+        errors: errors.length ? errors : undefined,
+      }
+    }
+  } catch (e: any) { return { status: 500, body: { error: e.message } } }
+}
+
+app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async (c) => {
+  const result = await deliverWeeklyReport(c.env, c.env.DB, c.req.query('force') === '1')
+  return c.json(result.body, result.status as any)
 })
 
 // ===================================================
@@ -19137,4 +19360,31 @@ registerDesignRoutes(app, {
   getUserEmailInfo,
 })
 
-export default app
+/** Thứ 6 (theo cấu hình báo cáo tuần, giờ VN): nhắc người trễ và gửi báo cáo cho leader. */
+async function runFridayStatusMails(env: Bindings) {
+  const db = env.DB
+  const cfg = await db.prepare(
+    `SELECT key, value FROM system_config WHERE key IN ('weekly_report_enabled','weekly_report_day','weekly_report_hour','status_mail_last_sent')`
+  ).all()
+  const map: Record<string, string> = {}
+  for (const row of cfg.results as any[]) map[row.key] = String(row.value ?? '')
+  if (map.weekly_report_enabled === '0') return
+  const vn = new Date(Date.now() + 7 * 3600 * 1000)
+  const today = `${vn.getUTCFullYear()}-${String(vn.getUTCMonth() + 1).padStart(2, '0')}-${String(vn.getUTCDate()).padStart(2, '0')}`
+  if (String(vn.getUTCDay()) !== (map.weekly_report_day || '5')) return
+  if (String(vn.getUTCHours()) !== (map.weekly_report_hour || '9')) return
+  if (map.status_mail_last_sent === today) return
+  await db.prepare(
+    `INSERT INTO system_config (key, value, description) VALUES ('status_mail_last_sent', ?, 'Ngày đã tự gửi mail tình trạng thực hiện')
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+  ).bind(today).run()
+  await deliverOverdueReminders(env, db)
+  await deliverWeeklyReport(env, db, true)
+}
+
+export default {
+  fetch: (request: Request, env: Bindings, ctx: any) => app.fetch(request, env, ctx),
+  scheduled: (_event: any, env: Bindings, ctx: any) => {
+    ctx.waitUntil(runFridayStatusMails(env))
+  },
+}
