@@ -80,11 +80,24 @@ import {
   diffContactBookEntries,
   insertLegalAuditLogs,
 } from './legal-audit'
+import {
+  aggregateWeeklyMemberStats,
+  buildStatusMailScope,
+  cronSecretMatches,
+  daysOverdueOf,
+  projectsInStatusMailScope,
+  shouldSendFridayStatusMails,
+  STATUS_MAIL_RECIPIENTS_SQL,
+  STATUS_MAIL_SCOPE_SQL,
+  vnClock,
+} from './status-mail'
 
 // ---- Types ----
 type Bindings = {
   DB: D1Database
   JWT_SECRET: string
+  /** Khóa gọi POST /api/cron/friday-status-mails. Pages không chạy cron. */
+  CRON_SECRET?: string
   RESEND_API_KEY: string
   FILES?: R2Bucket
   ALLOW_SYSTEM_INIT?: string
@@ -754,7 +767,7 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
 
       const body = `
         <p style="margin:0 0 6px 0;color:#374151;font-size:15px;line-height:1.6;">Xin chào <strong>${data.recipientName}</strong>,</p>
-        <p style="margin:0 0 16px 0;color:#6b7280;font-size:14px;">Đây là báo cáo tổng hợp trạng thái task toàn bộ nhân sự <strong>${data.weekLabel || ''}</strong>.</p>
+        <p style="margin:0 0 16px 0;color:#6b7280;font-size:14px;">Đây là báo cáo tổng hợp trạng thái task <strong>${data.scopeLabel || 'toàn công ty'}</strong> trong <strong>${data.weekLabel || ''}</strong>.</p>
 
         <!-- Tổng quan -->
         <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
@@ -1358,6 +1371,15 @@ const adminOnly = async (c: any, next: any) => {
   const user = c.get('user') as any
   if (user?.role !== 'system_admin') {
     return c.json({ error: 'Access denied. System Admin only.' }, 403)
+  }
+  await next()
+}
+
+/** Xem tab Tình trạng thực hiện. Gửi mail và lưu khóa Zalo vẫn chỉ system_admin. */
+const statusDeskAccess = async (c: any, next: any) => {
+  const user = c.get('user') as any
+  if (!['system_admin', 'project_admin', 'project_leader'].includes(user?.role)) {
+    return c.json({ error: 'Access denied.' }, 403)
   }
   await next()
 }
@@ -3821,6 +3843,7 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
     const qp = c.req.query()
     const { project_id, month, year, status } = qp
     const user_id = qp.user_id || qp.member_id || ''
+    const discipline = String(qp.discipline || '').trim()
     const limit = Math.min(Math.max(parseInt(qp.limit || '2000', 10) || 2000, 1), 5000)
     const offset = Math.max(parseInt(qp.offset || '0', 10) || 0, 0)
 
@@ -3899,6 +3922,17 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       query += ` AND ts.work_date >= ? AND ts.work_date < ?`
       params.push(start, endY)
     }
+    if (discipline) {
+      query += ` AND (
+        EXISTS (SELECT 1 FROM tasks td WHERE td.id = ts.task_id AND td.discipline_code = ?)
+        OR EXISTS (
+          SELECT 1 FROM timesheet_tasks tt
+          JOIN tasks td2 ON td2.id = tt.task_id
+          WHERE tt.timesheet_id = ts.id AND td2.discipline_code = ?
+        )
+      )`
+      params.push(discipline, discipline)
+    }
 
     // COUNT trạng thái đầy đủ (không bị LIMIT cắt) — KPI / bulk-approve
     const countQuery = `
@@ -3968,6 +4002,17 @@ app.get('/api/timesheets', authMiddleware, async (c) => {
       const endY = monthDateRange(parseInt(year), 12).endExclusive
       sumQ += ` AND ts.work_date >= ? AND ts.work_date < ?`
       sumParams.push(start, endY)
+    }
+    if (discipline) {
+      sumQ += ` AND (
+        EXISTS (SELECT 1 FROM tasks td WHERE td.id = ts.task_id AND td.discipline_code = ?)
+        OR EXISTS (
+          SELECT 1 FROM timesheet_tasks tt
+          JOIN tasks td2 ON td2.id = tt.task_id
+          WHERE tt.timesheet_id = ts.id AND td2.discipline_code = ?
+        )
+      )`
+      sumParams.push(discipline, discipline)
     }
 
     const summary = sumParams.length
@@ -9770,42 +9815,16 @@ app.post('/api/admin/dedup-tasks', authMiddleware, adminOnly, async (c) => {
   }
 })
 
-function daysOverdueOf(dueDate: string) {
-  const due = new Date(dueDate + 'T00:00:00Z')
-  const vn = new Date(Date.now() + 7 * 3600 * 1000)
-  const today = Date.UTC(vn.getUTCFullYear(), vn.getUTCMonth(), vn.getUTCDate())
-  return Math.max(0, Math.floor((today - due.getTime()) / 86400000))
-}
-
-/** Mail tổng hợp quá hạn cho leader dự án và System Admin / Project Admin. */
+/** Mail tổng hợp quá hạn: system admin cả công ty; quản lý và trưởng dự án chỉ dự án mình. */
 async function notifyOverdueLeaders(env: Bindings, db: D1Database, tasks: any[]) {
   if (!tasks.length) return 0
-  const leaders = await db.prepare(`
-    SELECT DISTINCT u.id, u.full_name, u.email, u.role
-    FROM users u
-    WHERE u.is_active = 1 AND u.email IS NOT NULL AND TRIM(u.email) != ''
-      AND (
-        u.role IN ('system_admin', 'project_admin')
-        OR u.id IN (SELECT leader_id FROM projects WHERE leader_id IS NOT NULL)
-        OR u.id IN (SELECT user_id FROM project_members WHERE role IN ('project_leader', 'leader'))
-      )
-  `).all()
-  const scopeRows = await db.prepare(`
-    SELECT leader_id AS user_id, id AS project_id FROM projects WHERE leader_id IS NOT NULL
-    UNION
-    SELECT user_id, project_id FROM project_members WHERE role IN ('project_leader', 'leader')
-  `).all()
-  const scope = new Map<number, Set<number>>()
-  for (const row of scopeRows.results as any[]) {
-    const uid = Number(row.user_id)
-    if (!scope.has(uid)) scope.set(uid, new Set())
-    scope.get(uid)!.add(Number(row.project_id))
-  }
+  const leaders = await db.prepare(STATUS_MAIL_RECIPIENTS_SQL).all()
+  const scopeRows = await db.prepare(STATUS_MAIL_SCOPE_SQL).all()
+  const scope = buildStatusMailScope(scopeRows.results as any[])
   let sent = 0
   for (const leader of leaders.results as any[]) {
-    const appWide = leader.role === 'system_admin' || leader.role === 'project_admin'
-    const mine = scope.get(Number(leader.id))
-    const scoped = appWide ? tasks : tasks.filter(t => mine?.has(Number(t.project_id)))
+    const projectIds = projectsInStatusMailScope(Number(leader.id), String(leader.role || ''), scope)
+    const scoped = projectIds === null ? tasks : tasks.filter(t => projectIds.has(Number(t.project_id)))
     if (!scoped.length) continue
     const shown = scoped.slice(0, 30).map(t => ({
       title: t.title,
@@ -9821,7 +9840,7 @@ async function notifyOverdueLeaders(env: Bindings, db: D1Database, tasks: any[])
         eventType: 'overdue_leader_digest',
         data: {
           recipientName: leader.full_name,
-          scopeLabel: appWide ? 'toàn công ty' : 'dự án bạn phụ trách',
+          scopeLabel: projectIds === null ? 'toàn công ty' : 'dự án bạn phụ trách',
           tasks: shown,
           total: scoped.length,
           hiddenCount: Math.max(0, scoped.length - shown.length),
@@ -9913,6 +9932,7 @@ async function deliverOverdueReminders(env: Bindings, db: D1Database) {
   try {
 
     // Lấy tất cả task quá hạn, chưa hoàn thành, có assigned_to
+    const todayIso = vnClock().isoDate
     const overdueRows = await db.prepare(`
       SELECT
         t.id, t.title, t.due_date, t.status, t.progress, t.project_id,
@@ -9922,12 +9942,12 @@ async function deliverOverdueReminders(env: Bindings, db: D1Database) {
       FROM tasks t
       JOIN users u ON u.id = t.assigned_to AND u.is_active = 1
       JOIN projects p ON p.id = t.project_id
-      WHERE t.due_date < date('now')
+      WHERE t.due_date < ?
         AND t.status NOT IN ('completed', 'review', 'cancelled')
         AND t.assigned_to IS NOT NULL
         AND u.email IS NOT NULL AND u.email != ''
       ORDER BY t.due_date ASC
-    `).all()
+    `).bind(todayIso).all()
 
     const tasks = overdueRows.results as any[]
     if (tasks.length === 0) {
@@ -9939,11 +9959,7 @@ async function deliverOverdueReminders(env: Bindings, db: D1Database) {
 
     for (const task of tasks) {
       try {
-        // Tính số ngày quá hạn
-        const dueDate = new Date(task.due_date)
-        const today   = new Date()
-        today.setHours(0, 0, 0, 0)
-        const daysOverdue = Math.floor((today.getTime() - dueDate.getTime()) / 86400000)
+        const daysOverdue = daysOverdueOf(String(task.due_date || ''))
 
         await sendEmail(env, {
           to:        task.assignee_email,
@@ -9992,7 +10008,7 @@ app.post('/api/admin/send-overdue-reminders', authMiddleware, adminOnly, async (
 })
 
 // GET /api/admin/overdue-tasks-preview — xem trước danh sách sẽ nhận mail
-app.get('/api/admin/overdue-tasks-preview', authMiddleware, adminOnly, async (c) => {
+app.get('/api/admin/overdue-tasks-preview', authMiddleware, statusDeskAccess, async (c) => {
   try {
     const db = c.env.DB
     const rows = await db.prepare(`
@@ -10003,12 +10019,12 @@ app.get('/api/admin/overdue-tasks-preview', authMiddleware, adminOnly, async (c)
       FROM tasks t
       JOIN users u ON u.id = t.assigned_to AND u.is_active = 1
       JOIN projects p ON p.id = t.project_id
-      WHERE t.due_date < date('now')
+      WHERE t.due_date < ?
         AND t.status NOT IN ('completed', 'review', 'cancelled')
         AND t.assigned_to IS NOT NULL
         AND u.email IS NOT NULL AND u.email != ''
       ORDER BY t.due_date ASC
-    `).all()
+    `).bind(vnClock().isoDate).all()
     return c.json(rows.results)
   } catch (e: any) {
     return c.json({ error: e.message }, 500) }
@@ -10055,36 +10071,35 @@ app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c)
 // WEEKLY TASK REPORT — báo cáo task hàng tuần cho System Admin
 // ===================================================
 
-// Helper: lấy thống kê task cho toàn bộ nhân sự
-async function getWeeklyTaskStats(db: any) {
-  // Thống kê task của từng user (được giao task)
+/** Thống kê task theo người và dự án. Quá hạn so với hôm nay giờ VN. */
+async function getWeeklyTaskStatRows(db: any) {
   const rows = await db.prepare(`
     SELECT
       u.id,
       u.full_name AS name,
       u.email,
+      t.project_id,
       COUNT(DISTINCT t.id)                                                    AS total,
       COUNT(DISTINCT CASE WHEN t.status IN ('completed','review') THEN t.id END) AS done,
       COUNT(DISTINCT CASE WHEN t.status = 'in_progress'           THEN t.id END) AS inprogress,
       COUNT(DISTINCT CASE WHEN t.status IN ('todo','open')         THEN t.id END) AS todo,
       COUNT(DISTINCT CASE WHEN t.status NOT IN ('completed','review','cancelled')
                            AND t.due_date IS NOT NULL
-                           AND t.due_date < date('now')                       THEN t.id END) AS overdue
+                           AND t.due_date < ?                                THEN t.id END) AS overdue
     FROM users u
     JOIN tasks t ON t.assigned_to = u.id
     WHERE u.is_active = 1
       AND t.status != 'cancelled'
-    GROUP BY u.id, u.full_name, u.email
-    ORDER BY done DESC, total DESC
-  `).all()
+    GROUP BY u.id, u.full_name, u.email, t.project_id
+  `).bind(vnClock().isoDate).all()
   return (rows.results as any[])
 }
 
 // GET /api/admin/weekly-task-report/preview
-app.get('/api/admin/weekly-task-report/preview', authMiddleware, adminOnly, async (c) => {
+app.get('/api/admin/weekly-task-report/preview', authMiddleware, statusDeskAccess, async (c) => {
   try {
     const db = c.env.DB
-    const stats = await getWeeklyTaskStats(db)
+    const stats = aggregateWeeklyMemberStats(await getWeeklyTaskStatRows(db), null)
     const cfg = await db.prepare(
       `SELECT key, value FROM system_config WHERE key IN ('weekly_report_enabled','weekly_report_day','weekly_report_hour')`
     ).all()
@@ -10119,25 +10134,17 @@ async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean
       }
     }
 
-    const admins = await db.prepare(`
-      SELECT DISTINCT u.id, u.full_name, u.email
-      FROM users u
-      WHERE u.is_active = 1 AND u.email IS NOT NULL AND TRIM(u.email) != ''
-        AND (
-          u.role IN ('system_admin', 'project_admin')
-          OR u.id IN (SELECT leader_id FROM projects WHERE leader_id IS NOT NULL)
-          OR u.id IN (SELECT user_id FROM project_members WHERE role IN ('project_leader', 'leader'))
-        )
-    `).all()
+    const admins = await db.prepare(STATUS_MAIL_RECIPIENTS_SQL).all()
     if ((admins.results as any[]).length === 0) {
       return { status: 200, body: { success: false, message: 'Không có leader hoặc admin nào có email để gửi báo cáo.' } }
     }
 
-    // Lấy thống kê task
-    const memberStats = await getWeeklyTaskStats(db)
-    if (memberStats.length === 0) {
+    const statRows = await getWeeklyTaskStatRows(db)
+    if (statRows.length === 0) {
       return { status: 200, body: { success: true, sent: 0, message: 'Không có dữ liệu task nào để báo cáo.' } }
     }
+    const scope = buildStatusMailScope((await db.prepare(STATUS_MAIL_SCOPE_SQL).all()).results as any[])
+    const companyStats = aggregateWeeklyMemberStats(statRows, null)
 
     // Tạo nhãn tuần
     const now = new Date()
@@ -10157,6 +10164,9 @@ async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean
     const errors: string[] = []
 
     for (const admin of admins.results as any[]) {
+      const projectIds = projectsInStatusMailScope(Number(admin.id), String(admin.role || ''), scope)
+      const memberStats = projectIds === null ? companyStats : aggregateWeeklyMemberStats(statRows, projectIds)
+      if (!memberStats.length) continue
       try {
         await sendEmail(env, {
           to:        admin.email,
@@ -10164,6 +10174,7 @@ async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean
           eventType: 'weekly_task_report',
           data: {
             recipientName: admin.full_name,
+            scopeLabel: projectIds === null ? 'toàn công ty' : 'dự án bạn phụ trách',
             weekLabel,
             generatedAt,
             memberStats,
@@ -10187,7 +10198,7 @@ async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean
         sent,
         total_admins: (admins.results as any[]).length,
         week: weekLabel,
-        total_members: memberStats.length,
+        total_members: companyStats.length,
         errors: errors.length ? errors : undefined,
       }
     }
@@ -10197,6 +10208,16 @@ async function deliverWeeklyReport(env: Bindings, db: D1Database, force: boolean
 app.post('/api/admin/weekly-task-report/send', authMiddleware, adminOnly, async (c) => {
   const result = await deliverWeeklyReport(c.env, c.env.DB, c.req.query('force') === '1')
   return c.json(result.body, result.status as any)
+})
+
+/** Pages không chạy cron. Lịch ngoài gọi endpoint này mỗi giờ bằng CRON_SECRET. */
+app.post('/api/cron/friday-status-mails', async (c) => {
+  const expected = String(c.env.CRON_SECRET || '')
+  if (!expected) return c.json({ error: 'CRON_SECRET chưa cấu hình' }, 503)
+  const header = c.req.header('Authorization') || ''
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : String(c.req.header('X-Cron-Secret') || '').trim()
+  if (!cronSecretMatches(token, expected)) return c.json({ error: 'Unauthorized' }, 401)
+  return c.json(await runFridayStatusMails(c.env))
 })
 
 // ===================================================
@@ -19360,7 +19381,7 @@ registerDesignRoutes(app, {
   getUserEmailInfo,
 })
 
-/** Thứ 6 (theo cấu hình báo cáo tuần, giờ VN): nhắc người trễ và gửi báo cáo cho leader. */
+/** Theo cấu hình báo cáo tuần (giờ VN): nhắc người trễ và gửi báo cáo cho đúng phạm vi. */
 async function runFridayStatusMails(env: Bindings) {
   const db = env.DB
   const cfg = await db.prepare(
@@ -19368,18 +19389,18 @@ async function runFridayStatusMails(env: Bindings) {
   ).all()
   const map: Record<string, string> = {}
   for (const row of cfg.results as any[]) map[row.key] = String(row.value ?? '')
-  if (map.weekly_report_enabled === '0') return
-  const vn = new Date(Date.now() + 7 * 3600 * 1000)
-  const today = `${vn.getUTCFullYear()}-${String(vn.getUTCMonth() + 1).padStart(2, '0')}-${String(vn.getUTCDate()).padStart(2, '0')}`
-  if (String(vn.getUTCDay()) !== (map.weekly_report_day || '5')) return
-  if (String(vn.getUTCHours()) !== (map.weekly_report_hour || '9')) return
-  if (map.status_mail_last_sent === today) return
+  const gate = shouldSendFridayStatusMails(map)
+  if (!gate.send) return { sent: false, skipped: gate.reason, today: gate.today }
+  const overdue = await deliverOverdueReminders(env, db)
+  const weekly = await deliverWeeklyReport(env, db, true)
+  if (overdue.status >= 400 || weekly.status >= 400) {
+    return { sent: false, skipped: 'failed', today: gate.today, overdue_status: overdue.status, weekly_status: weekly.status }
+  }
   await db.prepare(
     `INSERT INTO system_config (key, value, description) VALUES ('status_mail_last_sent', ?, 'Ngày đã tự gửi mail tình trạng thực hiện')
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
-  ).bind(today).run()
-  await deliverOverdueReminders(env, db)
-  await deliverWeeklyReport(env, db, true)
+  ).bind(gate.today).run()
+  return { sent: true, today: gate.today, overdue: overdue.body, weekly: weekly.body }
 }
 
 export default {

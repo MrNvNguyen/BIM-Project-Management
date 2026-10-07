@@ -1304,7 +1304,12 @@
   }
 
   window.setProjectDashboardTab = function setProjectDashboardTab(tab) {
-    const canStatus = currentUser?.role === 'system_admin'
+    const canStatus = typeof canViewProjectStatusTab === 'function'
+      ? canViewProjectStatusTab()
+      : currentUser?.role === 'system_admin'
+    const canManage = typeof canManageStatusMail === 'function'
+      ? canManageStatusMail()
+      : currentUser?.role === 'system_admin'
     const next = tab === 'member' ? 'member' : (tab === 'status' && canStatus ? 'status' : 'project')
     window._pdState.tab = next
     const wrap = document.getElementById('pdMemberFilterWrap')
@@ -1317,6 +1322,7 @@
     if (statusPanel) statusPanel.classList.toggle('hidden', next !== 'status')
     if (stuck) stuck.classList.toggle('hidden', next === 'status')
     if (statusBtn) statusBtn.classList.toggle('hidden', !canStatus)
+    document.querySelectorAll('.pd-status-admin-only').forEach(el => el.classList.toggle('hidden', !canManage))
     ;[['pdTabProject', 'project'], ['pdTabMember', 'member'], ['pdTabStatus', 'status']].forEach(([id, name]) => {
       const btn = document.getElementById(id)
       if (!btn) return
@@ -1326,7 +1332,7 @@
     })
     if (next === 'status') {
       if (typeof loadWeeklyReportConfig === 'function') loadWeeklyReportConfig()
-      if (typeof loadZaloOverdueConfig === 'function') loadZaloOverdueConfig()
+      if (canManage && typeof loadZaloOverdueConfig === 'function') loadZaloOverdueConfig()
       return
     }
     if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
@@ -1374,7 +1380,8 @@
     } catch (e) {
       if (window._pdDetailLoading !== reqId) return
       if (detailEl) {
-        detailEl.innerHTML = `<p class="text-red-600 text-sm p-4">Không tải được chi tiết dự án: ${escHtml(e.message)}</p>`
+        const msg = e.response?.data?.error || e.message
+        detailEl.innerHTML = `<p class="text-red-600 text-sm p-4">Không tải được chi tiết dự án: ${escHtml(msg)}</p>`
       }
     }
   }

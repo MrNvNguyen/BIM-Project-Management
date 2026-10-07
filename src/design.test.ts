@@ -43,6 +43,7 @@ import {
   isProjectExecutionPhaseKey,
   filterModelMatrixTasksForDesignSheet,
   taskPhaseMatchesDesignSheet,
+  designOverviewTaskSql,
 } from './design'
 
 function createProjectDesignDisciplineTestDb() {
@@ -875,5 +876,23 @@ describe('buildHstkReference', () => {
   })
   it('falls back to raw hstk_date', () => {
     expect(buildHstkReference({ hstk_date: 'custom-label', design_package_id: null }, pkgs, map)).toBe('custom-label')
+  })
+})
+
+describe('designOverviewTaskSql', () => {
+  it('selects extended task columns when the table has them', () => {
+    const sql = designOverviewTaskSql(['cde_report', 'hstk_date', 'model_filename'])
+    expect(sql).toContain('t.cde_report')
+    expect(sql).toContain('t.hstk_date')
+    expect(sql).toContain('t.model_filename IS NOT NULL')
+  })
+
+  it('does not reference missing extended columns', () => {
+    const sql = designOverviewTaskSql(['id', 'title', 'status'])
+    expect(sql).not.toContain('t.cde_report')
+    expect(sql).not.toContain('t.hstk_date')
+    expect(sql).not.toContain('t.model_filename')
+    expect(sql).toContain('0 AS cde_report')
+    expect(sql).toContain('AND 0')
   })
 })

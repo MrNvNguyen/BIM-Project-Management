@@ -2158,6 +2158,25 @@ export type BuildDesignOverviewOpts = {
   forDashboard?: boolean
 }
 
+/** Cột task mở rộng có trên production qua init, chưa có trên D1 chỉ chạy migration. */
+export function designOverviewTaskSql(existingColumns: Iterable<string>) {
+  const cols = new Set(existingColumns)
+  const col = (name: string, fallback: string) => (cols.has(name) ? `t.${name}` : `${fallback} AS ${name}`)
+  const modelGate = cols.has('model_filename')
+    ? `AND t.model_filename IS NOT NULL AND TRIM(t.model_filename) != ''`
+    : 'AND 0'
+  return `SELECT t.id, t.title, t.status, t.progress,
+      ${col('cde_report', '0')},
+      ${col('hstk_date', 'NULL')},
+      t.design_package_id, t.discipline_code, t.category_id,
+      ${col('model_filename', 'NULL')},
+      t.phase, t.assigned_to, u.full_name AS assigned_to_name
+    FROM tasks t
+    LEFT JOIN users u ON u.id = t.assigned_to
+    WHERE t.project_id = ?
+      ${modelGate}`
+}
+
 export async function buildDesignOverview(
   db: D1Database,
   projectId: number,
@@ -2283,13 +2302,9 @@ export async function buildDesignOverview(
         ? taskPhaseKeyForDesignSheet(opts.phaseFilter, phases)
         : null
 
-  const tasks = await db.prepare(
-    `SELECT t.id, t.title, t.status, t.progress, t.cde_report, t.hstk_date, t.design_package_id, t.discipline_code, t.category_id,
-            t.model_filename, t.phase, t.assigned_to, u.full_name AS assigned_to_name
-     FROM tasks t
-     LEFT JOIN users u ON u.id = t.assigned_to
-     WHERE t.project_id = ? AND t.model_filename IS NOT NULL AND TRIM(t.model_filename) != ''`,
-  ).bind(projectId).all()
+  const taskInfo = await db.prepare('PRAGMA table_info(tasks)').all()
+  const taskCols = ((taskInfo.results || []) as Array<{ name?: string }>).map(row => String(row.name || ''))
+  const tasks = await db.prepare(designOverviewTaskSql(taskCols)).bind(projectId).all()
 
   const project = await db.prepare('SELECT code, project_code_letter FROM projects WHERE id = ?').bind(projectId).first() as any
   const projectCode = project?.code || ''

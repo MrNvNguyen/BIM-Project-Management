@@ -3253,12 +3253,12 @@
               <button onclick="previewOverdueTasks()" class="btn-secondary flex items-center gap-2 text-sm">
                 <i class="fas fa-eye"></i> Xem trước danh sách
               </button>
-              <button onclick="sendOverdueReminders()" class="btn-primary flex items-center gap-2 text-sm" style="background:#f97316;border-color:#f97316">
+              <button onclick="sendOverdueReminders()" class="btn-primary flex items-center gap-2 text-sm pd-status-admin-only" style="background:#f97316;border-color:#f97316">
                 <i class="fas fa-paper-plane"></i> Gửi mail nhắc ngay
               </button>
               <span id="overdueReminderResult" class="text-xs text-gray-500 ml-2"></span>
             </div>
-            <div class="mt-4 pt-3 border-t border-orange-200">
+            <div class="mt-4 pt-3 border-t border-orange-200 pd-status-admin-only">
               <p class="text-xs text-gray-600 mb-2">
                 <i class="fas fa-comment-dots mr-1"></i>
                 Nhóm Zalo nhận tin quá hạn:
@@ -3295,7 +3295,7 @@
                 <p class="text-xs text-gray-400 mt-0.5">Tổng hợp trạng thái task. Tự gửi Thứ 6 lúc 09:00 cho leader dự án, System Admin và Project Admin.</p>
               </div>
             </div>
-            <div class="flex flex-wrap items-center gap-4 mb-4 p-3 bg-indigo-50 border border-indigo-100 rounded-xl">
+            <div class="flex flex-wrap items-center gap-4 mb-4 p-3 bg-indigo-50 border border-indigo-100 rounded-xl pd-status-admin-only">
               <label class="flex items-center gap-2 cursor-pointer">
                 <div class="relative">
                   <input type="checkbox" id="weeklyReportEnabled" class="sr-only peer" checked>
@@ -3342,7 +3342,7 @@
                 <p class="text-xs text-gray-400 py-4 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>Đang tải...</p>
               </div>
             </div>
-            <div class="flex items-center gap-3 pt-3 border-t border-gray-100">
+            <div class="flex items-center gap-3 pt-3 border-t border-gray-100 pd-status-admin-only">
               <button id="btnSendWeeklyReport" onclick="sendWeeklyReportNow()"
                 class="btn-primary flex items-center gap-2 text-sm" style="background:#6366f1;border-color:#6366f1">
                 <i class="fas fa-paper-plane"></i>Gửi báo cáo ngay
@@ -3919,6 +3919,11 @@
             <div class="flex flex-col gap-0.5">
               <label class="text-xs text-gray-500 font-medium">Dự án</label>
               <div id="tsProjectFilterCombobox" style="width:200px"></div>
+            </div>
+            <!-- Discipline -->
+            <div class="flex flex-col gap-0.5">
+              <label class="text-xs text-gray-500 font-medium">Bộ môn</label>
+              <div id="tsDisciplineFilterCombobox" style="width:180px"></div>
             </div>
             <!-- Member (admin only) -->
             <div id="tsUserFilterWrap" class="hidden flex-col gap-0.5">
@@ -7506,7 +7511,8 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Chủ đầu tư</label>
-          <input type="text" id="projectClient" class="input-field" placeholder="Tên chủ đầu tư">
+          <div id="projectFormClientBox"></div>
+          <input type="hidden" id="projectClient">
         </div>
         <div>
           <label class="label">Loại dự án</label>
@@ -9019,8 +9025,8 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261006c"></script>
-<script src="/static/design-hstk.js?v=20261006a"></script>
+<script src="/static/app.js?v=20261007d"></script>
+<script src="/static/design-hstk.js?v=20261007a"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;

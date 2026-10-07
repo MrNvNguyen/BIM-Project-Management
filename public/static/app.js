@@ -689,6 +689,14 @@ function refreshProjectRoleCache() {
   }
 }
 
+function canViewProjectStatusTab() {
+  return ['system_admin', 'project_admin', 'project_leader'].includes(currentUser?.role)
+}
+
+function canManageStatusMail() {
+  return currentUser?.role === 'system_admin'
+}
+
 // Kiểm tra user có quyền leader/admin trong bất kỳ dự án nào không
 function isAnyProjectLeaderOrAdmin() {
   const eff = getEffectiveGlobalRole()
@@ -1017,11 +1025,11 @@ function navigate(page, opts = {}) {
   }
   else if (page === 'dashboard') loadDashboard()
   else if (page === 'project-dashboard') {
-    if (typeof setProjectDashboardTab === 'function' && currentUser?.role === 'system_admin') {
+    if (typeof setProjectDashboardTab === 'function' && canViewProjectStatusTab()) {
       const statusBtn = document.getElementById('pdTabStatus')
       if (statusBtn) statusBtn.classList.remove('hidden')
     }
-    if (window._pdState?.tab === 'status' && currentUser?.role === 'system_admin') {
+    if (window._pdState?.tab === 'status' && canViewProjectStatusTab()) {
       if (typeof setProjectDashboardTab === 'function') setProjectDashboardTab('status')
     } else {
       if (typeof initProjectDashboardFilters === 'function') initProjectDashboardFilters()
@@ -3578,6 +3586,24 @@ function updateProjectBudgetPreview() {
   previewEl.className = 'font-bold text-green-700 text-base mt-1'
 }
 
+function projectClientChoices() {
+  const seen = new Map()
+  for (const p of allProjects || []) {
+    const name = String(p.client || '').trim().replace(/\s+/g, ' ')
+    if (!name) continue
+    const key = name.toLocaleLowerCase('vi')
+    if (!seen.has(key)) seen.set(key, name)
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b, 'vi'))
+}
+
+function canonicalProjectClient(raw) {
+  const text = String(raw || '').trim().replace(/\s+/g, ' ')
+  if (!text) return ''
+  const key = text.toLocaleLowerCase('vi')
+  return projectClientChoices().find(c => c.toLocaleLowerCase('vi') === key) || text
+}
+
 function openProjectModal(project = null) {
   // Chỉ system_admin mới được tạo dự án mới
   if (!project && currentUser?.role !== 'system_admin') {
@@ -3605,7 +3631,18 @@ function openProjectModal(project = null) {
   $('projectCodeLetter').oninput = updateLetterPreview
   $('projectCode').addEventListener('input', updateLetterPreview)
   $('projectDesc').value = project?.description || ''
-  $('projectClient').value = project?.client || ''
+  const clientValue = canonicalProjectClient(project?.client || '')
+  $('projectClient').value = clientValue
+  createCombobox('projectFormClientBox', {
+    placeholder: 'Chọn hoặc tìm chủ đầu tư',
+    items: projectClientChoices().map(name => ({ value: name, label: name })),
+    value: clientValue,
+    fullWidth: true,
+    teleport: true,
+    allowCreate: true,
+    normalizeCreate: canonicalProjectClient,
+    onchange: (val) => { const el = $('projectClient'); if (el) el.value = val || '' },
+  })
   $('projectType').value = project?.project_type || 'building'
   $('projectStartDate').value = project?.start_date || ''
   $('projectEndDate').value = project?.end_date || ''
@@ -3643,7 +3680,7 @@ $('projectForm').addEventListener('submit', async (e) => {
   const data = {
     code: $('projectCode').value, name: $('projectName').value,
     project_code_letter: $('projectCodeLetter').value.trim() || $('projectCode').value.trim(),
-    description: $('projectDesc').value, client: $('projectClient').value,
+    description: $('projectDesc').value, client: canonicalProjectClient($('projectClient').value),
     project_type: $('projectType').value, status: $('projectStatus').value,
     start_date: $('projectStartDate').value, end_date: $('projectEndDate').value,
     vat_pct: currentUser?.role === 'system_admin' ? (parseFloat($('projectVatPct')?.value) || 0) : undefined,
@@ -4357,27 +4394,35 @@ function createCombobox(containerId, options = {}) {
 
   // teleport: true → panel is moved to document.body on open (escapes overflow:hidden/auto ancestors)
   const teleport = options.teleport || false
+  const allowCreate = !!options.allowCreate
 
   _cbState[id] = {
     value: initVal,
-    label: _cbLabelFor(items, initVal, placeholder),
+    label: _cbLabelFor(items, initVal, placeholder, allowCreate),
     items,
     placeholder,
     onchange: options.onchange || null,
     teleport,
+    allowCreate,
+    normalizeCreate: options.normalizeCreate || null,
     panelMaxWidth,
     dropdownMaxHeight
   }
 
   container.innerHTML = _cbHTML(id, placeholder, minWidth, fullWidth, panelMaxWidth, dropdownMaxHeight)
+  if (allowCreate) {
+    const search = $(id + '_search')
+    if (search) search.placeholder = 'Tìm hoặc nhập tên mới...'
+  }
   _cbRenderOptions(id, '')
   _cbUpdateTrigger(id)
 }
 
-function _cbLabelFor(items, value, placeholder) {
+function _cbLabelFor(items, value, placeholder, allowCreate) {
   if (!value) return placeholder
-  const found = items.find(i => String(i.value) === String(value))
-  return found ? found.label : placeholder
+  const found = (items || []).find(i => String(i.value) === String(value))
+  if (found) return found.label
+  return allowCreate ? String(value) : placeholder
 }
 
 // Helper: set combobox value by id (auto-resolves label from state.items)
@@ -4385,7 +4430,7 @@ function _cbSetValue(id, value) {
   const state = _cbState[id]
   if (!state) return
   if (String(state.value ?? '') === String(value ?? '')) return
-  const label = value ? _cbLabelFor(state.items || [], value, state.placeholder) : state.placeholder
+  const label = value ? _cbLabelFor(state.items || [], value, state.placeholder, state.allowCreate) : state.placeholder
   _cbSelect(id, value, label)
 }
 
@@ -4394,7 +4439,7 @@ function _cbAssignValue(id, value) {
   if (!state) return
   const next = value == null ? '' : String(value)
   state.value = next
-  state.label = next ? _cbLabelFor(state.items || [], next, state.placeholder) : state.placeholder
+  state.label = next ? _cbLabelFor(state.items || [], next, state.placeholder, state.allowCreate) : state.placeholder
   _cbUpdateTrigger(id)
   _cbRenderOptions(id, '')
 }
@@ -4415,7 +4460,7 @@ function _cbHTML(id, placeholder, minWidth, fullWidth, panelMaxWidth, dropdownMa
     + '<div id="' + id + '_panel" style="' + panelStyle + '">'
     + '<div style="padding:8px 10px 7px;border-bottom:1px solid var(--shell-border);position:relative">'
     + '<span style="position:absolute;left:18px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none">🔍</span>'
-    + '<input id="' + id + '_search" type="text" placeholder="T\u00ecm ki\u1EBFm..." style="' + searchStyle + '" oninput="_cbFilter(\'' + id + '\',this.value)" onclick="event.stopPropagation()" autocomplete="off">'
+    + '<input id="' + id + '_search" type="text" placeholder="T\u00ecm ki\u1EBFm..." style="' + searchStyle + '" oninput="_cbFilter(\'' + id + '\',this.value)" onkeydown="_cbSearchKey(event,\'' + id + '\')" onclick="event.stopPropagation()" autocomplete="off">'
     + '</div>'
     + '<div id="' + id + '_opts" style="' + optsStyle + '"></div>'
     + '</div></div>'
@@ -4426,9 +4471,18 @@ function _cbRenderOptions(id, query) {
   if (!state) return
   const opts = $(id + '_opts')
   if (!opts) return
-  const q = query.trim().toLowerCase()
+  const qRaw = String(query || '').trim()
+  const q = qRaw.toLowerCase()
   const allItems = [{ value: '', label: state.placeholder }, ...state.items]
-  const filtered = allItems.filter(i => !q || i.label.toLowerCase().includes(q))
+  let filtered = allItems.filter(i => !q || String(i.label).toLowerCase().includes(q) || String(i.value).toLowerCase().includes(q))
+  if (state.allowCreate && qRaw) {
+    const exact = state.items.some(i => String(i.label).trim().toLowerCase() === q || String(i.value).trim().toLowerCase() === q)
+    if (!exact) {
+      const created = state.normalizeCreate ? state.normalizeCreate(qRaw) : qRaw.replace(/\s+/g, ' ')
+      filtered = filtered.filter(i => i.value !== '')
+      filtered.push({ value: created, label: 'Tạo mới: ' + created, create: true })
+    }
+  }
   // Use larger font/padding for teleported panels (they have more space)
   const isTeleport = !!state.teleport
   const itemPad = isTeleport ? '9px 14px' : '7px 12px'
@@ -4438,20 +4492,36 @@ function _cbRenderOptions(id, query) {
     return
   }
   opts.innerHTML = filtered.map(i => {
-    const isSel = String(i.value) === String(state.value)
+    const isSel = !i.create && String(i.value) === String(state.value)
     const bg = isSel ? 'rgba(0,166,81,0.12)' : 'transparent'
-    const col = isSel ? '#00A651' : 'var(--shell-text)'
-    const fw = isSel ? '600' : '400'
-    const sv = String(i.value).replace(/'/g, '&#39;')
-    const sl = i.label.replace(/'/g, '&#39;')
+    const col = i.create ? '#00A651' : (isSel ? '#00A651' : 'var(--shell-text)')
+    const fw = isSel || i.create ? '600' : '400'
+    const pickValue = i.value
+    const pickLabel = i.create ? i.value : i.label
     return '<div style="padding:' + itemPad + ';font-size:' + itemFs + ';cursor:pointer;display:flex;align-items:center;gap:6px;background:' + bg + ';color:' + col + ';font-weight:' + fw + ';line-height:1.4"'
+      + ' data-cb-value="' + escHtml(pickValue) + '" data-cb-label="' + escHtml(pickLabel) + '"'
       + ' onmouseenter="if(!' + isSel + '){this.style.background=\'var(--shell-row-hover)\';this.style.color=\'var(--shell-text)\'}"'
       + ' onmouseleave="this.style.background=\'' + bg + '\';this.style.color=\'' + col + '\'"'
-      + ' onclick="_cbSelect(\'' + id + '\',\'' + sv + '\',\'' + sl + '\')">'
-      + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + i.label + '</span>'
+      + ' onclick="_cbPick(this,\'' + id + '\')">'
+      + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(i.label) + '</span>'
       + (isSel ? '<span style="flex-shrink:0;color:#00A651;font-size:12px">&#10003;</span>' : '')
       + '</div>'
   }).join('')
+}
+
+function _cbPick(el, id) {
+  _cbSelect(id, el.getAttribute('data-cb-value') || '', el.getAttribute('data-cb-label') || '')
+}
+
+function _cbSearchKey(event, id) {
+  if (event.key !== 'Enter') return
+  event.preventDefault()
+  event.stopPropagation()
+  const state = _cbState[id]
+  if (!state?.allowCreate) return
+  const row = document.querySelector('#' + id + '_opts [data-cb-value]')
+  if (!row) return
+  _cbSelect(id, row.getAttribute('data-cb-value') || '', row.getAttribute('data-cb-label') || '')
 }
 
 function _cbUpdateTrigger(id) {
@@ -7767,6 +7837,20 @@ async function initTsFilterDropdowns() {
     }
   } // end catch
 
+  const discItems = (allDisciplines || []).map(d => ({ value: d.code, label: `${d.code} - ${d.name}` }))
+  const savedDisc = _cbGetValue('tsDisciplineFilterCombobox')
+  if ($('tsDisciplineFilterCombobox')?.querySelector('[id$="_wrap"]')) {
+    _cbSetItems('tsDisciplineFilterCombobox', discItems, !!discItems.find(i => i.value === savedDisc))
+  } else if ($('tsDisciplineFilterCombobox')) {
+    createCombobox('tsDisciplineFilterCombobox', {
+      placeholder: 'Tất cả bộ môn',
+      items: discItems,
+      value: savedDisc || '',
+      fullWidth: true,
+      onchange: () => loadTimesheets()
+    })
+  }
+
   // ------ Member dropdown — from /api/timesheets/members (admin/projAdmin only) ------
   const tsUserWrap = $('tsUserFilterWrap')
   const tsStatusW  = $('tsStatusFilterWrap')
@@ -7853,6 +7937,7 @@ async function loadTimesheets() {
     const month     = $('tsMonthFilter')?.value   || ''
     const year      = $('tsYearFilter')?.value    || ''
     const projectId = _cbGetValue('tsProjectFilterCombobox')
+    const discipline = _cbGetValue('tsDisciplineFilterCombobox') || ''
     const memberId  = canSeeAll ? (_cbGetValue('tsUserFilterCombobox') || '') : ''
     const status    = canSeeAll ? ($('tsStatusFilter')?.value || '') : ''
 
@@ -7861,6 +7946,7 @@ async function loadTimesheets() {
     if (month)     url += `month=${month}&`
     if (year)      url += `year=${year}&`
     if (projectId) url += `project_id=${projectId}&`
+    if (discipline) url += `discipline=${encodeURIComponent(discipline)}&`
     if (memberId)  url += `member_id=${memberId}&`
     if (status)    url += `status=${status}&`
 
@@ -8104,6 +8190,7 @@ function resetTimesheetFilters() {
   const m = $('tsMonthFilter'); if (m) m.value = String(now.getMonth() + 1).padStart(2, '0')
   const y = $('tsYearFilter');  if (y) y.value  = String(now.getFullYear())
   const p = $('tsProjectFilterCombobox'); if (p && _cbState['tsProjectFilterCombobox']) { _cbSelect('tsProjectFilterCombobox', '', 'Tất cả dự án') }
+  if (_cbState['tsDisciplineFilterCombobox']) _cbSelect('tsDisciplineFilterCombobox', '', 'Tất cả bộ môn')
   if (_cbState['tsUserFilterCombobox']) _cbSelect('tsUserFilterCombobox', '', '👤 Tất cả nhân viên')
   const s = $('tsStatusFilter');  if (s) s.value = ''
   // Force re-populate dropdowns with latest data on next load
