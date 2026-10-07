@@ -91,7 +91,7 @@ import {
   STATUS_MAIL_SCOPE_SQL,
   vnClock,
 } from './status-mail'
-import { collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId } from './zalo-bot'
+import { collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, zaloUpdatesBlocked } from './zalo-bot'
 
 // ---- Types ----
 type Bindings = {
@@ -9865,10 +9865,11 @@ async function notifyOverdueLeaders(env: Bindings, db: D1Database, tasks: any[])
 }
 
 const ZALO_OVERDUE_GROUP_URL = 'https://zalo.me/g/nquvtj706'
+const ZALO_WEBHOOK_URL = 'https://ddcn.bimonecadvn.com/api/zalo/webhook'
 
 async function readZaloOverdueConfig(env: Bindings, db: D1Database) {
   const rows = await db.prepare(
-    `SELECT key, value FROM system_config WHERE key IN ('zalo_bot_token','zalo_group_chat_id','zalo_group_chat_type','zalo_webhook_secret')`
+    `SELECT key, value FROM system_config WHERE key IN ('zalo_bot_token','zalo_group_chat_id','zalo_group_chat_type','zalo_webhook_secret','zalo_webhook_url','zalo_webhook_paused')`
   ).all()
   const map: Record<string, string> = {}
   for (const row of rows.results as any[]) map[row.key] = String(row.value ?? '').trim()
@@ -9879,6 +9880,8 @@ async function readZaloOverdueConfig(env: Bindings, db: D1Database) {
     chatId,
     chatType,
     webhookSecret: map.zalo_webhook_secret || String(env.ZALO_WEBHOOK_SECRET || '').trim(),
+    webhookUrl: map.zalo_webhook_url || ZALO_WEBHOOK_URL,
+    webhookPaused: map.zalo_webhook_paused === '1',
     groupUrl: ZALO_OVERDUE_GROUP_URL,
   }
 }
@@ -10048,6 +10051,7 @@ app.get('/api/admin/zalo-overdue', authMiddleware, adminOnly, async (c) => {
       chat_type: cfg.chatType,
       token_configured: !!cfg.token,
       webhook_secret_configured: !!cfg.webhookSecret,
+      webhook_paused: cfg.webhookPaused,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -10059,27 +10063,69 @@ async function saveZaloGroupChat(db: D1Database, chatId: string, userId: number 
   await writeSystemConfig(db, 'zalo_group_chat_type', 'group', userId)
 }
 
+async function restoreZaloWebhook(db: D1Database, token: string, secret: string, userId: number | null) {
+  if (!token || !secret) return
+  const row = await db.prepare(`SELECT value FROM system_config WHERE key = 'zalo_webhook_url'`).first() as any
+  const url = String(row?.value || ZALO_WEBHOOK_URL).trim()
+  if (!url) return
+  await zaloBotCall(token, 'setWebhook', { url, secret_token: secret })
+  await writeSystemConfig(db, 'zalo_webhook_paused', '0', userId)
+}
+
 app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
+    const body = await c.req.json().catch(() => ({})) as any
+    if (body.zalo_bot_token && !String(body.zalo_bot_token).includes('****')) {
+      await writeSystemConfig(db, 'zalo_bot_token', String(body.zalo_bot_token).trim(), user.id)
+    }
+    if (body.zalo_webhook_secret && !String(body.zalo_webhook_secret).includes('****')) {
+      await writeSystemConfig(db, 'zalo_webhook_secret', String(body.zalo_webhook_secret).trim(), user.id)
+    }
     const cfg = await readZaloOverdueConfig(c.env, db)
     if (!cfg.token) return c.json({ error: 'Chưa có Bot Token Zalo' }, 400)
-    const json = await zaloBotCall(cfg.token, 'getUpdates', { timeout: 1 })
-    const updatesBlocked = json?.ok === false
-    const groupId = updatesBlocked ? null : latestZaloGroupChatId(json)
+    if (cfg.chatType === 'group' && cfg.chatId) {
+      return c.json({ chat_id: cfg.chatId, chat_type: 'group', group_url: cfg.groupUrl, source: 'stored' })
+    }
+
+    const info = await zaloBotCall(cfg.token, 'getWebhookInfo')
+    const liveUrl = String(info?.result?.url || '').trim()
+    let json = await zaloBotCall(cfg.token, 'getUpdates', { timeout: '2' })
+    let pausedForPoll = false
+
+    if (liveUrl && (zaloUpdatesBlocked(json, liveUrl) || !latestZaloGroupChatId(json))) {
+      if (!cfg.webhookSecret) {
+        return c.json({ error: 'Zalo đang bật webhook nên không đọc được tin nhắn. Nhập Secret Token webhook vào ô cạnh Bot Token, rồi bấm Lấy Chat ID lại.' }, 400)
+      }
+      await writeSystemConfig(db, 'zalo_webhook_url', liveUrl, user.id)
+      const deleted = await zaloBotCall(cfg.token, 'deleteWebhook')
+      if (deleted?.ok === false) {
+        return c.json({ error: String(deleted.description || deleted.message || 'Không tắt được webhook Zalo').slice(0, 180) }, 400)
+      }
+      await writeSystemConfig(db, 'zalo_webhook_paused', '1', user.id)
+      pausedForPoll = true
+      json = await zaloBotCall(cfg.token, 'getUpdates', { timeout: '2' })
+    }
+
+    if (json?.ok === false && !pausedForPoll) {
+      return c.json({ error: String(json.description || json.message || 'Không đọc được tin nhắn của bot').slice(0, 180) }, 400)
+    }
+
+    const groupId = json?.ok === false ? null : latestZaloGroupChatId(json)
     if (groupId) {
       await saveZaloGroupChat(db, groupId, user.id)
+      if (cfg.webhookSecret) await restoreZaloWebhook(db, cfg.token, cfg.webhookSecret, user.id)
       return c.json({ chat_id: groupId, chat_type: 'group', group_url: cfg.groupUrl, source: 'getUpdates' })
     }
-    const stored = await readZaloOverdueConfig(c.env, db)
-    if (stored.chatType === 'group' && stored.chatId) {
-      return c.json({ chat_id: stored.chatId, chat_type: 'group', group_url: cfg.groupUrl, source: 'webhook' })
+
+    if (latestZaloPrivateChatId(json)) {
+      return c.json({ error: 'Bot chỉ thấy tin nhắn riêng với bot, chưa thấy tin trong nhóm. Gửi một tin trong nhóm https://zalo.me/g/nquvtj706 rồi bấm Lấy Chat ID ngay.' }, 404)
     }
-    const sawPrivate = latestZaloPrivateChatId(json) || stored.chatType === 'private' || (!stored.chatType && stored.chatId)
-    if (sawPrivate) return c.json({ error: ZALO_PRIVATE_CHAT_HINT }, 404)
-    const blockedHint = updatesBlocked ? ' Zalo đang gửi sự kiện qua webhook nên Lấy Chat ID chỉ thấy tin nhóm sau khi có người nhắn trong nhóm.' : ''
-    return c.json({ error: `Bot chưa thấy tin trong nhóm. Mời bot vào ${cfg.groupUrl}, gửi một tin trong nhóm, rồi bấm lại.${blockedHint}` }, 404)
+    if (pausedForPoll || cfg.webhookPaused) {
+      return c.json({ error: 'Đã tạm tắt webhook để đọc tin. Mở nhóm https://zalo.me/g/nquvtj706, gửi một tin trong nhóm, rồi bấm Lấy Chat ID ngay.' }, 404)
+    }
+    return c.json({ error: `Bot chưa thấy tin trong nhóm. Mời bot vào ${cfg.groupUrl}, gửi một tin trong nhóm, rồi bấm Lấy Chat ID.` }, 404)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }

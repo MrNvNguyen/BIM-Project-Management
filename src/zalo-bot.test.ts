@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId } from './zalo-bot'
+import { collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, zaloUpdatesBlocked } from './zalo-bot'
 
 describe('zalo bot chat id', () => {
   it('does not treat a private bot chat as the group', () => {
@@ -25,6 +25,12 @@ describe('zalo bot chat id', () => {
       ],
     }
     expect(latestZaloGroupChatId(payload)).toBe('group-b')
+  })
+
+  it('treats getUpdates as blocked while a webhook URL is set', () => {
+    expect(zaloUpdatesBlocked({ ok: false, description: 'Conflict: webhook is active' }, 'https://ddcn.bimonecadvn.com/api/zalo/webhook')).toBe(true)
+    expect(zaloUpdatesBlocked({ ok: false, description: 'unauthorized' }, '')).toBe(false)
+    expect(zaloUpdatesBlocked({ ok: true, result: [] }, 'https://example.com/hook')).toBe(false)
   })
 
   it('reads a webhook event that is the update itself', () => {

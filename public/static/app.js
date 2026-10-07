@@ -15339,7 +15339,8 @@ async function loadZaloOverdueConfig() {
     if (idInput && document.activeElement !== idInput) idInput.value = data.chat_id || ''
     if (status) {
       if (!data.token_configured) status.textContent = 'Chưa có Bot Token.'
-      else if (!data.webhook_secret_configured) status.textContent = 'Đã có Bot Token. Nhập Secret Token webhook (đúng với Zalo) rồi Lưu.'
+      else if (!data.webhook_secret_configured) status.textContent = 'Đã có Bot Token. Nhập Secret Token webhook (đúng với Zalo) rồi bấm Lấy Chat ID.'
+      else if (data.webhook_paused) status.textContent = 'Webhook đang tạm tắt. Gửi một tin trong nhóm, rồi bấm Lấy Chat ID ngay.'
       else if (data.chat_type === 'group' && data.chat_id) status.textContent = 'Sẽ gửi tin quá hạn vào nhóm Zalo này.'
       else if (data.chat_id) status.textContent = 'Chat ID này là hội thoại riêng với bot, chưa phải nhóm. Gửi một tin trong nhóm rồi bấm Lấy Chat ID.'
       else status.textContent = 'Đã có Bot Token. Gửi một tin trong nhóm (không nhắn riêng với bot), rồi bấm Lấy Chat ID.'
@@ -15370,8 +15371,13 @@ async function saveZaloOverdueConfig() {
 async function captureZaloGroupChat() {
   const status = $('zaloOverdueStatus')
   if (status) status.textContent = 'Đang hỏi bot...'
+  const token = $('zaloBotToken')?.value?.trim() || ''
+  const secret = $('zaloWebhookSecret')?.value?.trim() || ''
+  const data = {}
+  if (token && !token.includes('****')) data.zalo_bot_token = token
+  if (secret && !secret.includes('****')) data.zalo_webhook_secret = secret
   try {
-    const res = await api('/admin/zalo-overdue/capture', { method: 'POST', data: {} })
+    const res = await api('/admin/zalo-overdue/capture', { method: 'POST', data })
     const idInput = $('zaloGroupChatId')
     if (idInput) idInput.value = res.chat_id || ''
     if (status) status.textContent = res.chat_type === 'group' ? 'Đã lấy Chat ID nhóm. Tin nhắc sẽ vào nhóm, không gửi chat riêng với bot.' : 'Đã lưu Chat ID.'
@@ -15379,7 +15385,7 @@ async function captureZaloGroupChat() {
   } catch (e) {
     const msg = e.response?.data?.error || e.message
     if (status) status.textContent = msg
-    toast(msg, 'error', 5000)
+    toast(msg, 'error', 8000)
   }
 }
 

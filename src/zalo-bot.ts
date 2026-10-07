@@ -37,6 +37,13 @@ export function latestZaloGroupChatId(payload: unknown): string | null {
   return null
 }
 
+/** getUpdates không chạy khi webhook còn URL. Tài liệu Zalo: gọi deleteWebhook trước. */
+export function zaloUpdatesBlocked(json: { ok?: boolean; description?: unknown; message?: unknown } | null, webhookUrl: string) {
+  if (!json || json.ok !== false) return false
+  const desc = String(json.description || json.message || '').toLowerCase()
+  return !!String(webhookUrl || '').trim() || desc.includes('webhook')
+}
+
 export function latestZaloPrivateChatId(payload: unknown): string | null {
   const chats = collectZaloChats(payload)
   for (let i = chats.length - 1; i >= 0; i--) {
