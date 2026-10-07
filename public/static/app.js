@@ -15338,9 +15338,11 @@ async function loadZaloOverdueConfig() {
     const idInput = $('zaloGroupChatId')
     if (idInput && document.activeElement !== idInput) idInput.value = data.chat_id || ''
     if (status) {
-      status.textContent = data.token_configured
-        ? (data.chat_id ? 'Bot và Chat ID đã lưu. Thứ 6 sẽ gửi vào nhóm khi có task quá hạn.' : 'Đã có Bot Token. Mời bot vào nhóm, gửi một tin, rồi bấm Lấy Chat ID.')
-        : 'Chưa có Bot Token.'
+      if (!data.token_configured) status.textContent = 'Chưa có Bot Token.'
+      else if (!data.webhook_secret_configured) status.textContent = 'Đã có Bot Token. Nhập Secret Token webhook (đúng với Zalo) rồi Lưu.'
+      else if (data.chat_type === 'group' && data.chat_id) status.textContent = 'Sẽ gửi tin quá hạn vào nhóm Zalo này.'
+      else if (data.chat_id) status.textContent = 'Chat ID này là hội thoại riêng với bot, chưa phải nhóm. Gửi một tin trong nhóm rồi bấm Lấy Chat ID.'
+      else status.textContent = 'Đã có Bot Token. Gửi một tin trong nhóm (không nhắn riêng với bot), rồi bấm Lấy Chat ID.'
     }
   } catch (e) {
     if (status) status.textContent = e.response?.data?.error || e.message
@@ -15349,12 +15351,15 @@ async function loadZaloOverdueConfig() {
 
 async function saveZaloOverdueConfig() {
   const token = $('zaloBotToken')?.value?.trim() || ''
+  const secret = $('zaloWebhookSecret')?.value?.trim() || ''
   const chatId = $('zaloGroupChatId')?.value?.trim() || ''
   const data = { zalo_group_chat_id: chatId }
   if (token && !token.includes('****')) data.zalo_bot_token = token
+  if (secret && !secret.includes('****')) data.zalo_webhook_secret = secret
   try {
     await api('/system-config', { method: 'PUT', data })
     if ($('zaloBotToken')) $('zaloBotToken').value = ''
+    if ($('zaloWebhookSecret')) $('zaloWebhookSecret').value = ''
     toast('Đã lưu cấu hình Zalo', 'success')
     await loadZaloOverdueConfig()
   } catch (e) {
@@ -15369,7 +15374,7 @@ async function captureZaloGroupChat() {
     const res = await api('/admin/zalo-overdue/capture', { method: 'POST', data: {} })
     const idInput = $('zaloGroupChatId')
     if (idInput) idInput.value = res.chat_id || ''
-    if (status) status.textContent = 'Đã lấy Chat ID nhóm.'
+    if (status) status.textContent = res.chat_type === 'group' ? 'Đã lấy Chat ID nhóm. Tin nhắc sẽ vào nhóm, không gửi chat riêng với bot.' : 'Đã lưu Chat ID.'
     toast('Đã lấy Chat ID nhóm Zalo', 'success')
   } catch (e) {
     const msg = e.response?.data?.error || e.message
