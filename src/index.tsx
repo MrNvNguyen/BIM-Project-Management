@@ -10182,7 +10182,11 @@ app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c)
 
     const set = await zaloBotCall(cfg.token, 'setWebhook', { url: listenUrl, secret_token: cfg.webhookSecret })
     if (set?.ok === false) {
-      return c.json({ error: String(set.description || set.message || 'Không bật được webhook Zalo').slice(0, 180) }, 400)
+      const reason = String(set.description || set.message || '')
+      const error = /not found/i.test(reason)
+        ? 'Bot Token trên production không được Zalo nhận. Dán lại Bot Token và Secret Token vào trang này, bấm Lưu Zalo, rồi Lấy Chat ID.'
+        : (reason || 'Không bật được webhook Zalo').slice(0, 180)
+      return c.json({ error }, 400)
     }
     await writeSystemConfig(db, 'zalo_webhook_url', listenUrl, user.id)
     await writeSystemConfig(db, 'zalo_webhook_paused', '0', user.id)

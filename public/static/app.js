@@ -15528,7 +15528,10 @@ async function captureZaloGroupChat(url) {
     toast(res.linked ? 'Nhóm đã gắn Chat ID' : 'Đã lấy Chat ID nhóm Zalo', 'success')
     await loadZaloOverdueConfig()
   } catch (e) {
-    const msg = e.response?.data?.error || e.message
+    const raw = e.response?.data?.error || e.response?.statusText || e.message
+    const msg = /not found/i.test(String(raw))
+      ? 'Bot Token trên trang này không được Zalo nhận. Dán lại Bot Token và Secret Token, bấm Lưu Zalo, rồi Lấy Chat ID.'
+      : raw
     if (status) status.textContent = msg
     toast(msg, 'error', 8000)
   }
