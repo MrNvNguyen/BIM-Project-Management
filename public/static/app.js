@@ -7768,6 +7768,48 @@ async function deleteSubtask(subId, taskId) {
 // TIMESHEET FILTER STATE — preserved between loadTimesheets calls
 // ================================================================
 let _tsDropdownsInitialised = false   // run dropdown population only once per page visit
+
+function tsDisciplineTeamMatch(disc, department) {
+  const fold = typeof _foldVn === 'function' ? _foldVn : (s) => String(s || '').toLowerCase()
+  const dept = fold(department).trim()
+  if (!dept || !disc) return false
+  const code = fold(disc.code).trim()
+  const name = fold(disc.name).trim()
+  if (code && dept === code) return true
+  if (name && dept === name) return true
+  if (name && (dept.includes(name) || name.includes(dept))) return true
+  return false
+}
+
+function tsMembersForDiscipline(members, discCode) {
+  if (!discCode) return members || []
+  const disc = (allDisciplines || []).find(d => d.code === discCode)
+  if (!disc) return members || []
+  return (members || []).filter(m => tsDisciplineTeamMatch(disc, m.department))
+}
+
+function tsUserFilterItems(members) {
+  return (members || []).map(m => ({
+    value: String(m.id),
+    label: `${m.full_name}${m.total_hours ? ' (' + m.total_hours + 'h)' : ''}`
+  }))
+}
+
+function refreshTsUserFilterForDiscipline() {
+  if (!_cbState['tsUserFilterCombobox']) return
+  const isAdmin = currentUser?.role === 'system_admin'
+  const source = _tsMembersCache?.length ? _tsMembersCache : (allUsers || [])
+  const base = isAdmin ? source : source.filter(m => m.role !== 'system_admin')
+  const discCode = _cbGetValue('tsDisciplineFilterCombobox') || ''
+  const items = tsUserFilterItems(tsMembersForDiscipline(base, discCode))
+  const savedUserId = _cbGetValue('tsUserFilterCombobox')
+  _cbSetItems('tsUserFilterCombobox', items, !!items.find(i => i.value === String(savedUserId)))
+}
+
+function onTsDisciplineFilterChange() {
+  refreshTsUserFilterForDiscipline()
+  loadTimesheets()
+}
 let _tsMembersCache = []              // cached result from /api/timesheets/members
 let _tsProjectsCache = []             // cached result from /api/timesheets/projects
 
@@ -7914,8 +7956,11 @@ async function initTsFilterDropdowns() {
       items: discItems,
       value: savedDisc || '',
       fullWidth: true,
-      onchange: () => loadTimesheets()
+      onchange: () => onTsDisciplineFilterChange()
     })
+  }
+  if (_cbState['tsDisciplineFilterCombobox']) {
+    _cbState['tsDisciplineFilterCombobox'].onchange = () => onTsDisciplineFilterChange()
   }
 
   // ------ Member dropdown — from /api/timesheets/members (admin/projAdmin only) ------
@@ -7931,17 +7976,15 @@ async function initTsFilterDropdowns() {
       // Không backfill allUsers bằng /timesheets/members vì chỉ chứa user có timesheet
       // allUsers phải được fetch riêng từ /users khi cần (xem openTimesheetModal)
       const membersForFilter = isAdmin ? members : members.filter(m => m.role !== 'system_admin')
-      const items = membersForFilter.map(m => ({
-        value: String(m.id),
-        label: `${m.full_name}${m.total_hours ? ' (' + m.total_hours + 'h)' : ''}`
-      }))
+      const discCode = _cbGetValue('tsDisciplineFilterCombobox') || ''
+      const items = tsUserFilterItems(tsMembersForDiscipline(membersForFilter, discCode))
       if ($('tsUserFilterCombobox')?.querySelector('[id$="_wrap"]')) {
         _cbSetItems('tsUserFilterCombobox', items, !!items.find(i => i.value === savedUserId))
       } else {
         createCombobox('tsUserFilterCombobox', {
           placeholder: '👤 Tất cả nhân viên',
           items,
-          value: savedUserId || '',
+          value: items.some(i => i.value === String(savedUserId)) ? savedUserId : '',
           fullWidth: true,
           onchange: () => loadTimesheets()
         })
@@ -7949,7 +7992,8 @@ async function initTsFilterDropdowns() {
     } catch (_) {
       if (!allUsers.length) { try { allUsers = await api('/users') } catch(__) {} }
       const usersForFilter = isAdmin ? allUsers : allUsers.filter(u => u.role !== 'system_admin')
-      const items = usersForFilter.map(u => ({ value: String(u.id), label: u.full_name }))
+      const discCode = _cbGetValue('tsDisciplineFilterCombobox') || ''
+      const items = tsUserFilterItems(tsMembersForDiscipline(usersForFilter, discCode))
       const cbEl = $('tsUserFilterCombobox')
       if (cbEl && !cbEl.querySelector('[id$="_wrap"]')) {
         createCombobox('tsUserFilterCombobox', {

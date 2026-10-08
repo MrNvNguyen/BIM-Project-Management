@@ -3227,6 +3227,20 @@
             <p class="text-gray-500 text-sm mt-1">Theo dõi tiến độ HSTK mọi dự án (chỉ đọc, không hiển thị tiền)</p>
           </div>
           <div class="flex flex-wrap gap-2 items-center">
+            <div id="pdSliceFilters" class="flex flex-wrap gap-2 items-center">
+              <label class="flex items-center gap-2 text-sm">
+                <span class="text-gray-500 whitespace-nowrap">Hạng mục</span>
+                <select id="pdCategoryFilter" class="select-field text-sm" style="min-width:190px" onchange="pdOnDashboardSliceFilter()">
+                  <option value="">Tất cả hạng mục</option>
+                </select>
+              </label>
+              <label class="flex items-center gap-2 text-sm">
+                <span class="text-gray-500 whitespace-nowrap">Bộ môn</span>
+                <select id="pdDisciplineFilter" class="select-field text-sm" style="min-width:170px" onchange="pdOnDashboardSliceFilter()">
+                  <option value="">Tất cả bộ môn</option>
+                </select>
+              </label>
+            </div>
             <label id="pdStuckOnlyWrap" class="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" id="pdStuckOnly" onchange="loadProjectDashboardPage()"> Chỉ dự án đang vướng
             </label>
@@ -3361,6 +3375,7 @@
         <div id="pdMemberFilterWrap" class="mb-3 hidden">
           <label class="block text-xs text-gray-500 mb-1">Thành viên</label>
           <select id="pdMemberFilter" class="select-field text-sm" style="min-width:220px" onchange="loadProjectDashboardPage()"></select>
+          <p id="pdMemberFilterHint" class="text-xs text-gray-400 mt-1">Toàn bộ nhân sự đang hoạt động</p>
         </div>
         <div id="projectDashboardRoot"></div>
       </div>
@@ -9028,8 +9043,8 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261008h"></script>
-<script src="/static/design-hstk.js?v=20261008e"></script>
+<script src="/static/app.js?v=20261008i"></script>
+<script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;

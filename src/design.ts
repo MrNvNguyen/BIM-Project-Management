@@ -2706,7 +2706,7 @@ async function fetchOpenTaskPreviewForDashboard(
   if (!(await canAccessProject(db, user, projectId))) return []
   const ot = await db.prepare(
     `SELECT t.id, t.title, t.discipline_code, t.category_id, t.due_date, t.status, t.hstk_date,
-            u.full_name AS assigned_to_name, c.name AS category_name
+            u.full_name AS assigned_to_name, c.name AS category_name, c.code AS category_code
      FROM tasks t
      LEFT JOIN users u ON u.id = t.assigned_to
      LEFT JOIN categories c ON c.id = t.category_id
