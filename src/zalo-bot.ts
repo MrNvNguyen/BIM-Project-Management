@@ -97,22 +97,6 @@ export function assignZaloGroupChat(groups: ZaloOverdueGroup[], targetUrl: strin
   })
 }
 
-/** testWebhook thất bại thì Zalo không giao sự kiện, dù getWebhookInfo vẫn hiện URL. */
-export function zaloDeliveryError(test: { ok?: boolean; description?: unknown; result?: { ok?: boolean; outcome?: unknown; hint?: unknown } } | null): string | null {
-  const result = test?.result
-  if (result?.ok === true) return null
-  const outcome = String(result?.outcome || '')
-  if (outcome.includes('403')) {
-    return 'Rule Skip WAF đã khớp nhưng Browser Integrity Check vẫn chặn User-Agent Java/1.8 của Zalo (lỗi 1010). Sửa rule đó, tick thêm Browser Integrity Check, rồi bấm Lấy Chat ID và tag bot một tin mới.'
-  }
-  if (!result && test?.ok === false) {
-    return String(test.description || 'Zalo không kiểm tra được webhook').slice(0, 180)
-  }
-  if (!outcome) return null
-  const hint = String(result?.hint || '').replace(/https?:\/\/\S*token\S*/gi, '').slice(0, 160)
-  return `Zalo không gọi được webhook (${outcome}). ${hint}`.trim().slice(0, 240)
-}
-
 export function latestZaloPrivateChatId(payload: unknown): string | null {
   const chats = collectZaloChats(payload)
   for (let i = chats.length - 1; i >= 0; i--) {

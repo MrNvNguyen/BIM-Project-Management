@@ -91,7 +91,7 @@ import {
   STATUS_MAIL_SCOPE_SQL,
   vnClock,
 } from './status-mail'
-import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, parseZaloOverdueGroups, zaloDeliveryError } from './zalo-bot'
+import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, parseZaloOverdueGroups } from './zalo-bot'
 
 // ---- Types ----
 type Bindings = {
@@ -10069,20 +10069,13 @@ app.get('/api/admin/zalo-overdue', authMiddleware, adminOnly, async (c) => {
     const hook = await ensureZaloWebhook(c.env, c.env.DB, user?.id ?? null, host).catch(() => ({ webhook_on: !cfg.webhookPaused, restored: false }))
     let webhook_last: { reason?: string; event?: string } = {}
     try { webhook_last = JSON.parse((await c.env.DB.prepare(`SELECT value FROM system_config WHERE key = 'zalo_webhook_last'`).first() as any)?.value || '{}') } catch { webhook_last = {} }
-    const needsLink = cfg.groups.some((g) => g.url && !g.chatId)
-    let delivery_error: string | null = null
-    if (!isLocalAppHost(host) && cfg.token && needsLink) {
-      const test = await zaloBotCall(cfg.token, 'testWebhook').catch(() => null)
-      delivery_error = zaloDeliveryError(test)
-    }
     return c.json({
       groups: cfg.groups.map((g) => ({ url: g.url, linked: !!g.chatId })),
       token_configured: !!cfg.token,
       webhook_secret_configured: !!cfg.webhookSecret,
       webhook_paused: !hook.webhook_on,
-      webhook_on: hook.webhook_on && !delivery_error,
+      webhook_on: hook.webhook_on,
       webhook_last,
-      delivery_error,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -10198,8 +10191,6 @@ app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c)
         : (reason || 'Không bật được webhook Zalo').slice(0, 180)
       return c.json({ error }, 400)
     }
-    const deliveryError = zaloDeliveryError(await zaloBotCall(cfg.token, 'testWebhook'))
-    if (deliveryError) return c.json({ error: deliveryError }, 400)
     await writeSystemConfig(db, 'zalo_webhook_url', listenUrl, user.id)
     await writeSystemConfig(db, 'zalo_webhook_paused', '0', user.id)
 
