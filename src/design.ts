@@ -2165,7 +2165,7 @@ export function designOverviewTaskSql(existingColumns: Iterable<string>) {
   const modelGate = cols.has('model_filename')
     ? `AND t.model_filename IS NOT NULL AND TRIM(t.model_filename) != ''`
     : 'AND 0'
-  return `SELECT t.id, t.title, t.status, t.progress,
+  return `SELECT t.id, t.title, t.status, t.progress, t.due_date,
       ${col('cde_report', '0')},
       ${col('hstk_date', 'NULL')},
       t.design_package_id, t.discipline_code, t.category_id,
@@ -2644,10 +2644,18 @@ export function summarizeDashboardFromOverview(overview: { disciplines: any[] },
       }
       const cat = row.category_code
       if (!categoryMatrix[cat]) categoryMatrix[cat] = {}
+      const prev = categoryMatrix[cat][d.discipline_code]
+      const nextCompare = String(row.hstk_compare || '')
+      const compareRank = (flag: string) => flag === 'match_old' ? 3 : flag === 'unmatched' ? 2 : flag === 'match_latest' ? 1 : 0
+      const keepPrevCompare = prev && compareRank(String(prev.hstk_compare || '')) > compareRank(nextCompare)
       categoryMatrix[cat][d.discipline_code] = {
+        category_name: row.category_name || prev?.category_name || '',
         revision_updated: row.revision_updated,
         revision_current: row.revision_current,
         revision_lag: row.revision_lag,
+        hstk_compare: keepPrevCompare ? prev.hstk_compare : nextCompare,
+        hstk_reference: keepPrevCompare ? prev.hstk_reference : (row.hstk_reference || ''),
+        has_tasks: !!(prev?.has_tasks || row.tasks?.length),
         status:
           row.revision_lag >= 1
             ? 'lagging'

@@ -553,6 +553,7 @@
       <col style="width:min(200px,18vw)">
       <col style="width:172px">
       <col style="width:min(280px,26vw)">
+      <col style="width:96px">
       <col style="width:100px">
       <col style="width:88px">
       <col style="width:72px">
@@ -562,7 +563,18 @@
     </colgroup>`
 
   const MODEL_MATRIX_TABLE_CLASS =
-    'design-hstk-model-matrix w-full text-xs min-w-[1380px] bg-gray-950/90 rounded-lg overflow-hidden'
+    'design-hstk-model-matrix w-full text-xs min-w-[1480px] bg-gray-950/90 rounded-lg overflow-hidden'
+
+  function formatDesignDueDateCell(tasks) {
+    if (!tasks?.length) return '<span class="text-gray-400">—</span>'
+    return tasks
+      .map(t => {
+        const label = formatIsoDateVi(t.due_date)
+        const text = label === '—' ? '<span class="text-gray-400">—</span>' : escHtml(label)
+        return `<div class="leading-snug whitespace-nowrap">${text}</div>`
+      })
+      .join('')
+  }
 
   function designTaskMatrixCell(projectId, rowKey, tasks, canAssign) {
     const phaseTasks = matrixTasksForActiveSheet(tasks, projectId)
@@ -623,6 +635,7 @@
       <th class="text-left py-1.5 px-2 font-semibold">Đường dẫn folder</th>
       <th class="text-left py-1.5 px-2 font-semibold">Model</th>
       <th class="text-left py-1.5 px-2 font-semibold">Task</th>
+      <th class="text-left py-1.5 px-2 font-semibold whitespace-nowrap">Ngày hết hạn</th>
       <th class="text-left py-1.5 px-2 font-semibold whitespace-nowrap">Người phụ trách</th>
       <th class="text-center py-1.5 px-2 font-semibold whitespace-nowrap">Trạng thái</th>
       <th class="text-center py-1.5 px-2 font-semibold whitespace-nowrap">% hoàn thành</th>
@@ -648,6 +661,7 @@
         ${categoryFolderPathCell(projectId, disciplineCode, row, canScan)}
         <td class="py-1.5 px-2 text-xs font-mono text-gray-100 align-top dh-cell-wrap">${escHtml(row.model_name)}${codeFlag}</td>
         <td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-wrap">${designTaskMatrixCell(projectId, rowKey, row.tasks, canAssign)}</td>
+        <td class="py-1.5 px-2 text-xs text-gray-200 align-top dh-cell-nowrap">${formatDesignDueDateCell(matrixTasksForActiveSheet(row.tasks, projectId))}</td>
         <td class="py-1.5 px-2 text-xs text-gray-300 align-top dh-cell-nowrap">${formatDesignAssigneeCell(row, projectId)}</td>
         <td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap">${matrixCvStatusCell(row.task_status)}</td>
         <td class="py-1.5 px-2 text-xs text-center align-top dh-cell-nowrap">${matrixCvProgressCell(row.task_progress_percent)}</td>
@@ -1446,12 +1460,35 @@
     if (!cell) return '<td class="pd-matrix-cell text-gray-400">—</td>'
     const up = cell.revision_updated || '—'
     const cur = cell.revision_current || '—'
-    if (up === '—' && cur === '—') return '<td class="pd-matrix-cell text-gray-400">—</td>'
+    const bare = up === '—' && cur === '—'
     const match = up !== '—' && cur !== '—' && up === cur
     const lag = cell.status === 'lagging'
     const pillClass = match ? 'pd-rev-ok' : (lag ? 'pd-rev-warn' : '')
     const bar = match ? '<span class="pd-rev-bar" title="Revision khớp"></span>' : ''
-    return `<td class="pd-matrix-cell"><span class="pd-rev-pill ${pillClass}">${bar}${escHtml(up)} / ${escHtml(cur)}</span></td>`
+    const revHtml = bare
+      ? ''
+      : `<span class="pd-rev-pill ${pillClass}">${bar}${escHtml(up)} / ${escHtml(cur)}</span>`
+    const compare = matrixHstkCompareLabel(cell)
+    if (!revHtml && !compare) return '<td class="pd-matrix-cell text-gray-400">—</td>'
+    const title = cell.hstk_reference ? ` title="${escHtml(cell.hstk_reference)}"` : ''
+    return `<td class="pd-matrix-cell" style="white-space:normal"${title}>${revHtml}${compare}</td>`
+  }
+
+  function matrixHstkCompareLabel(cell) {
+    if (!cell || (cell.hstk_compare == null && !cell.has_tasks)) return ''
+    const flag = cell.hstk_compare
+    if (flag === 'match_latest') return '<div class="pd-rev-pill pd-rev-ok mt-1">Đúng HS mới nhất</div>'
+    if (flag === 'match_old') return '<div class="pd-rev-pill pd-rev-warn mt-1">Chậm HS</div>'
+    if (cell.has_tasks) return '<div class="text-gray-400 mt-1">Chưa khớp gói</div>'
+    if (flag) return '<div class="text-gray-400 mt-1">Chưa đối chiếu</div>'
+    return ''
+  }
+
+  function categoryMatrixLabel(matrix, cat) {
+    const cells = Object.values(matrix[cat] || {})
+    const name = String(cells.find(c => c && c.category_name)?.category_name || '').trim()
+    if (!name || name === cat) return `<span class="font-mono">${escHtml(cat)}</span>`
+    return `<span class="font-mono">${escHtml(cat)}</span> <span class="font-normal">${escHtml(name)}</span>`
   }
 
   function renderCategoryMatrix(p) {
@@ -1461,18 +1498,18 @@
       ? [...new Set(catCodes.flatMap(c => Object.keys(matrix[c] || {})))].sort()
       : []
     if (!catCodes.length || !discCodes.length) {
-      return `<p class="pd-section-title">Hạng mục × bộ môn (rev đã cập nhật / hiện tại)</p><p class="pd-empty-hint text-sm">Chưa có dữ liệu ma trận hạng mục.</p>`
+      return `<p class="pd-section-title">Hạng mục × bộ môn (rev đã cập nhật / hiện tại · đối chiếu HS)</p><p class="pd-empty-hint text-sm">Chưa có dữ liệu ma trận hạng mục.</p>`
     }
     let tbl = '<table class="pd-table pd-matrix"><thead><tr><th>Hạng mục</th>'
     for (const dc of discCodes) tbl += `<th class="font-mono">${escHtml(dc)}</th>`
     tbl += '</tr></thead><tbody>'
     for (const cat of catCodes) {
-      tbl += `<tr><td class="font-semibold">${escHtml(cat)}</td>`
+      tbl += `<tr><td class="font-semibold">${categoryMatrixLabel(matrix, cat)}</td>`
       for (const dc of discCodes) tbl += renderMatrixRevCell(matrix[cat]?.[dc])
       tbl += '</tr>'
     }
     tbl += '</tbody></table>'
-    return `<p class="pd-section-title">Hạng mục × bộ môn (rev đã cập nhật / hiện tại)</p><div class="pd-table-wrap">${tbl}</div>`
+    return `<p class="pd-section-title">Hạng mục × bộ môn (rev đã cập nhật / hiện tại · đối chiếu HS)</p><div class="pd-table-wrap">${tbl}</div>`
   }
 
   function renderRecentHstkPackages(p) {
