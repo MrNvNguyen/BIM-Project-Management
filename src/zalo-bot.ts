@@ -44,6 +44,57 @@ export function zaloUpdatesBlocked(json: { ok?: boolean; description?: unknown; 
   return !!String(webhookUrl || '').trim() || desc.includes('webhook')
 }
 
+export type ZaloOverdueGroup = { url: string; chatId: string }
+
+/** Chỉ nhận link mời nhóm zalo.me/g/... Admin dán link, không gắn sẵn một nhóm. */
+export function canonicalZaloGroupUrl(input: string): string | null {
+  const raw = String(input || '').trim()
+  if (!raw) return null
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
+  let url: URL
+  try { url = new URL(withScheme) } catch { return null }
+  if (!/^(www\.)?zalo\.me$/i.test(url.hostname)) return null
+  const match = url.pathname.match(/^\/g\/([A-Za-z0-9_-]+)/)
+  if (!match) return null
+  return `https://zalo.me/g/${match[1]}`
+}
+
+export function parseZaloOverdueGroups(raw: string): ZaloOverdueGroup[] {
+  try {
+    const data = JSON.parse(raw || '[]')
+    if (!Array.isArray(data)) return []
+    const out: ZaloOverdueGroup[] = []
+    for (const row of data) {
+      const url = canonicalZaloGroupUrl(String(row?.url || '')) || ''
+      const chatId = String(row?.chatId || row?.chat_id || '').trim()
+      if (!url && !chatId) continue
+      if (url && out.some((g) => g.url === url)) continue
+      out.push({ url, chatId })
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+export function addZaloGroupLink(groups: ZaloOverdueGroup[], input: string): ZaloOverdueGroup[] | null {
+  const url = canonicalZaloGroupUrl(input)
+  if (!url) return null
+  if (groups.some((g) => g.url === url)) return groups
+  if (groups.length === 1 && groups[0].chatId && !groups[0].url) return [{ url, chatId: groups[0].chatId }]
+  return [...groups, { url, chatId: '' }]
+}
+
+export function assignZaloGroupChat(groups: ZaloOverdueGroup[], targetUrl: string, chatId: string): ZaloOverdueGroup[] {
+  const url = canonicalZaloGroupUrl(targetUrl) || targetUrl
+  const id = String(chatId || '').trim()
+  return groups.map((g) => {
+    if (g.url === url) return { ...g, chatId: id }
+    if (id && g.chatId === id) return { ...g, chatId: '' }
+    return g
+  })
+}
+
 export function latestZaloPrivateChatId(payload: unknown): string | null {
   const chats = collectZaloChats(payload)
   for (let i = chats.length - 1; i >= 0; i--) {

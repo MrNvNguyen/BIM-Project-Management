@@ -91,7 +91,7 @@ import {
   STATUS_MAIL_SCOPE_SQL,
   vnClock,
 } from './status-mail'
-import { collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId } from './zalo-bot'
+import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, parseZaloOverdueGroups } from './zalo-bot'
 
 // ---- Types ----
 type Bindings = {
@@ -9864,17 +9864,18 @@ async function notifyOverdueLeaders(env: Bindings, db: D1Database, tasks: any[])
   return sent
 }
 
-const ZALO_OVERDUE_GROUP_URL = 'https://zalo.me/g/bvk8cticxyywemhdpvqx'
 const ZALO_WEBHOOK_URL = 'https://ddcn.bimonecadvn.com/api/zalo/webhook'
 
 async function readZaloOverdueConfig(env: Bindings, db: D1Database) {
   const rows = await db.prepare(
-    `SELECT key, value FROM system_config WHERE key IN ('zalo_bot_token','zalo_group_chat_id','zalo_group_chat_type','zalo_webhook_secret','zalo_webhook_url','zalo_webhook_paused')`
+    `SELECT key, value FROM system_config WHERE key IN ('zalo_bot_token','zalo_group_chat_id','zalo_group_chat_type','zalo_webhook_secret','zalo_webhook_url','zalo_webhook_paused','zalo_overdue_groups','zalo_capture_url')`
   ).all()
   const map: Record<string, string> = {}
   for (const row of rows.results as any[]) map[row.key] = String(row.value ?? '').trim()
   const chatId = map.zalo_group_chat_id || String(env.ZALO_GROUP_CHAT_ID || '').trim()
   const chatType = map.zalo_group_chat_type === 'group' ? 'group' : (map.zalo_group_chat_type === 'private' ? 'private' : '')
+  let groups = parseZaloOverdueGroups(map.zalo_overdue_groups || '')
+  if (!groups.length && chatId && chatType === 'group') groups = [{ url: '', chatId }]
   return {
     token: map.zalo_bot_token || String(env.ZALO_BOT_TOKEN || '').trim(),
     chatId,
@@ -9882,7 +9883,8 @@ async function readZaloOverdueConfig(env: Bindings, db: D1Database) {
     webhookSecret: map.zalo_webhook_secret || String(env.ZALO_WEBHOOK_SECRET || '').trim(),
     webhookUrl: map.zalo_webhook_url || ZALO_WEBHOOK_URL,
     webhookPaused: map.zalo_webhook_paused === '1',
-    groupUrl: ZALO_OVERDUE_GROUP_URL,
+    groups,
+    captureUrl: canonicalZaloGroupUrl(map.zalo_capture_url || '') || '',
   }
 }
 
@@ -9892,8 +9894,6 @@ async function writeSystemConfig(db: D1Database, key: string, value: string, use
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`
   ).bind(key, value, userId).run()
 }
-
-const ZALO_PRIVATE_CHAT_HINT = `Chat ID đang là hội thoại riêng với bot, không phải nhóm. Hãy gửi một tin trong nhóm ${ZALO_OVERDUE_GROUP_URL} (đừng nhắn riêng với bot), rồi bấm Lấy Chat ID.`
 
 async function zaloBotCall(token: string, method: string, body?: Record<string, unknown>) {
   const ctrl = new AbortController()
@@ -9926,22 +9926,28 @@ function overdueZaloText(tasks: any[]) {
   return text
 }
 
-/** Gửi tóm tắt task quá hạn vào nhóm Zalo. Không chặn mail nếu Zalo lỗi. */
+/** Gửi tóm tắt task quá hạn vào từng nhóm Zalo đã gắn Chat ID. Không chặn mail nếu Zalo lỗi. */
 async function notifyOverdueZalo(env: Bindings, db: D1Database, tasks: any[]) {
   if (!tasks.length) return { sent: false, skipped: 'Không có task quá hạn' }
   const cfg = await readZaloOverdueConfig(env, db)
   if (!cfg.token) return { sent: false, skipped: 'Chưa có Bot Token Zalo' }
-  if (cfg.chatType !== 'group' || !cfg.chatId) {
-    return { sent: false, skipped: cfg.chatId ? ZALO_PRIVATE_CHAT_HINT : 'Chưa có Chat ID nhóm. Mời bot vào nhóm, nhắn một tin trong nhóm, rồi bấm Lấy Chat ID.' }
+  const targets = cfg.groups.filter((g) => g.chatId)
+  if (!targets.length) {
+    return { sent: false, skipped: 'Chưa có nhóm Zalo đã gắn Chat ID. Dán link nhóm, bấm Lấy Chat ID, rồi tag bot trong đúng nhóm đó.' }
   }
-  try {
-    const json = await zaloBotCall(cfg.token, 'sendMessage', { chat_id: cfg.chatId, text: overdueZaloText(tasks) })
-    if (json?.ok) return { sent: true }
-    const reason = String(json?.description || json?.message || 'Zalo từ chối tin nhắn').slice(0, 180)
-    return { sent: false, error: reason }
-  } catch (e: any) {
-    return { sent: false, error: String(e?.message || 'Không gọi được Zalo').slice(0, 180) }
+  const text = overdueZaloText(tasks)
+  let sent = 0
+  const errors: string[] = []
+  for (const group of targets) {
+    try {
+      const json = await zaloBotCall(cfg.token, 'sendMessage', { chat_id: group.chatId, text })
+      if (json?.ok) sent++
+      else errors.push(String(json?.description || json?.message || 'Zalo từ chối tin nhắn').slice(0, 180))
+    } catch (e: any) {
+      errors.push(String(e?.message || 'Không gọi được Zalo').slice(0, 180))
+    }
   }
+  return { sent: sent > 0, group_count: sent, error: sent ? undefined : errors[0] }
 }
 
 // ===================================================
@@ -10054,32 +10060,78 @@ app.get('/api/admin/overdue-tasks-preview', authMiddleware, statusDeskAccess, as
 
 app.get('/api/admin/zalo-overdue', authMiddleware, adminOnly, async (c) => {
   try {
+    const user = c.get('user') as any
     const cfg = await readZaloOverdueConfig(c.env, c.env.DB)
+    const hook = await ensureZaloWebhook(c.env, c.env.DB, user?.id ?? null).catch(() => ({ webhook_on: !cfg.webhookPaused, restored: false }))
     return c.json({
-      group_url: cfg.groupUrl,
-      chat_id: cfg.chatId,
-      chat_type: cfg.chatType,
+      groups: cfg.groups.map((g) => ({ url: g.url, linked: !!g.chatId })),
       token_configured: !!cfg.token,
       webhook_secret_configured: !!cfg.webhookSecret,
-      webhook_paused: cfg.webhookPaused,
+      webhook_paused: !hook.webhook_on,
+      webhook_on: hook.webhook_on,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
 })
 
-async function saveZaloGroupChat(db: D1Database, chatId: string, userId: number | null) {
-  await writeSystemConfig(db, 'zalo_group_chat_id', chatId, userId)
-  await writeSystemConfig(db, 'zalo_group_chat_type', 'group', userId)
+async function saveZaloGroups(db: D1Database, groups: { url: string; chatId: string }[], userId: number | null) {
+  await writeSystemConfig(db, 'zalo_overdue_groups', JSON.stringify(groups), userId)
+  const first = groups.find((g) => g.chatId)
+  await writeSystemConfig(db, 'zalo_group_chat_id', first?.chatId || '', userId)
+  await writeSystemConfig(db, 'zalo_group_chat_type', first?.chatId ? 'group' : '', userId)
 }
 
+app.post('/api/admin/zalo-overdue/groups', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const body = await c.req.json().catch(() => ({})) as any
+    const cfg = await readZaloOverdueConfig(c.env, db)
+    if (cfg.groups.length >= 20) return c.json({ error: 'Tối đa 20 nhóm Zalo' }, 400)
+    const next = addZaloGroupLink(cfg.groups, String(body.url || ''))
+    if (!next) return c.json({ error: 'Link không hợp lệ. Dán link nhóm dạng zalo.me/g/...' }, 400)
+    await saveZaloGroups(db, next, user.id)
+    return c.json({ groups: next.map((g) => ({ url: g.url, linked: !!g.chatId })) })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+app.delete('/api/admin/zalo-overdue/groups', authMiddleware, adminOnly, async (c) => {
+  try {
+    const db = c.env.DB
+    const user = c.get('user') as any
+    const body = await c.req.json().catch(() => ({})) as any
+    const url = canonicalZaloGroupUrl(String(body.url || ''))
+    if (!url) return c.json({ error: 'Thiếu link nhóm' }, 400)
+    const cfg = await readZaloOverdueConfig(c.env, db)
+    await saveZaloGroups(db, cfg.groups.filter((g) => g.url !== url), user.id)
+    if (cfg.captureUrl === url) await writeSystemConfig(db, 'zalo_capture_url', '', user.id)
+    return c.json({ success: true })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 async function restoreZaloWebhook(db: D1Database, token: string, secret: string, userId: number | null) {
-  if (!token || !secret) return
-  const row = await db.prepare(`SELECT value FROM system_config WHERE key = 'zalo_webhook_url'`).first() as any
-  const url = String(row?.value || ZALO_WEBHOOK_URL).trim()
-  if (!url) return
-  await zaloBotCall(token, 'setWebhook', { url, secret_token: secret })
+  if (!token || !secret) return { ok: false as const, description: 'Thiếu Bot Token hoặc Secret Token' }
+  const set = await zaloBotCall(token, 'setWebhook', { url: ZALO_WEBHOOK_URL, secret_token: secret })
+  if (set?.ok === false) return { ok: false as const, description: String(set.description || set.message || 'Không bật được webhook Zalo').slice(0, 180) }
+  await writeSystemConfig(db, 'zalo_webhook_url', ZALO_WEBHOOK_URL, userId)
   await writeSystemConfig(db, 'zalo_webhook_paused', '0', userId)
+  return { ok: true as const }
+}
+
+/** Bản cũ tắt webhook để gọi getUpdates rồi không bật lại được, vì tin nhóm không vào getUpdates. */
+async function ensureZaloWebhook(env: Bindings, db: D1Database, userId: number | null) {
+  const cfg = await readZaloOverdueConfig(env, db)
+  if (!cfg.token || !cfg.webhookSecret) return { webhook_on: false, restored: false }
+  const info = await zaloBotCall(cfg.token, 'getWebhookInfo')
+  const liveUrl = String(info?.result?.url || '').trim()
+  if (liveUrl === ZALO_WEBHOOK_URL && !cfg.webhookPaused) return { webhook_on: true, restored: false }
+  const restored = await restoreZaloWebhook(db, cfg.token, cfg.webhookSecret, userId)
+  return { webhook_on: restored.ok === true, restored: restored.ok === true, error: restored.ok ? undefined : restored.description }
 }
 
 app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c) => {
@@ -10093,20 +10145,20 @@ app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c)
     if (body.zalo_webhook_secret && !String(body.zalo_webhook_secret).includes('****')) {
       await writeSystemConfig(db, 'zalo_webhook_secret', String(body.zalo_webhook_secret).trim(), user.id)
     }
+    const url = canonicalZaloGroupUrl(String(body.url || ''))
+    if (!url) return c.json({ error: 'Chọn một nhóm đã thêm trước khi lấy Chat ID' }, 400)
     const cfg = await readZaloOverdueConfig(c.env, db)
     if (!cfg.token) return c.json({ error: 'Chưa có Bot Token Zalo' }, 400)
-    if (cfg.chatType === 'group' && cfg.chatId) {
-      const hooked = await zaloBotCall(cfg.token, 'getWebhookInfo')
-      const hookedUrl = String(hooked?.result?.url || '').trim()
-      if (cfg.webhookSecret && hookedUrl && hookedUrl !== ZALO_WEBHOOK_URL) {
-        await zaloBotCall(cfg.token, 'setWebhook', { url: ZALO_WEBHOOK_URL, secret_token: cfg.webhookSecret })
-        await writeSystemConfig(db, 'zalo_webhook_url', ZALO_WEBHOOK_URL, user.id)
-      }
-      return c.json({ chat_id: cfg.chatId, chat_type: 'group', group_url: cfg.groupUrl, source: 'stored' })
+    const group = cfg.groups.find((g) => g.url === url)
+    if (!group) return c.json({ error: 'Nhóm này chưa có trong danh sách. Dán link rồi bấm Thêm nhóm.' }, 400)
+    if (group.chatId) {
+      const hook = cfg.webhookSecret ? await ensureZaloWebhook(c.env, db, user.id) : { webhook_on: false }
+      return c.json({ url, linked: true, source: 'stored', webhook_on: hook.webhook_on })
     }
     if (!cfg.webhookSecret) {
       return c.json({ error: 'Nhập Secret Token webhook vào ô cạnh Bot Token, rồi bấm Lấy Chat ID lại.' }, 400)
     }
+    await writeSystemConfig(db, 'zalo_capture_url', url, user.id)
 
     const info = await zaloBotCall(cfg.token, 'getWebhookInfo')
     const liveUrl = String(info?.result?.url || '').trim()
@@ -10120,7 +10172,7 @@ app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c)
     }
 
     return c.json({
-      error: `Webhook đã bật để nhận tin nhóm. Tag bot một tin trong nhóm ${cfg.groupUrl}, đợi vài giây, rồi bấm Lấy Chat ID.`,
+      error: `Đã chọn nhóm ${url}. Tag bot một tin trong đúng nhóm đó, đợi vài giây, rồi bấm Lấy Chat ID lại.`,
     }, 404)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -10142,13 +10194,15 @@ app.post('/api/zalo/webhook', async (c) => {
     if (!cronSecretMatches(header, cfg.webhookSecret)) return c.json({ ok: false }, 401)
 
     const groupId = latestZaloGroupChatId(body)
-    if (groupId) {
-      await saveZaloGroupChat(db, groupId, null)
+    if (groupId && cfg.captureUrl) {
+      await saveZaloGroups(db, assignZaloGroupChat(cfg.groups, cfg.captureUrl, groupId), null)
+      await writeSystemConfig(db, 'zalo_capture_url', '', null)
+      if (cfg.token && cfg.webhookSecret) await restoreZaloWebhook(db, cfg.token, cfg.webhookSecret, null)
       return c.json({ ok: true, chat_type: 'group' })
     }
     const privateId = latestZaloPrivateChatId(body)
-    if (privateId && cfg.chatId === privateId) {
-      await writeSystemConfig(db, 'zalo_group_chat_type', 'private', null)
+    if (privateId && cfg.groups.some((g) => g.chatId === privateId)) {
+      await saveZaloGroups(db, cfg.groups.map((g) => g.chatId === privateId ? { ...g, chatId: '' } : g), null)
     }
     return c.json({ ok: true, chat_type: 'private' })
   } catch (e: any) {

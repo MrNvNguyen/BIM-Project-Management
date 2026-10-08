@@ -1312,6 +1312,7 @@
       : currentUser?.role === 'system_admin'
     const next = tab === 'member' ? 'member' : (tab === 'status' && canStatus ? 'status' : 'project')
     window._pdState.tab = next
+    if (typeof writeRoute === 'function') writeRoute('project-dashboard', next === 'project' ? [] : [next])
     const wrap = document.getElementById('pdMemberFilterWrap')
     const root = document.getElementById('projectDashboardRoot')
     const statusPanel = document.getElementById('pdStatusPanel')

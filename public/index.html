@@ -3261,18 +3261,20 @@
             <div class="mt-4 pt-3 border-t border-orange-200 pd-status-admin-only">
               <p class="text-xs text-gray-600 mb-2">
                 <i class="fas fa-comment-dots mr-1"></i>
-                Nhóm Zalo nhận tin quá hạn:
-                <a id="zaloOverdueGroupLink" href="https://zalo.me/g/bvk8cticxyywemhdpvqx" target="_blank" rel="noopener" class="text-blue-600 hover:underline">zalo.me/g/bvk8cticxyywemhdpvqx</a>
+                Nhóm Zalo nhận tin quá hạn. Dán link mời từng nhóm, rồi với mỗi nhóm bấm Lấy Chat ID và tag bot một tin trong đúng nhóm đó.
               </p>
               <div class="flex flex-wrap gap-2 items-center">
                 <input id="zaloBotToken" type="password" class="input-field text-sm" style="width:220px" placeholder="Bot Token" autocomplete="off">
                 <input id="zaloWebhookSecret" type="password" class="input-field text-sm" style="width:200px" placeholder="Secret Token webhook" autocomplete="off">
-                <input id="zaloGroupChatId" type="text" class="input-field text-sm" style="width:240px" placeholder="Chat ID nhóm" autocomplete="off">
                 <button type="button" onclick="saveZaloOverdueConfig()" class="btn-secondary text-sm">Lưu Zalo</button>
-                <button type="button" onclick="captureZaloGroupChat()" class="btn-secondary text-sm">Lấy Chat ID</button>
                 <span id="zaloOverdueStatus" class="text-xs text-gray-500"></span>
               </div>
-              <p class="text-xs text-gray-400 mt-2">Webhook trên Zalo: <span class="font-mono">https://ddcn.bimonecadvn.com/api/zalo/webhook</span>. Nhập Secret Token trùng với Zalo rồi Lưu. Mời bot vào nhóm và gửi một tin trong nhóm (không nhắn riêng với bot) để lấy Chat ID nhóm. Tin nhắc chỉ gửi vào nhóm.</p>
+              <div class="flex flex-wrap gap-2 items-center mt-2">
+                <input id="zaloGroupUrlInput" type="text" class="input-field text-sm" style="width:360px" placeholder="Dán link nhóm zalo.me/g/..." autocomplete="off">
+                <button type="button" onclick="addZaloOverdueGroup()" class="btn-secondary text-sm">Thêm nhóm</button>
+              </div>
+              <div id="zaloOverdueGroupList" class="mt-2 space-y-1"></div>
+              <p class="text-xs text-gray-400 mt-2">Webhook trên Zalo: <span class="font-mono">https://ddcn.bimonecadvn.com/api/zalo/webhook</span>. Nhập Secret Token trùng với Zalo rồi Lưu. Tin nhắc gửi tới mọi nhóm đã gắn Chat ID.</p>
             </div>
             <div id="overduePreviewList" class="hidden mt-4 overflow-x-auto">
               <table class="w-full text-xs">
@@ -9026,8 +9028,8 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261007f"></script>
-<script src="/static/design-hstk.js?v=20261007a"></script>
+<script src="/static/app.js?v=20261008b"></script>
+<script src="/static/design-hstk.js?v=20261008a"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
   window._execDashLoaded = false;

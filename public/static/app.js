@@ -937,9 +937,60 @@ const _adminOnlyPages = [
 ]
 const _pmoOnlyPages = ['executive-dashboard']
 
-function getPageFromHash() {
+const _routeSections = {
+  'project-dashboard': ['project', 'member', 'status'],
+  costs: ['costs', 'revenues', 'analysis', 'duplicates', 'shared'],
+  legal: ['info', 'stages', 'payments', 'cost-a', 'contacts', 'letters', 'minutes', 'docs'],
+  analytics: ['health', 'performance', 'tasks', 'team', 'timesheet', 'financial', 'project-finance', 'cost-breakdown'],
+  depreciation: ['monthly', 'assets', 'pending'],
+  users: ['list', 'table', 'stats'],
+}
+const _projectDetailTabs = ['tasks', 'weekly', 'chat', 'summary', 'estimate', 'qlydesign', 'hstk']
+const _routeSectionDefault = {
+  'project-dashboard': 'project',
+  costs: 'costs',
+  legal: 'info',
+  analytics: 'health',
+  depreciation: 'monthly',
+  users: 'list',
+}
+let _routeRestore = false
+let _openSection = ''
+
+function readRoute() {
   const raw = (window.location.hash || '').replace(/^#\/?/, '')
-  return (raw.split(/[/?#]/)[0] || '').trim()
+  const parts = raw.split('/').map(s => {
+    try { return decodeURIComponent(s) } catch (_) { return s }
+  }).filter(Boolean)
+  return { page: (parts[0] || '').trim(), rest: parts.slice(1) }
+}
+
+function getPageFromHash() {
+  return readRoute().page
+}
+
+function routeSection(page, rest) {
+  const allowed = _routeSections[page]
+  if (!allowed) return ''
+  const section = String((rest || [])[0] || '')
+  return allowed.includes(section) ? section : ''
+}
+
+function writeRoute(page, rest) {
+  if (_routeRestore || !page) return
+  const parts = [page, ...(rest || []).filter(Boolean)]
+  const newHash = '#/' + parts.map(encodeURIComponent).join('/')
+  if (window.location.hash === newHash) return
+  _navigatingByHash = true
+  window.location.hash = newHash
+  setTimeout(() => { _navigatingByHash = false }, 100)
+}
+
+function writeSection(page, section, fallback) {
+  const allowed = _routeSections[page]
+  if (!allowed || !allowed.includes(section)) return
+  const def = fallback || _routeSectionDefault[page] || ''
+  writeRoute(page, section === def ? [] : [section])
 }
 
 function canAccessPage(page) {
@@ -952,12 +1003,19 @@ function canAccessPage(page) {
 // Restore the page from URL hash (used on refresh / first load).
 // hashchange does not fire on initial load, so initApp must call this.
 function restorePageFromHash() {
-  const page = getPageFromHash()
-  if (_navigablePages.includes(page) && canAccessPage(page)) {
-    navigate(page, { fromHash: true })
+  const { page, rest } = readRoute()
+  if (page === 'project-detail' && /^\d+$/.test(String(rest[0] || ''))) {
+    _routeRestore = true
+    const tab = _projectDetailTabs.includes(rest[1]) ? rest[1] : ''
+    openProjectDetail(rest[0], tab === 'chat').then(() => {
+      if (tab && tab !== 'chat' && tab !== 'tasks') switchProjectTab(tab, Number(rest[0]))
+    }).finally(() => { _routeRestore = false })
     return
   }
-  navigate('dashboard')
+  _routeRestore = true
+  if (_navigablePages.includes(page) && canAccessPage(page)) navigate(page, { fromHash: true, rest })
+  else navigate('dashboard')
+  _routeRestore = false
 }
 
 // Flag to prevent hashchange loop when navigate() itself sets the hash
@@ -989,7 +1047,8 @@ function navigate(page, opts = {}) {
   const pageEl = $(`page-${page}`)
   if (pageEl) pageEl.classList.add('active')
 
-  const navEl = document.querySelector(`[onclick="navigate('${page}')"]`)
+  const navKey = page === 'project-detail' ? 'projects' : page
+  const navEl = document.querySelector(`[onclick="navigate('${navKey}')"]`)
   if (navEl) navEl.classList.add('active')
 
   const breadcrumbs = {
@@ -1005,14 +1064,9 @@ function navigate(page, opts = {}) {
   }
   $('breadcrumb').textContent = breadcrumbs[page] || page
 
-  // Update URL hash for deep-linking (skip for sub-pages like project-detail)
-  if (_navigablePages.includes(page) && !opts.fromHash) {
-    const newHash = '#/' + page
-    if (window.location.hash !== newHash) {
-      _navigatingByHash = true
-      window.location.hash = newHash
-      setTimeout(() => { _navigatingByHash = false }, 100)
-    }
+  _openSection = routeSection(page, opts.rest || [])
+  if (!opts.fromHash && (_navigablePages.includes(page) || page === 'project-detail')) {
+    writeRoute(page, opts.rest || [])
   }
 
   if (page === 'executive-dashboard') {
@@ -1029,30 +1083,40 @@ function navigate(page, opts = {}) {
       const statusBtn = document.getElementById('pdTabStatus')
       if (statusBtn) statusBtn.classList.remove('hidden')
     }
-    if (window._pdState?.tab === 'status' && canViewProjectStatusTab()) {
-      if (typeof setProjectDashboardTab === 'function') setProjectDashboardTab('status')
-    } else {
-      if (typeof initProjectDashboardFilters === 'function') initProjectDashboardFilters()
-      if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
-    }
+    const section = _openSection || 'project'
+    if (typeof setProjectDashboardTab === 'function') setProjectDashboardTab(section)
+    else if (typeof loadProjectDashboardPage === 'function') loadProjectDashboardPage()
   }
   else if (page === 'projects') loadProjects()
   else if (page === 'tasks') loadTasks()
   else if (page === 'timesheet') loadTimesheets()
   else if (page === 'gantt') loadGantt()
-  else if (page === 'costs') loadCostDashboard()
+  else if (page === 'costs') {
+    if (_openSection) currentCostTab = _openSection
+    loadCostDashboard()
+    switchCostTab(currentCostTab)
+  }
   else if (page === 'assets') loadAssets()
   else if (page === 'email-admin') loadEmailAdmin()
   else if (page === 'depreciation') loadDepreciation()
-  else if (page === 'users') loadUsers()
+  else if (page === 'users') {
+    const section = _openSection
+    loadUsers().then(() => { if (section && section !== 'list') switchUserTab(section) })
+  }
   else if (page === 'profile') loadProfile()
   else if (page === 'productivity') loadProductivity()
   else if (page === 'finance-project') { loadFinanceProjectPage() }
   else if (page === 'labor-cost') loadLaborCost()
   else if (page === 'cost-types') loadCostTypes()
   else if (page === 'system-config') loadSystemConfig()
-  else if (page === 'analytics') loadAnalytics()
-  else if (page === 'legal') loadLegal()
+  else if (page === 'analytics') {
+    if (_openSection) _analyticsActiveTab = _openSection
+    loadAnalytics()
+  }
+  else if (page === 'legal') {
+    if (_openSection) { _legalCurrentTab = _openSection; _legalTabSetByUser = true }
+    loadLegal()
+  }
   else if (page === 'leave') loadLeaveRequests()
 
   closeAllDropdowns()
@@ -3490,7 +3554,7 @@ async function openProjectDetail(id, openChatTab = false) {
     window._currentProjectDetailId = project.id
     window._currentProjectDetailMembers = project.members || []
 
-    navigate('project-detail')
+    navigate('project-detail', { rest: [String(project.id)] })
 
     // Render paginated task list (after DOM is ready)
     setTimeout(() => {
@@ -6713,6 +6777,9 @@ function switchProjectTab(tab, projectId) {
       hstkBtn.style.border = '2px solid #ef4444'
       hstkBtn.style.color = '#ef4444'
     }
+  }
+  if (pid && _projectDetailTabs.includes(tab)) {
+    writeRoute('project-detail', tab === 'tasks' ? [String(pid)] : [String(pid), tab])
   }
 
   if (tab === 'weekly') {
@@ -11436,6 +11503,7 @@ async function loadCosts() {
 
 async function switchCostTab(tab) {
   currentCostTab = tab
+  writeSection('costs', tab, 'costs')
   // Tab buttons
   const tabs = ['costs', 'revenues', 'analysis', 'duplicates', 'shared']
   tabs.forEach(t => {
@@ -13304,7 +13372,7 @@ let deprSummaryData = null
 
 async function loadDepreciation() {
   initDeprYearFilter()
-  switchDeprTab('monthly')  // Luôn bắt đầu ở tab Lịch theo tháng
+  switchDeprTab(_openSection || 'monthly')
   await loadDepreciationSummary()
   await loadDeprPending()
 }
@@ -13670,6 +13738,7 @@ Thao tác này không thể hoàn tác.`
 }
 
 function switchDeprTab(tab) {
+  writeSection('depreciation', tab, 'monthly')
   ;['monthly','assets','pending'].forEach(t => {
     const btn = $(`deprTab-${t}`)
     const content = $(`deprContent-${t}`)
@@ -13935,6 +14004,7 @@ function filterUsers() {
 let _userStatsCharts = {}
 
 function switchUserTab(tab) {
+  writeSection('users', tab, 'list')
   const isList  = tab === 'list'
   const isTable = tab === 'table'
   const isStats = tab === 'stats'
@@ -15326,24 +15396,44 @@ async function previewOverdueTasks() {
   }
 }
 
+function renderZaloOverdueGroups(groups) {
+  const box = $('zaloOverdueGroupList')
+  if (!box) return
+  const rows = Array.isArray(groups) ? groups.filter(g => g && (g.url || g.linked)) : []
+  if (!rows.length) {
+    box.innerHTML = '<p class="text-xs text-gray-400">Chưa có nhóm. Dán link zalo.me/g/... rồi bấm Thêm nhóm.</p>'
+    return
+  }
+  box.innerHTML = rows.map(g => {
+    const state = g.linked
+      ? '<span class="text-green-700">Đã gắn</span>'
+      : '<span class="text-amber-700">Chưa gắn Chat ID</span>'
+    if (!g.url) {
+      return `<div class="flex flex-wrap items-center gap-2 text-xs"><span>Nhóm đã gắn từ cấu hình cũ. Dán lại link để đặt tên.</span>${state}</div>`
+    }
+    const url = escHtml(g.url)
+    const label = escHtml(String(g.url).replace(/^https?:\/\//, ''))
+    return `<div class="flex flex-wrap items-center gap-2 text-xs">
+      <a href="${url}" target="_blank" rel="noopener" class="text-blue-600 hover:underline">${label}</a>
+      ${state}
+      <button type="button" class="btn-secondary text-xs" onclick="captureZaloGroupChat('${url}')">Lấy Chat ID</button>
+      <button type="button" class="text-red-600 hover:underline" onclick="removeZaloOverdueGroup('${url}')">Xóa</button>
+    </div>`
+  }).join('')
+}
+
 async function loadZaloOverdueConfig() {
   const status = $('zaloOverdueStatus')
   try {
     const data = await api('/admin/zalo-overdue')
-    const link = $('zaloOverdueGroupLink')
-    if (link && data.group_url) {
-      link.href = data.group_url
-      link.textContent = String(data.group_url).replace(/^https?:\/\//, '')
-    }
-    const idInput = $('zaloGroupChatId')
-    if (idInput && document.activeElement !== idInput) idInput.value = data.chat_id || ''
+    renderZaloOverdueGroups(data.groups || [])
+    const linked = (data.groups || []).filter(g => g.linked).length
     if (status) {
       if (!data.token_configured) status.textContent = 'Chưa có Bot Token.'
-      else if (!data.webhook_secret_configured) status.textContent = 'Đã có Bot Token. Nhập Secret Token webhook (đúng với Zalo) rồi bấm Lấy Chat ID.'
-      else if (data.webhook_paused) status.textContent = 'Webhook đang tạm tắt. Gửi một tin trong nhóm, rồi bấm Lấy Chat ID ngay.'
-      else if (data.chat_type === 'group' && data.chat_id) status.textContent = 'Sẽ gửi tin quá hạn vào nhóm Zalo này.'
-      else if (data.chat_id) status.textContent = 'Chat ID này là hội thoại riêng với bot, chưa phải nhóm. Gửi một tin trong nhóm rồi bấm Lấy Chat ID.'
-      else status.textContent = 'Đã có Bot Token. Gửi một tin trong nhóm (không nhắn riêng với bot), rồi bấm Lấy Chat ID.'
+      else if (!data.webhook_secret_configured) status.textContent = 'Đã có Bot Token. Nhập Secret Token webhook (đúng với Zalo) rồi Lưu.'
+      else if (!data.groups?.length) status.textContent = 'Dán link nhóm để nhận tin quá hạn.'
+      else if (linked) status.textContent = `Sẽ gửi tin quá hạn vào ${linked} nhóm đã gắn.` + (data.webhook_on ? ' Webhook đang bật.' : ' Webhook chưa bật.')
+      else status.textContent = 'Đã có nhóm. Với từng nhóm, bấm Lấy Chat ID rồi tag bot một tin trong đúng nhóm đó.'
     }
   } catch (e) {
     if (status) status.textContent = e.response?.data?.error || e.message
@@ -15353,10 +15443,13 @@ async function loadZaloOverdueConfig() {
 async function saveZaloOverdueConfig() {
   const token = $('zaloBotToken')?.value?.trim() || ''
   const secret = $('zaloWebhookSecret')?.value?.trim() || ''
-  const chatId = $('zaloGroupChatId')?.value?.trim() || ''
-  const data = { zalo_group_chat_id: chatId }
+  const data = {}
   if (token && !token.includes('****')) data.zalo_bot_token = token
   if (secret && !secret.includes('****')) data.zalo_webhook_secret = secret
+  if (!Object.keys(data).length) {
+    toast('Nhập Bot Token hoặc Secret Token rồi bấm Lưu', 'warning')
+    return
+  }
   try {
     await api('/system-config', { method: 'PUT', data })
     if ($('zaloBotToken')) $('zaloBotToken').value = ''
@@ -15368,20 +15461,44 @@ async function saveZaloOverdueConfig() {
   }
 }
 
-async function captureZaloGroupChat() {
+async function addZaloOverdueGroup() {
+  const input = $('zaloGroupUrlInput')
+  const url = input?.value?.trim() || ''
+  if (!url) { toast('Dán link nhóm zalo.me/g/...', 'warning'); return }
+  try {
+    const res = await api('/admin/zalo-overdue/groups', { method: 'POST', data: { url } })
+    if (input) input.value = ''
+    renderZaloOverdueGroups(res.groups || [])
+    toast('Đã thêm nhóm Zalo', 'success')
+  } catch (e) {
+    toast(e.response?.data?.error || e.message, 'error')
+  }
+}
+
+async function removeZaloOverdueGroup(url) {
+  if (!confirm('Xóa nhóm này khỏi danh sách nhận tin quá hạn?')) return
+  try {
+    await api('/admin/zalo-overdue/groups', { method: 'DELETE', data: { url } })
+    await loadZaloOverdueConfig()
+    toast('Đã xóa nhóm', 'success')
+  } catch (e) {
+    toast(e.response?.data?.error || e.message, 'error')
+  }
+}
+
+async function captureZaloGroupChat(url) {
   const status = $('zaloOverdueStatus')
   if (status) status.textContent = 'Đang hỏi bot...'
   const token = $('zaloBotToken')?.value?.trim() || ''
   const secret = $('zaloWebhookSecret')?.value?.trim() || ''
-  const data = {}
+  const data = { url }
   if (token && !token.includes('****')) data.zalo_bot_token = token
   if (secret && !secret.includes('****')) data.zalo_webhook_secret = secret
   try {
     const res = await api('/admin/zalo-overdue/capture', { method: 'POST', data })
-    const idInput = $('zaloGroupChatId')
-    if (idInput) idInput.value = res.chat_id || ''
-    if (status) status.textContent = res.chat_type === 'group' ? 'Đã lấy Chat ID nhóm. Tin nhắc sẽ vào nhóm, không gửi chat riêng với bot.' : 'Đã lưu Chat ID.'
-    toast('Đã lấy Chat ID nhóm Zalo', 'success')
+    if (status) status.textContent = 'Đã gắn Chat ID. Tin nhắc sẽ vào nhóm này.'
+    toast(res.linked ? 'Nhóm đã gắn Chat ID' : 'Đã lấy Chat ID nhóm Zalo', 'success')
+    await loadZaloOverdueConfig()
   } catch (e) {
     const msg = e.response?.data?.error || e.message
     if (status) status.textContent = msg
@@ -15399,7 +15516,8 @@ async function sendOverdueReminders() {
       if (res.sent === 0) {
         resultEl.textContent = `✅ ${res.message || 'Không có task quá hạn nào'}`
       } else {
-        const zaloNote = res.zalo?.sent ? ', đã gửi nhóm Zalo' : (res.zalo?.error || res.zalo?.skipped ? `. Zalo: ${res.zalo.error || res.zalo.skipped}` : '')
+        const zaloCount = Number(res.zalo?.group_count || 0)
+        const zaloNote = res.zalo?.sent ? `, đã gửi ${zaloCount || 1} nhóm Zalo` : (res.zalo?.error || res.zalo?.skipped ? `. Zalo: ${res.zalo.error || res.zalo.skipped}` : '')
         resultEl.textContent = `✅ Đã gửi ${res.sent} mail cho người phụ trách` + (res.leader_sent ? `, ${res.leader_sent} mail cho leader` : '') + zaloNote
       }
     }
@@ -18139,6 +18257,7 @@ function reloadAnalytics() {
 
 function switchAnalyticsTab(tab, force = false) {
   _analyticsActiveTab = tab
+  writeSection('analytics', tab, 'health')
   document.querySelectorAll('.analytics-tab').forEach(btn => btn.classList.remove('active'))
   const activeBtn = document.getElementById(`tab-${tab}`)
   if (activeBtn) activeBtn.classList.add('active')
@@ -21145,6 +21264,7 @@ function switchLegalTab(tab) {
   // Nếu gọi từ onclick của người dùng → đánh dấu
   _legalCurrentTab = tab
   _legalTabSetByUser = true
+  writeSection('legal', tab, 'info')
   ;['info','stages','payments','cost-a','contacts','letters','minutes','docs'].forEach(t => {
     const btn = $('ltab-' + t)
     const panel = _legalTabPanelEl(t)

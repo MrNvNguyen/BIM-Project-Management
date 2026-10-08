@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, zaloUpdatesBlocked } from './zalo-bot'
+import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, zaloUpdatesBlocked } from './zalo-bot'
 
 describe('zalo bot chat id', () => {
   it('does not treat a private bot chat as the group', () => {
@@ -31,6 +31,16 @@ describe('zalo bot chat id', () => {
     expect(zaloUpdatesBlocked({ ok: false, description: 'Conflict: webhook is active' }, 'https://ddcn.bimonecadvn.com/api/zalo/webhook')).toBe(true)
     expect(zaloUpdatesBlocked({ ok: false, description: 'unauthorized' }, '')).toBe(false)
     expect(zaloUpdatesBlocked({ ok: true, result: [] }, 'https://example.com/hook')).toBe(false)
+  })
+
+  it('accepts a pasted zalo group link and keeps several groups', () => {
+    expect(canonicalZaloGroupUrl('zalo.me/g/bvk8cticxyywemhdpvqx')).toBe('https://zalo.me/g/bvk8cticxyywemhdpvqx')
+    expect(canonicalZaloGroupUrl('https://example.com/g/abc')).toBeNull()
+    const first = addZaloGroupLink([], 'https://zalo.me/g/one')
+    const both = addZaloGroupLink(first || [], 'zalo.me/g/two')
+    expect(both?.map((g) => g.url)).toEqual(['https://zalo.me/g/one', 'https://zalo.me/g/two'])
+    const assigned = assignZaloGroupChat(both || [], 'https://zalo.me/g/two', 'chat-2')
+    expect(assigned.find((g) => g.url.endsWith('/two'))?.chatId).toBe('chat-2')
   })
 
   it('reads a webhook event that is the update itself', () => {
