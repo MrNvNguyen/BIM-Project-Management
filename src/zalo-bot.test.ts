@@ -46,7 +46,7 @@ describe('zalo bot chat id', () => {
   })
 
   it('explains a Cloudflare 403 from Zalo testWebhook', () => {
-    expect(zaloDeliveryError({ ok: true, result: { ok: false, outcome: 'webhook.http.403', hint: 'WAF' } })).toMatch(/403/)
+    expect(zaloDeliveryError({ ok: true, result: { ok: false, outcome: 'webhook.http.403', hint: 'WAF' } })).toMatch(/Browser Integrity Check/)
     expect(zaloDeliveryError({ ok: true, result: { ok: true, outcome: 'webhook.ok' } })).toBeNull()
   })
 

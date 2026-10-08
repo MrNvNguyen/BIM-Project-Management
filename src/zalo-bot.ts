@@ -103,7 +103,7 @@ export function zaloDeliveryError(test: { ok?: boolean; description?: unknown; r
   if (result?.ok === true) return null
   const outcome = String(result?.outcome || '')
   if (outcome.includes('403')) {
-    return 'Cloudflare đang chặn máy chủ Zalo (HTTP 403, User-Agent Java). Trên Cloudflare của domain ddcn.bimonecadvn.com, thêm WAF Skip cho đường dẫn /api/zalo/webhook, rồi bấm Lấy Chat ID và tag bot một tin mới.'
+    return 'Rule Skip WAF đã khớp nhưng Browser Integrity Check vẫn chặn User-Agent Java/1.8 của Zalo (lỗi 1010). Sửa rule đó, tick thêm Browser Integrity Check, rồi bấm Lấy Chat ID và tag bot một tin mới.'
   }
   if (!result && test?.ok === false) {
     return String(test.description || 'Zalo không kiểm tra được webhook').slice(0, 180)
