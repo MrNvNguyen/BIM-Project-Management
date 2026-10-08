@@ -15509,6 +15509,18 @@ async function captureZaloGroupChat(url) {
           toast('Đã lấy Chat ID nhóm Zalo', 'success')
           return
         }
+        const reason = data.webhook_last?.reason
+        if (reason === 'secret') {
+          if (status) status.textContent = 'Zalo đã gọi tới nhưng Secret Token không khớp. Dán Secret Token trên Zalo vào ô này, bấm Lấy Chat ID, rồi tag bot một tin mới.'
+          toast('Secret Token webhook không khớp với Zalo', 'error', 8000)
+          return
+        }
+        if (reason === 'private') {
+          if (status) status.textContent = 'Bot chỉ nhận tin nhắn riêng, chưa phải tin trong nhóm. Tag bot ngay trong nhóm.'
+        }
+        if (reason === 'no-chat') {
+          if (status) status.textContent = 'Zalo đã gọi webhook nhưng không gửi kèm cuộc trò chuyện nhóm.'
+        }
       }
       return
     }
