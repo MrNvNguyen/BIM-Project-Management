@@ -15428,11 +15428,18 @@ async function loadZaloOverdueConfig() {
     const data = await api('/admin/zalo-overdue')
     renderZaloOverdueGroups(data.groups || [])
     const linked = (data.groups || []).filter(g => g.linked).length
+    const blocked = data.delivery_error
+    const reason = data.webhook_last?.reason
     if (status) {
       if (!data.token_configured) status.textContent = 'Chưa có Bot Token.'
       else if (!data.webhook_secret_configured) status.textContent = 'Đã có Bot Token. Nhập Secret Token webhook (đúng với Zalo) rồi Lưu.'
+      else if (blocked) status.textContent = blocked
       else if (!data.groups?.length) status.textContent = 'Dán link nhóm để nhận tin quá hạn.'
       else if (linked) status.textContent = `Sẽ gửi tin quá hạn vào ${linked} nhóm đã gắn.` + (data.webhook_on ? ' Webhook đang bật.' : ' Webhook chưa bật.')
+      else if (reason === 'secret') status.textContent = 'Zalo đã gọi tới nhưng Secret Token không khớp. Dán Secret Token trên Zalo vào ô này, bấm Lấy Chat ID, rồi tag bot một tin mới.'
+      else if (reason === 'private') status.textContent = 'Bot chỉ nhận tin nhắn riêng, chưa phải tin trong nhóm. Tag bot ngay trong nhóm.'
+      else if (reason === 'no-chat') status.textContent = 'Zalo đã gọi webhook nhưng không gửi kèm cuộc trò chuyện nhóm.'
+      else if (reason === 'no-capture') status.textContent = 'Có tin nhóm nhưng chưa chọn đúng link. Bấm Lấy Chat ID trên đúng dòng nhóm, rồi tag bot một tin mới.'
       else status.textContent = 'Đã có nhóm. Với từng nhóm, bấm Lấy Chat ID rồi tag bot một tin trong đúng nhóm đó.'
     }
   } catch (e) {

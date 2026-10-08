@@ -86,13 +86,31 @@ export function addZaloGroupLink(groups: ZaloOverdueGroup[], input: string): Zal
 }
 
 export function assignZaloGroupChat(groups: ZaloOverdueGroup[], targetUrl: string, chatId: string): ZaloOverdueGroup[] {
-  const url = canonicalZaloGroupUrl(targetUrl) || targetUrl
+  const url = canonicalZaloGroupUrl(targetUrl) || ''
   const id = String(chatId || '').trim()
-  return groups.map((g) => {
+  if (!url || !id) return groups
+  const base = groups.some((g) => g.url === url) ? groups : [...groups, { url, chatId: '' }]
+  return base.map((g) => {
     if (g.url === url) return { ...g, chatId: id }
-    if (id && g.chatId === id) return { ...g, chatId: '' }
+    if (g.chatId === id) return { ...g, chatId: '' }
     return g
   })
+}
+
+/** testWebhook thất bại thì Zalo không giao sự kiện, dù getWebhookInfo vẫn hiện URL. */
+export function zaloDeliveryError(test: { ok?: boolean; description?: unknown; result?: { ok?: boolean; outcome?: unknown; hint?: unknown } } | null): string | null {
+  const result = test?.result
+  if (result?.ok === true) return null
+  const outcome = String(result?.outcome || '')
+  if (outcome.includes('403')) {
+    return 'Cloudflare đang chặn máy chủ Zalo (HTTP 403, User-Agent Java). Trên Cloudflare của domain ddcn.bimonecadvn.com, thêm WAF Skip cho đường dẫn /api/zalo/webhook, rồi bấm Lấy Chat ID và tag bot một tin mới.'
+  }
+  if (!result && test?.ok === false) {
+    return String(test.description || 'Zalo không kiểm tra được webhook').slice(0, 180)
+  }
+  if (!outcome) return null
+  const hint = String(result?.hint || '').replace(/https?:\/\/\S*token\S*/gi, '').slice(0, 160)
+  return `Zalo không gọi được webhook (${outcome}). ${hint}`.trim().slice(0, 240)
 }
 
 export function latestZaloPrivateChatId(payload: unknown): string | null {

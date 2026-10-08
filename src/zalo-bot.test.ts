@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, zaloUpdatesBlocked } from './zalo-bot'
+import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, zaloDeliveryError, zaloUpdatesBlocked } from './zalo-bot'
 
 describe('zalo bot chat id', () => {
   it('does not treat a private bot chat as the group', () => {
@@ -41,6 +41,13 @@ describe('zalo bot chat id', () => {
     expect(both?.map((g) => g.url)).toEqual(['https://zalo.me/g/one', 'https://zalo.me/g/two'])
     const assigned = assignZaloGroupChat(both || [], 'https://zalo.me/g/two', 'chat-2')
     expect(assigned.find((g) => g.url.endsWith('/two'))?.chatId).toBe('chat-2')
+    const inserted = assignZaloGroupChat([], 'https://zalo.me/g/bvk8cticxyywemhdpvqx', 'group-chat')
+    expect(inserted).toEqual([{ url: 'https://zalo.me/g/bvk8cticxyywemhdpvqx', chatId: 'group-chat' }])
+  })
+
+  it('explains a Cloudflare 403 from Zalo testWebhook', () => {
+    expect(zaloDeliveryError({ ok: true, result: { ok: false, outcome: 'webhook.http.403', hint: 'WAF' } })).toMatch(/403/)
+    expect(zaloDeliveryError({ ok: true, result: { ok: true, outcome: 'webhook.ok' } })).toBeNull()
   })
 
   it('reads a webhook event that is the update itself', () => {

@@ -91,7 +91,7 @@ import {
   STATUS_MAIL_SCOPE_SQL,
   vnClock,
 } from './status-mail'
-import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, parseZaloOverdueGroups } from './zalo-bot'
+import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, parseZaloOverdueGroups, zaloDeliveryError } from './zalo-bot'
 
 // ---- Types ----
 type Bindings = {
@@ -10065,16 +10065,24 @@ app.get('/api/admin/zalo-overdue', authMiddleware, adminOnly, async (c) => {
   try {
     const user = c.get('user') as any
     const cfg = await readZaloOverdueConfig(c.env, c.env.DB)
-    const hook = await ensureZaloWebhook(c.env, c.env.DB, user?.id ?? null, requestHost(c)).catch(() => ({ webhook_on: !cfg.webhookPaused, restored: false }))
+    const host = requestHost(c)
+    const hook = await ensureZaloWebhook(c.env, c.env.DB, user?.id ?? null, host).catch(() => ({ webhook_on: !cfg.webhookPaused, restored: false }))
     let webhook_last: { reason?: string; event?: string } = {}
     try { webhook_last = JSON.parse((await c.env.DB.prepare(`SELECT value FROM system_config WHERE key = 'zalo_webhook_last'`).first() as any)?.value || '{}') } catch { webhook_last = {} }
+    const needsLink = cfg.groups.some((g) => g.url && !g.chatId)
+    let delivery_error: string | null = null
+    if (!isLocalAppHost(host) && cfg.token && needsLink) {
+      const test = await zaloBotCall(cfg.token, 'testWebhook').catch(() => null)
+      delivery_error = zaloDeliveryError(test)
+    }
     return c.json({
       groups: cfg.groups.map((g) => ({ url: g.url, linked: !!g.chatId })),
       token_configured: !!cfg.token,
       webhook_secret_configured: !!cfg.webhookSecret,
       webhook_paused: !hook.webhook_on,
-      webhook_on: hook.webhook_on,
+      webhook_on: hook.webhook_on && !delivery_error,
       webhook_last,
+      delivery_error,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
@@ -10130,9 +10138,11 @@ async function restoreZaloWebhook(db: D1Database, token: string, secret: string,
 }
 
 function requestHost(c: { req: { url: string; header: (name: string) => string | undefined } }) {
-  const forwarded = c.req.header('x-forwarded-host') || c.req.header('host') || ''
-  const raw = forwarded.split(',')[0].trim() || new URL(c.req.url).host
-  return raw.split(':')[0].toLowerCase()
+  const urlHost = new URL(c.req.url).host.split(':')[0].toLowerCase()
+  const forwarded = (c.req.header('x-forwarded-host') || c.req.header('host') || '').split(',')[0].trim().split(':')[0].toLowerCase()
+  if (forwarded && !isLocalAppHost(forwarded)) return forwarded
+  if (urlHost && !isLocalAppHost(urlHost)) return urlHost
+  return forwarded || urlHost
 }
 
 function isLocalAppHost(host: string) {
@@ -10188,6 +10198,8 @@ app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c)
         : (reason || 'Không bật được webhook Zalo').slice(0, 180)
       return c.json({ error }, 400)
     }
+    const deliveryError = zaloDeliveryError(await zaloBotCall(cfg.token, 'testWebhook'))
+    if (deliveryError) return c.json({ error: deliveryError }, 400)
     await writeSystemConfig(db, 'zalo_webhook_url', listenUrl, user.id)
     await writeSystemConfig(db, 'zalo_webhook_paused', '0', user.id)
 
@@ -10236,12 +10248,14 @@ app.post('/api/zalo/webhook', async (c) => {
     const groupId = latestZaloGroupChatId(body)
     if (groupId) {
       const pending = cfg.groups.filter((g) => g.url && !g.chatId)
-      const target = cfg.captureUrl || (pending.length === 1 ? pending[0].url : '')
-      if (!target) {
+      const target = canonicalZaloGroupUrl(cfg.captureUrl) || (pending.length === 1 ? pending[0].url : '')
+      const next = target ? assignZaloGroupChat(cfg.groups, target, groupId) : cfg.groups
+      const saved = next.find((g) => g.url === target && g.chatId === groupId)
+      if (!saved) {
         await noteZaloWebhook(db, 'no-capture', eventName)
         return c.json({ ok: true, chat_type: 'group' })
       }
-      await saveZaloGroups(db, assignZaloGroupChat(cfg.groups, target, groupId), null)
+      await saveZaloGroups(db, next, null)
       await writeSystemConfig(db, 'zalo_capture_url', '', null)
       await noteZaloWebhook(db, 'saved', eventName)
       return c.json({ ok: true, chat_type: 'group' })
