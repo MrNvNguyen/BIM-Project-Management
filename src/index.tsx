@@ -91,7 +91,7 @@ import {
   STATUS_MAIL_SCOPE_SQL,
   vnClock,
 } from './status-mail'
-import { collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, zaloUpdatesBlocked } from './zalo-bot'
+import { collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId } from './zalo-bot'
 
 // ---- Types ----
 type Bindings = {
@@ -9864,7 +9864,7 @@ async function notifyOverdueLeaders(env: Bindings, db: D1Database, tasks: any[])
   return sent
 }
 
-const ZALO_OVERDUE_GROUP_URL = 'https://zalo.me/g/nquvtj706'
+const ZALO_OVERDUE_GROUP_URL = 'https://zalo.me/g/bvk8cticxyywemhdpvqx'
 const ZALO_WEBHOOK_URL = 'https://ddcn.bimonecadvn.com/api/zalo/webhook'
 
 async function readZaloOverdueConfig(env: Bindings, db: D1Database) {
@@ -9893,16 +9893,26 @@ async function writeSystemConfig(db: D1Database, key: string, value: string, use
   ).bind(key, value, userId).run()
 }
 
-const ZALO_PRIVATE_CHAT_HINT = 'Chat ID đang là hội thoại riêng với bot, không phải nhóm. Hãy gửi một tin trong nhóm https://zalo.me/g/nquvtj706 (đừng nhắn riêng với bot), rồi bấm Lấy Chat ID.'
+const ZALO_PRIVATE_CHAT_HINT = `Chat ID đang là hội thoại riêng với bot, không phải nhóm. Hãy gửi một tin trong nhóm ${ZALO_OVERDUE_GROUP_URL} (đừng nhắn riêng với bot), rồi bấm Lấy Chat ID.`
 
 async function zaloBotCall(token: string, method: string, body?: Record<string, unknown>) {
-  const res = await fetch(`https://bot-api.zaloplatforms.com/bot${token}/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  })
-  const json = await res.json().catch(() => ({})) as any
-  return json
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 8000)
+  try {
+    const res = await fetch(`https://bot-api.zaloplatforms.com/bot${token}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+      signal: ctrl.signal,
+    })
+    return await res.json().catch(() => ({})) as any
+  } catch (e: any) {
+    const timedOut = e?.name === 'AbortError' || e?.name === 'TimeoutError' || /timeout/i.test(String(e?.message || ''))
+    if (timedOut) return { ok: false, description: 'Zalo không phản hồi kịp' }
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function overdueZaloText(tasks: any[]) {
@@ -10086,46 +10096,32 @@ app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c)
     const cfg = await readZaloOverdueConfig(c.env, db)
     if (!cfg.token) return c.json({ error: 'Chưa có Bot Token Zalo' }, 400)
     if (cfg.chatType === 'group' && cfg.chatId) {
+      const hooked = await zaloBotCall(cfg.token, 'getWebhookInfo')
+      const hookedUrl = String(hooked?.result?.url || '').trim()
+      if (cfg.webhookSecret && hookedUrl && hookedUrl !== ZALO_WEBHOOK_URL) {
+        await zaloBotCall(cfg.token, 'setWebhook', { url: ZALO_WEBHOOK_URL, secret_token: cfg.webhookSecret })
+        await writeSystemConfig(db, 'zalo_webhook_url', ZALO_WEBHOOK_URL, user.id)
+      }
       return c.json({ chat_id: cfg.chatId, chat_type: 'group', group_url: cfg.groupUrl, source: 'stored' })
+    }
+    if (!cfg.webhookSecret) {
+      return c.json({ error: 'Nhập Secret Token webhook vào ô cạnh Bot Token, rồi bấm Lấy Chat ID lại.' }, 400)
     }
 
     const info = await zaloBotCall(cfg.token, 'getWebhookInfo')
     const liveUrl = String(info?.result?.url || '').trim()
-    let json = await zaloBotCall(cfg.token, 'getUpdates', { timeout: '2' })
-    let pausedForPoll = false
-
-    if (liveUrl && (zaloUpdatesBlocked(json, liveUrl) || !latestZaloGroupChatId(json))) {
-      if (!cfg.webhookSecret) {
-        return c.json({ error: 'Zalo đang bật webhook nên không đọc được tin nhắn. Nhập Secret Token webhook vào ô cạnh Bot Token, rồi bấm Lấy Chat ID lại.' }, 400)
+    if (!liveUrl) {
+      const set = await zaloBotCall(cfg.token, 'setWebhook', { url: ZALO_WEBHOOK_URL, secret_token: cfg.webhookSecret })
+      if (set?.ok === false) {
+        return c.json({ error: String(set.description || set.message || 'Không bật được webhook Zalo').slice(0, 180) }, 400)
       }
-      await writeSystemConfig(db, 'zalo_webhook_url', liveUrl, user.id)
-      const deleted = await zaloBotCall(cfg.token, 'deleteWebhook')
-      if (deleted?.ok === false) {
-        return c.json({ error: String(deleted.description || deleted.message || 'Không tắt được webhook Zalo').slice(0, 180) }, 400)
-      }
-      await writeSystemConfig(db, 'zalo_webhook_paused', '1', user.id)
-      pausedForPoll = true
-      json = await zaloBotCall(cfg.token, 'getUpdates', { timeout: '2' })
+      await writeSystemConfig(db, 'zalo_webhook_url', ZALO_WEBHOOK_URL, user.id)
+      await writeSystemConfig(db, 'zalo_webhook_paused', '0', user.id)
     }
 
-    if (json?.ok === false && !pausedForPoll) {
-      return c.json({ error: String(json.description || json.message || 'Không đọc được tin nhắn của bot').slice(0, 180) }, 400)
-    }
-
-    const groupId = json?.ok === false ? null : latestZaloGroupChatId(json)
-    if (groupId) {
-      await saveZaloGroupChat(db, groupId, user.id)
-      if (cfg.webhookSecret) await restoreZaloWebhook(db, cfg.token, cfg.webhookSecret, user.id)
-      return c.json({ chat_id: groupId, chat_type: 'group', group_url: cfg.groupUrl, source: 'getUpdates' })
-    }
-
-    if (latestZaloPrivateChatId(json)) {
-      return c.json({ error: 'Bot chỉ thấy tin nhắn riêng với bot, chưa thấy tin trong nhóm. Gửi một tin trong nhóm https://zalo.me/g/nquvtj706 rồi bấm Lấy Chat ID ngay.' }, 404)
-    }
-    if (pausedForPoll || cfg.webhookPaused) {
-      return c.json({ error: 'Đã tạm tắt webhook để đọc tin. Mở nhóm https://zalo.me/g/nquvtj706, gửi một tin trong nhóm, rồi bấm Lấy Chat ID ngay.' }, 404)
-    }
-    return c.json({ error: `Bot chưa thấy tin trong nhóm. Mời bot vào ${cfg.groupUrl}, gửi một tin trong nhóm, rồi bấm Lấy Chat ID.` }, 404)
+    return c.json({
+      error: `Webhook đã bật để nhận tin nhóm. Tag bot một tin trong nhóm ${cfg.groupUrl}, đợi vài giây, rồi bấm Lấy Chat ID.`,
+    }, 404)
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
