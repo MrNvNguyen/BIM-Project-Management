@@ -10062,7 +10062,7 @@ app.get('/api/admin/zalo-overdue', authMiddleware, adminOnly, async (c) => {
   try {
     const user = c.get('user') as any
     const cfg = await readZaloOverdueConfig(c.env, c.env.DB)
-    const hook = await ensureZaloWebhook(c.env, c.env.DB, user?.id ?? null).catch(() => ({ webhook_on: !cfg.webhookPaused, restored: false }))
+    const hook = await ensureZaloWebhook(c.env, c.env.DB, user?.id ?? null, new URL(c.req.url).host).catch(() => ({ webhook_on: !cfg.webhookPaused, restored: false }))
     return c.json({
       groups: cfg.groups.map((g) => ({ url: g.url, linked: !!g.chatId })),
       token_configured: !!cfg.token,
@@ -10123,9 +10123,24 @@ async function restoreZaloWebhook(db: D1Database, token: string, secret: string,
   return { ok: true as const }
 }
 
+function isProductionAppHost(host: string) {
+  return host === 'ddcn.bimonecadvn.com'
+}
+
+/** Địa chỉ Zalo phải gọi đúng server đang mở màn hình. Local không dùng URL production. */
+async function captureListenUrl(db: D1Database, host: string) {
+  if (isProductionAppHost(host)) return ZALO_WEBHOOK_URL
+  const row = await db.prepare(`SELECT value FROM system_config WHERE key = 'zalo_listen_url'`).first() as any
+  const raw = String(row?.value || '').trim().replace(/\/$/, '')
+  if (!raw.startsWith('https://')) return ''
+  return raw.endsWith('/api/zalo/webhook') ? raw : `${raw}/api/zalo/webhook`
+}
+
 /** Bản cũ tắt webhook để gọi getUpdates rồi không bật lại được, vì tin nhóm không vào getUpdates. */
-async function ensureZaloWebhook(env: Bindings, db: D1Database, userId: number | null) {
+async function ensureZaloWebhook(env: Bindings, db: D1Database, userId: number | null, host: string) {
+  if (!isProductionAppHost(host)) return { webhook_on: true, restored: false }
   const cfg = await readZaloOverdueConfig(env, db)
+  if (cfg.captureUrl) return { webhook_on: true, restored: false }
   if (!cfg.token || !cfg.webhookSecret) return { webhook_on: false, restored: false }
   const info = await zaloBotCall(cfg.token, 'getWebhookInfo')
   const liveUrl = String(info?.result?.url || '').trim()
@@ -10152,28 +10167,32 @@ app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c)
     const group = cfg.groups.find((g) => g.url === url)
     if (!group) return c.json({ error: 'Nhóm này chưa có trong danh sách. Dán link rồi bấm Thêm nhóm.' }, 400)
     if (group.chatId) {
-      const hook = cfg.webhookSecret ? await ensureZaloWebhook(c.env, db, user.id) : { webhook_on: false }
-      return c.json({ url, linked: true, source: 'stored', webhook_on: hook.webhook_on })
+      return c.json({ url, linked: true, source: 'stored' })
     }
     if (!cfg.webhookSecret) {
       return c.json({ error: 'Nhập Secret Token webhook vào ô cạnh Bot Token, rồi bấm Lấy Chat ID lại.' }, 400)
+    }
+    const listenUrl = await captureListenUrl(db, new URL(c.req.url).host)
+    if (!listenUrl) {
+      return c.json({ error: 'Màn hình local không nhận được tin Zalo vì webhook đang trỏ server khác. Chưa có địa chỉ public cho máy này.' }, 400)
     }
     await writeSystemConfig(db, 'zalo_capture_url', url, user.id)
 
     const info = await zaloBotCall(cfg.token, 'getWebhookInfo')
     const liveUrl = String(info?.result?.url || '').trim()
-    if (!liveUrl) {
-      const set = await zaloBotCall(cfg.token, 'setWebhook', { url: ZALO_WEBHOOK_URL, secret_token: cfg.webhookSecret })
+    if (liveUrl !== listenUrl) {
+      const set = await zaloBotCall(cfg.token, 'setWebhook', { url: listenUrl, secret_token: cfg.webhookSecret })
       if (set?.ok === false) {
         return c.json({ error: String(set.description || set.message || 'Không bật được webhook Zalo').slice(0, 180) }, 400)
       }
-      await writeSystemConfig(db, 'zalo_webhook_url', ZALO_WEBHOOK_URL, user.id)
+      await writeSystemConfig(db, 'zalo_webhook_url', listenUrl, user.id)
       await writeSystemConfig(db, 'zalo_webhook_paused', '0', user.id)
     }
 
     return c.json({
-      error: `Đã chọn nhóm ${url}. Tag bot một tin trong đúng nhóm đó, đợi vài giây, rồi bấm Lấy Chat ID lại.`,
-    }, 404)
+      pending: true,
+      message: `Đã chọn nhóm ${url}. Tag bot một tin mới trong đúng nhóm đó, đợi vài giây, rồi bấm Lấy Chat ID lại.`,
+    })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -10187,6 +10206,7 @@ app.post('/api/zalo/webhook', async (c) => {
     const body = await c.req.json().catch(() => ({})) as any
     const chats = collectZaloChats(body)
     if (!chats.length) return c.json({ ok: true })
+    console.log('zalo webhook event', { chats: chats.length, group: !!latestZaloGroupChatId(body) })
 
     const cfg = await readZaloOverdueConfig(c.env, db)
     if (!cfg.webhookSecret) return c.json({ ok: false, error: 'Chưa cấu hình Secret Token webhook' }, 503)

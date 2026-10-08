@@ -15496,6 +15496,22 @@ async function captureZaloGroupChat(url) {
   if (secret && !secret.includes('****')) data.zalo_webhook_secret = secret
   try {
     const res = await api('/admin/zalo-overdue/capture', { method: 'POST', data })
+    if (res.pending) {
+      if (status) status.textContent = res.message
+      toast(res.message, 'info', 8000)
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 2000))
+        const data = await api('/admin/zalo-overdue')
+        const row = (data.groups || []).find(g => g.url === url)
+        if (row?.linked) {
+          renderZaloOverdueGroups(data.groups || [])
+          if (status) status.textContent = 'Đã gắn Chat ID. Tin nhắc sẽ vào nhóm này.'
+          toast('Đã lấy Chat ID nhóm Zalo', 'success')
+          return
+        }
+      }
+      return
+    }
     if (status) status.textContent = 'Đã gắn Chat ID. Tin nhắc sẽ vào nhóm này.'
     toast(res.linked ? 'Nhóm đã gắn Chat ID' : 'Đã lấy Chat ID nhóm Zalo', 'success')
     await loadZaloOverdueConfig()
