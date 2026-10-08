@@ -2,6 +2,7 @@
 // BIM Project Management System - Main API
 // ===================================================
 import { Hono } from 'hono'
+import { createAiGateway } from './ai-gateway'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { serveStatic } from 'hono/cloudflare-workers'
@@ -97,6 +98,8 @@ import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZa
 type Bindings = {
   DB: D1Database
   JWT_SECRET: string
+  AI_GATEWAY_KEY?: string
+  AI_GATEWAY_USER_ID?: string
   /** Khóa gọi POST /api/cron/friday-status-mails. Pages không chạy cron. */
   CRON_SECRET?: string
   RESEND_API_KEY: string
@@ -1348,6 +1351,8 @@ app.use('/api/*', cors({
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
 }))
+
+app.route('/api/ai/v1', createAiGateway())
 
 // Auth middleware
 const authMiddleware = async (c: any, next: any) => {
