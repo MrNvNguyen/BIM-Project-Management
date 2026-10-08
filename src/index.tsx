@@ -91,7 +91,7 @@ import {
   STATUS_MAIL_SCOPE_SQL,
   vnClock,
 } from './status-mail'
-import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, parseZaloOverdueGroups } from './zalo-bot'
+import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, inspectZaloWebhook, latestZaloGroupChatId, latestZaloPrivateChatId, parseZaloOverdueGroups } from './zalo-bot'
 
 // ---- Types ----
 type Bindings = {
@@ -10205,11 +10205,12 @@ app.post('/api/admin/zalo-overdue/capture', authMiddleware, adminOnly, async (c)
 
 app.get('/api/zalo/webhook', (c) => c.json({ ok: true }))
 
-async function noteZaloWebhook(db: D1Database, reason: string, eventName: string) {
+async function noteZaloWebhook(db: D1Database, reason: string, eventName: string, shape = '') {
   await writeSystemConfig(db, 'zalo_webhook_last', JSON.stringify({
     at: new Date().toISOString(),
     reason,
     event: String(eventName || '').slice(0, 80),
+    shape: String(shape || '').slice(0, 240),
   }), null)
 }
 
@@ -10220,11 +10221,12 @@ function zaloEventName(body: any) {
 app.post('/api/zalo/webhook', async (c) => {
   try {
     const db = c.env.DB
-    const body = await c.req.json().catch(() => ({})) as any
-    const eventName = zaloEventName(body)
+    const inspected = inspectZaloWebhook(await c.req.text())
+    const body = inspected.body
+    const eventName = inspected.event || zaloEventName(body)
     const chats = collectZaloChats(body)
     if (!chats.length) {
-      await noteZaloWebhook(db, 'no-chat', eventName)
+      await noteZaloWebhook(db, inspected.empty ? 'ping' : 'no-chat', eventName, inspected.shape)
       return c.json({ ok: true })
     }
 

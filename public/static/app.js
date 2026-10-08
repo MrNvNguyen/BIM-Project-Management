@@ -15438,7 +15438,8 @@ async function loadZaloOverdueConfig() {
       else if (linked) status.textContent = `Sẽ gửi tin quá hạn vào ${linked} nhóm đã gắn.` + (data.webhook_on ? ' Webhook đang bật.' : ' Webhook chưa bật.')
       else if (reason === 'secret') status.textContent = 'Zalo đã gọi tới nhưng Secret Token không khớp. Dán Secret Token trên Zalo vào ô này, bấm Lấy Chat ID, rồi tag bot một tin mới.'
       else if (reason === 'private') status.textContent = 'Bot chỉ nhận tin nhắn riêng, chưa phải tin trong nhóm. Tag bot ngay trong nhóm.'
-      else if (reason === 'no-chat') status.textContent = 'Zalo đã gọi webhook nhưng không gửi kèm cuộc trò chuyện nhóm.'
+      else if (reason === 'no-chat') status.textContent = 'Zalo đã gọi webhook nhưng không có cuộc trò chuyện nhóm.' + (data.webhook_last?.shape ? ` Dạng tin: ${data.webhook_last.shape}` : '')
+      else if (reason === 'ping') status.textContent = 'Zalo chỉ gửi tín hiệu kiểm tra, chưa có tin nhắn. Tag bot một tin mới trong nhóm.'
       else if (reason === 'no-capture') status.textContent = 'Có tin nhóm nhưng chưa chọn đúng link. Bấm Lấy Chat ID trên đúng dòng nhóm, rồi tag bot một tin mới.'
       else status.textContent = 'Đã có nhóm. Với từng nhóm, bấm Lấy Chat ID rồi tag bot một tin trong đúng nhóm đó.'
     }
@@ -15526,8 +15527,9 @@ async function captureZaloGroupChat(url) {
           if (status) status.textContent = 'Bot chỉ nhận tin nhắn riêng, chưa phải tin trong nhóm. Tag bot ngay trong nhóm.'
         }
         if (reason === 'no-chat') {
-          if (status) status.textContent = 'Zalo đã gọi webhook nhưng không gửi kèm cuộc trò chuyện nhóm.'
+          if (status) status.textContent = 'Zalo đã gọi webhook nhưng không có cuộc trò chuyện nhóm.' + (data.webhook_last?.shape ? ` Dạng tin: ${data.webhook_last.shape}` : '')
         }
+        if (reason === 'ping' && status) status.textContent = 'Zalo chỉ gửi tín hiệu kiểm tra, chưa có tin nhắn. Tag bot một tin mới trong nhóm.'
       }
       return
     }

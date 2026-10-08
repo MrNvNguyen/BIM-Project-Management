@@ -37,6 +37,78 @@ export function latestZaloGroupChatId(payload: unknown): string | null {
   return null
 }
 
+function unwrapZaloValue(value: unknown, depth = 0): unknown {
+  if (depth > 4) return value
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (text.startsWith('{') || text.startsWith('[')) {
+      try { return unwrapZaloValue(JSON.parse(text), depth + 1) } catch { return value }
+    }
+    return value
+  }
+  if (!value || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map((item) => unwrapZaloValue(item, depth + 1))
+  const out: Record<string, unknown> = {}
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) out[key] = unwrapZaloValue(item, depth + 1)
+  return out
+}
+
+function zaloEventIn(node: unknown, depth = 0): string {
+  if (!node || typeof node !== 'object' || depth > 5) return ''
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = zaloEventIn(item, depth + 1)
+      if (found) return found
+    }
+    return ''
+  }
+  const obj = node as Record<string, unknown>
+  for (const key of ['event_name', 'eventName', 'event']) {
+    if (typeof obj[key] === 'string' && obj[key]) return String(obj[key]).slice(0, 80)
+  }
+  for (const item of Object.values(obj)) {
+    const found = zaloEventIn(item, depth + 1)
+    if (found) return found
+  }
+  return ''
+}
+
+/** Chỉ tên trường, không lưu nội dung tin nhắn hay token. */
+export function zaloPayloadShape(value: unknown): string {
+  const keys: string[] = []
+  const walk = (node: unknown, prefix: string, depth: number) => {
+    if (depth > 4 || keys.length > 24 || !node || typeof node !== 'object') return
+    if (Array.isArray(node)) {
+      keys.push(`${prefix}[]`)
+      if (node.length) walk(node[0], `${prefix}[]`, depth + 1)
+      return
+    }
+    for (const [key, item] of Object.entries(node as Record<string, unknown>)) {
+      if (/token|secret|text|caption|display_name|photo|url/i.test(key)) continue
+      const path = prefix ? `${prefix}.${key}` : key
+      if (item && typeof item === 'object') walk(item, path, depth + 1)
+      else keys.push(path)
+    }
+  }
+  walk(value, '', 0)
+  return keys.join(',').slice(0, 240)
+}
+
+/** Đọc body webhook. Chuỗi JSON lồng nhau được mở ra trước khi tìm chat. */
+export function inspectZaloWebhook(raw: string): { body: unknown; event: string; shape: string; empty: boolean } {
+  const text = String(raw || '').trim()
+  if (!text) return { body: {}, event: '', shape: '', empty: true }
+  let parsed: unknown = {}
+  if (text.startsWith('{') || text.startsWith('[')) {
+    try { parsed = JSON.parse(text) } catch { parsed = {} }
+  }
+  const body = unwrapZaloValue(parsed)
+  const event = zaloEventIn(body)
+  const shape = zaloPayloadShape(body)
+  const empty = !event && !shape
+  return { body, event, shape, empty }
+}
+
 /** getUpdates không chạy khi webhook còn URL. Tài liệu Zalo: gọi deleteWebhook trước. */
 export function zaloUpdatesBlocked(json: { ok?: boolean; description?: unknown; message?: unknown } | null, webhookUrl: string) {
   if (!json || json.ok !== false) return false

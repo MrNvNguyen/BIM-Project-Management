@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, latestZaloGroupChatId, latestZaloPrivateChatId, zaloUpdatesBlocked } from './zalo-bot'
+import { addZaloGroupLink, assignZaloGroupChat, canonicalZaloGroupUrl, collectZaloChats, inspectZaloWebhook, latestZaloGroupChatId, latestZaloPrivateChatId, zaloUpdatesBlocked } from './zalo-bot'
 
 describe('zalo bot chat id', () => {
   it('does not treat a private bot chat as the group', () => {
@@ -51,5 +51,20 @@ describe('zalo bot chat id', () => {
       message: { chat: { id: 'nhom-1', chat_type: 'Group' }, text: 'xin chào nhóm' },
     }
     expect(latestZaloGroupChatId(payload)).toBe('nhom-1')
+  })
+
+  it('unwraps a stringified webhook and does not keep the message text', () => {
+    const raw = JSON.stringify({
+      ok: true,
+      result: JSON.stringify({
+        event_name: 'message.text.received',
+        message: { chat: { id: 'nhom-9', chat_type: 'GROUP' }, text: 'noi dung bi mat' },
+      }),
+    })
+    const inspected = inspectZaloWebhook(raw)
+    expect(inspected.event).toBe('message.text.received')
+    expect(latestZaloGroupChatId(inspected.body)).toBe('nhom-9')
+    expect(inspected.shape).not.toMatch(/noi dung/)
+    expect(inspectZaloWebhook('').empty).toBe(true)
   })
 })

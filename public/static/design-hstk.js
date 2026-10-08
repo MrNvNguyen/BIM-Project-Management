@@ -1402,6 +1402,7 @@
   window.loadProjectDashboardPage = async function loadProjectDashboardPage() {
     const root = document.getElementById('projectDashboardRoot')
     if (!root) return
+    if (typeof window.initProjectDashboardFilters === 'function') await window.initProjectDashboardFilters()
     root.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Đang tải…</div>`
     const q = projectDashboardQueryParams()
     try {
@@ -1763,12 +1764,17 @@
   window.initProjectDashboardFilters = async function () {
     const sel = document.getElementById('pdMemberFilter')
     if (!sel || sel.dataset.loaded) return
-    try {
-      const members = await api('/members')
-      sel.innerHTML = '<option value="">— Chọn thành viên —</option>' + members.map(m => `<option value="${m.id}">${escHtml(m.full_name)}</option>`).join('')
-      sel.dataset.loaded = '1'
-    } catch (_) { /* ignore */ }
     const wrap = document.getElementById('pdMemberFilterWrap')
     if (wrap) wrap.classList.toggle('hidden', (window._pdState?.tab || 'project') !== 'member')
+    try {
+      const members = await api('/members')
+      const rows = Array.isArray(members) ? members : []
+      const prev = sel.value
+      sel.innerHTML = '<option value="">— Chọn thành viên —</option>' + rows.map(m => `<option value="${m.id}">${escHtml(m.full_name)}</option>`).join('')
+      if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev
+      sel.dataset.loaded = '1'
+    } catch (_) {
+      sel.innerHTML = '<option value="">Không tải được danh sách thành viên</option>'
+    }
   }
 })()
