@@ -11,7 +11,7 @@ DCR: `/oauth/ddcn/register`, chỉ chấp nhận một callback chính xác `htt
 
 Trang consent `/oauth/ddcn/authorize` sử dụng phiên DDCN ở localStorage `bim_token`, qua Authorization header khi người dùng bấm Cho phép. Người dùng chưa đăng nhập mở DDCN trong tab khác rồi quay lại. Không gửi password hay JWT đăng nhập sang ChatGPT.
 
-Mã cấp quyền hết hạn 5 phút, tiêu thụ bằng DELETE RETURNING nguyên tử, ràng buộc client/callback/resource/PKCE. Chỉ lưu SHA256 của code và token. Access token hết hạn 8 giờ; chưa có refresh token, hết hạn cần kết nối lại. Có endpoint `/oauth/ddcn/revoke`.
+Mã cấp quyền hết hạn 5 phút, tiêu thụ bằng DELETE RETURNING nguyên tử, ràng buộc client/callback/resource/PKCE. Chỉ lưu SHA256 của code và token. Access token hết hạn 8 giờ. Refresh token tự xoay vòng sau mỗi lần dùng, chỉ lưu SHA256 và có thời hạn tuyệt đối 30 ngày kể từ lần cấp quyền; sau đó cần kết nối lại. Gia hạn kiểm tra lại tài khoản quản trị đang hoạt động, principal, audience và scope. Token cũ được tiêu thụ nguyên tử; gia hạn thành công thu hồi access token cũ. Thu hồi access hoặc refresh token vô hiệu hóa cả cặp hiện tại. Nếu lỗi lưu trữ xảy ra sau khi tiêu thụ token, kết nối cần cấp quyền lại (fail closed). Có endpoint `/oauth/ddcn/revoke`.
 
 ## Triển khai
 
@@ -25,3 +25,7 @@ Mã cấp quyền hết hạn 5 phút, tiêu thụ bằng DELETE RETURNING nguy�
 Chưa xác nhận callback và luồng OAuth trên tài khoản production. Không coi test mock là bằng chứng liên kết ChatGPT thành công. DCR public cần quy tắc rate limit của Cloudflare cho `/oauth/ddcn/register`; bảng client sẽ tăng khi tạo kết nối mới. Bản này dành cho kết nối nội bộ ChatGPT, chưa hỗ trợ client metadata URL CIMD hoặc các callback Codex khác.
 
 Tham chiếu: https://developers.openai.com/plugins/build/auth
+
+## Nâng cấp refresh token
+
+Áp dụng `migrations/0073_ddcn_oauth_refresh.sql` trên D1 production trước khi triển khai bản refresh. Migration chỉ thêm bảng OAuth độc lập, có thể chạy lại. Sau deployment, làm mới công cụ/metadata plugin và ngắt kết nối rồi cấp quyền lại một lần: access token cũ không tự nhận refresh token. Không cần đổi AI_GATEWAY_KEY hay JWT_SECRET. ChatGPT phải lưu và dùng refresh token mới nhất trả về trong mỗi lần gia hạn. Chưa xác nhận tác vụ định kỳ có tự gia hạn cho tới khi kiểm tra trên host thực tế.
