@@ -20,7 +20,8 @@
         "type": "http",
         "scheme": "bearer"
       }
-    }
+    },
+    "schemas": {}
   },
   "paths": {
     "/api/ai/v1/overview": {
