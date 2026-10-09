@@ -3,6 +3,7 @@
 // ===================================================
 import { Hono } from 'hono'
 import { createAiGateway } from './ai-gateway'
+import { createDdcnOAuth } from './ddcn-oauth'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { serveStatic } from 'hono/cloudflare-workers'
@@ -1352,6 +1353,7 @@ app.use('/api/*', cors({
   allowHeaders: ['Content-Type', 'Authorization'],
 }))
 
+app.route('/', createDdcnOAuth(verifyToken))
 app.route('/api/ai/v1', createAiGateway())
 
 // Auth middleware

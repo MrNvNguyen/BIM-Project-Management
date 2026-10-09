@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import { handleDdcnMcp } from './ddcn-mcp'
+import { oauthChallenge, oauthPrincipal } from './ddcn-oauth'
 
 export type GatewayBindings = {
   DB: D1Database
@@ -25,13 +27,28 @@ export function pageParams(query: Record<string, string>) {
 }
 export function createAiGateway() {
   const app = new Hono<{ Bindings: GatewayBindings }>()
+  app.use('/mcp', bodyLimit({ maxSize: 65536 }))
   app.use('*', async (c, next) => {
     c.header('Cache-Control', 'no-store')
     const key = c.env.AI_GATEWAY_KEY
     const id = Number(c.env.AI_GATEWAY_USER_ID)
     if (!key || key.length < 32 || !Number.isSafeInteger(id) || id <= 0) return c.json({ error: 'AI gateway disabled' }, 503)
     const auth = c.req.header('Authorization') || ''
-    if (!auth.startsWith('Bearer ') || !(await keyMatches(auth.slice(7), key))) return c.json({ error: 'Unauthorized' }, 401)
+    // Public protocol discovery contains tool descriptions only, never DDCN data.
+    if (c.req.path.endsWith('/mcp') && c.req.method === 'POST' && !auth) {
+      const rpc = await c.req.raw.clone().json().catch(() => null) as any
+      if (['initialize', 'tools/list', 'notifications/initialized'].includes(rpc?.method)) {
+        return handleDdcnMcp(c.req.raw, async () => new Response(null, { status: 401 }))
+      }
+    }
+    c.header('WWW-Authenticate', oauthChallenge)
+    if (!auth.startsWith('Bearer ')) return c.json({ error: 'Unauthorized' }, 401)
+    const token = auth.slice(7)
+    const authenticated = token.startsWith('ddcn_oauth_')
+      ? (await oauthPrincipal(token, c.env)) === id
+      : await keyMatches(token, key)
+    if (!authenticated) return c.json({ error: 'Unauthorized' }, 401)
+    c.header('WWW-Authenticate', undefined)
     const user = await c.env.DB.prepare('SELECT id, role, is_active FROM users WHERE id = ?').bind(id).first<any>()
     // First release is an executive connection. Reject a removed, disabled or demoted principal.
     if (!user || user.is_active !== 1 || user.role !== 'system_admin') return c.json({ error: 'Access denied' }, 403)

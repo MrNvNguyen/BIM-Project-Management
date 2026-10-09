@@ -7,7 +7,7 @@ async function rpc(method: string, params = {}, extra = {}) {
   return createAiGateway().request('/mcp', { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...extra }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }, env)
 }
 describe('DDCN MCP', () => {
-  it('requires gateway authentication', async () => expect((await rpc('tools/list', {}, { Authorization: '' })).status).toBe(401))
+  it('requires gateway authentication', async () => expect((await rpc('tools/call', { name: 'ddcn_overview', arguments: {} }, { Authorization: '' })).status).toBe(401))
   it('rejects untrusted origins', async () => expect((await rpc('tools/list', {}, { Origin: 'https://evil.example' })).status).toBe(403))
   it('initializes stateless transport', async () => { const r = await rpc('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } }); expect(r.status).toBe(200); expect((await r.json()).result.serverInfo.name).toBe('onecad-ddcn'); expect(r.headers.get('mcp-session-id')).toBeNull() })
   it('lists exactly four read-only tools', async () => { const r = await rpc('tools/list'); const tools = (await r.json()).result.tools; expect(tools).toHaveLength(4); expect(tools.every((t: any) => t.annotations.readOnlyHint && !t.annotations.destructiveHint)).toBe(true) })
