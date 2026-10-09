@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { handleDdcnMcp } from './ddcn-mcp'
 
 export type GatewayBindings = {
   DB: D1Database
@@ -88,6 +89,11 @@ export function createAiGateway() {
       FROM users u WHERE u.is_active = 1 ORDER BY u.id LIMIT ? OFFSET ?`).bind(today, from, today, page.limit, page.offset).all()
     return c.json({ ...envelope(rows.results), period: { from, to: today }, hours_note: 'Giờ khai báo, có thể chưa được duyệt; không phải kết luận hiệu suất.', ...page, next_offset: rows.results.length === page.limit ? page.offset + page.limit : null })
   })
+  app.all('/mcp', c => handleDdcnMcp(c.req.raw, async (path, query) => {
+    const url = new URL(path, 'https://ddcn.internal')
+    for (const [key, value] of Object.entries(query)) if (value !== undefined) url.searchParams.set(key, String(value))
+    return app.request(url.toString(), { headers: { Authorization: c.req.header('Authorization')! } }, c.env)
+  }))
   app.all('*', c => c.json({ error: 'Read-only gateway: unsupported operation' }, 405))
   return app
 }

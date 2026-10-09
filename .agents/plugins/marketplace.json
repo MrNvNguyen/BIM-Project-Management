@@ -1,0 +1,20 @@
+{
+  "name": "onecad",
+  "interface": {
+    "displayName": "OneCAD Plugins"
+  },
+  "plugins": [
+    {
+      "name": "onecad-ddcn",
+      "source": {
+        "source": "local",
+        "path": "./plugins/onecad-ddcn"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
