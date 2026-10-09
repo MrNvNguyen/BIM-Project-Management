@@ -9055,7 +9055,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
       `).all(),
       db.prepare(`
         SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status, request_date, paid_date
-        FROM payment_requests WHERE status IN ('pending','partial','paid')
+        FROM payment_requests WHERE status IN ('pending','processing','partial','paid')
       `).all(),
       db.prepare(`
         SELECT COALESCE(SUM(amount), 0) as t FROM project_revenues
@@ -9160,7 +9160,7 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
     const disciplineBreakdown = { results: taskGroupRows.filter(r => r.kind === 'discipline').map(r => ({ discipline_code: r.key, count: r.count, completed: r.completed })) }
 
     const payYtdFiltered = ((payRowsYtd as any)?.results as any[] || []).filter((r: any) => {
-      if (r.status === 'pending') {
+      if (r.status === 'pending' || r.status === 'processing') {
         return r.request_date && r.request_date >= fyStartNow && r.request_date <= fyEndNow
       }
       const d = r.paid_date || r.request_date
@@ -12874,19 +12874,21 @@ app.get('/api/analytics/financial-by-project', authMiddleware, adminOnly, async 
       SELECT project_id, amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status,
              request_date, paid_date
       FROM payment_requests
-      WHERE status IN ('paid', 'partial', 'pending')
+      WHERE status IN ('paid', 'partial', 'processing')
         AND ${paymentOnPackageSql('payment_requests')}
     `).all()
     const payRowsNtcFiltered = (payRowsNtc.results as any[]).filter((r: any) => {
-      if (r.status === 'pending') {
+      if (r.status === 'processing') {
         if (!r.request_date) return true
         return r.request_date >= fyStart && r.request_date <= fyEnd
       }
       const d = r.paid_date || r.request_date
       return d && d >= fyStart && d <= fyEnd
     })
-    const { acceptanceByProject: revOrigMap, cashByProject: paidAmtMap } =
-      aggregatePaymentsBeforeVat(payRowsNtcFiltered)
+    const { acceptanceByProject: revOrigMap } = aggregatePaymentsBeforeVat(payRowsNtcFiltered)
+    const { cashByProject: paidAmtMap } = aggregatePaymentsBeforeVat(
+      payRowsNtcFiltered.filter((r: any) => r.status === 'paid' || r.status === 'partial')
+    )
 
     const pendingThreeByProject: Record<number, number> = {}
     for (const r of payRowsNtcFiltered) {
@@ -13093,11 +13095,14 @@ app.get('/api/analytics/financial-by-project-lifetime', authMiddleware, adminOnl
     const payRowsLT = await db.prepare(`
       SELECT project_id, amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
       FROM payment_requests
-      WHERE status IN ('paid', 'partial', 'pending')
+      WHERE status IN ('paid', 'partial', 'processing')
         AND ${paymentOnPackageSql('payment_requests')}
     `).all()
-    const { acceptanceByProject: revOrigMapLT, cashByProject: paidAmtMapLT } =
-      aggregatePaymentsBeforeVat(payRowsLT.results as any[])
+    const ltRows = payRowsLT.results as any[]
+    const { acceptanceByProject: revOrigMapLT } = aggregatePaymentsBeforeVat(ltRows)
+    const { cashByProject: paidAmtMapLT } = aggregatePaymentsBeforeVat(
+      ltRows.filter((r: any) => r.status === 'paid' || r.status === 'partial')
+    )
     const pendingThreeLT: Record<number, number> = {}
     for (const r of (payRowsLT.results as any[])) {
       if (r.status !== 'pending') continue
@@ -15192,16 +15197,18 @@ app.get('/api/projects/:id/estimate-vs-actual', authMiddleware, adminOnly, async
 
   // ── 2. Thực tế — Doanh thu (toàn vòng đời; NT + TT trước VAT)
   const payActualRows = await db.prepare(`
-    SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct
+    SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
     FROM payment_requests
-    WHERE project_id = ? AND status IN ('paid', 'partial', 'pending')
+    WHERE project_id = ? AND status IN ('paid', 'partial', 'processing')
   `).bind(projectId).all()
   let nghiemThuBeforeVat = 0
   let dongTienBeforeVat = 0
   for (const r of (payActualRows.results as any[])) {
     const vat = Number(r.vat_pct) || 0
     nghiemThuBeforeVat += amountExcludingVat(Number(r.amount) || 0, vat)
-    dongTienBeforeVat += amountExcludingVat(Number(r.paid_amount) || 0, vat)
+    if (r.status === 'paid' || r.status === 'partial') {
+      dongTienBeforeVat += amountExcludingVat(Number(r.paid_amount) || 0, vat)
+    }
   }
   const bookedRevActual = await db.prepare(`
     SELECT SUM(amount) as doanh_thu_ns
@@ -18396,7 +18403,7 @@ app.get('/api/executive/dashboard', authMiddleware, pmoAccess, async (c) => {
     // 2. Ba số tiền: NT/GTTT trước VAT; booked gồm pending đã NT
     const payAllExec = await db.prepare(`
       SELECT amount, paid_amount, COALESCE(vat_pct, 0) as vat_pct, status
-      FROM payment_requests WHERE status IN ('pending','partial','paid','cancelled')
+      FROM payment_requests WHERE status IN ('pending','processing','partial','paid','cancelled')
     `).all()
     const threeExec = aggregateThreeMoney(payAllExec.results as any[])
     const bookedKpi = await db.prepare(`
@@ -18549,7 +18556,7 @@ app.get('/api/executive/projects', authMiddleware, pmoAccess, async (c) => {
       LEFT JOIN (
         SELECT project_id,
           SUM(CASE WHEN status IN ('paid','partial') THEN paid_amount ELSE 0 END) AS collected_amount,
-          SUM(CASE WHEN status IN ('pending','partial','paid') THEN amount ELSE 0 END) AS acceptance_amount
+          SUM(CASE WHEN status IN ('processing','partial','paid') THEN amount ELSE 0 END) AS acceptance_amount
         FROM payment_requests
         WHERE ${paymentOnPackageSql('payment_requests')}
         GROUP BY project_id

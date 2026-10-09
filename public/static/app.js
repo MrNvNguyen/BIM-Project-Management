@@ -1111,7 +1111,7 @@ function navigate(page, opts = {}) {
   else if (page === 'system-config') loadSystemConfig()
   else if (page === 'analytics') {
     if (_openSection) _analyticsActiveTab = _openSection
-    loadAnalytics()
+    loadAnalytics(true)
   }
   else if (page === 'legal') {
     if (_openSection) { _legalCurrentTab = _openSection; _legalTabSetByUser = true }
@@ -18322,7 +18322,7 @@ function getAnalyticsYear() {
   return document.getElementById('analyticsYear')?.value || new Date().getFullYear().toString()
 }
 
-async function loadAnalytics() {
+async function loadAnalytics(force = false) {
   // Set năm mặc định = năm hiện tại nếu chưa có options
   const sel = document.getElementById('analyticsYear')
   if (sel && !sel.dataset.initialized) {
@@ -18330,7 +18330,7 @@ async function loadAnalytics() {
     await initCalendarYearFilter(sel)
     sel.value = new Date().getFullYear().toString()
   }
-  switchAnalyticsTab(_analyticsActiveTab)
+  switchAnalyticsTab(_analyticsActiveTab, force)
 }
 
 function reloadAnalytics() {
@@ -24583,6 +24583,10 @@ function _legalPaymentCountsAsCollected(status) {
   return status === 'paid' || status === 'partial'
 }
 
+function _legalPaymentCountsAsAcceptance(status) {
+  return status === 'processing' || status === 'partial' || status === 'paid'
+}
+
 function _legalPaymentDraftHasContent(rowEl) {
   if (!rowEl) return false
   const desc = rowEl.querySelector('[data-pfield="description"]')?.value?.trim()
@@ -24821,8 +24825,10 @@ function legalPaymentRefreshTotals() {
       const vat = _legalProjectVatPct()
       const status = row.querySelector('[data-pfield="status"]')?.value || 'pending'
       const isNew = row.classList.contains('is-new')
-      gross += amount
-      totalNt += calcRevenueNet(amount, vat, 0)
+      if (_legalPaymentCountsAsAcceptance(status)) {
+        gross += amount
+        totalNt += calcRevenueNet(amount, vat, 0)
+      }
       if (_legalPaymentCountsAsCollected(status)) totalCash += calcRevenueNet(paid, vat, 0)
       if (!isNew) {
         count += 1
@@ -24849,7 +24855,10 @@ function renderPaymentStatus(payments) {
   _legalPaymentActivePackageId = _legalPaymentNormPackageKey(_legalPaymentActivePackageId)
 
   const total = packagedPayments.length
-  const totalAmount = packagedPayments.reduce((s, p) => s + (p.amount_before_vat != null ? Number(p.amount_before_vat) : calcRevenueNet(p.amount||0, p.vat_pct||0, 0)), 0)
+  const totalAmount = packagedPayments.reduce((s, p) => {
+    if (!_legalPaymentCountsAsAcceptance(p.status)) return s
+    return s + (p.amount_before_vat != null ? Number(p.amount_before_vat) : calcRevenueNet(p.amount||0, p.vat_pct||0, 0))
+  }, 0)
   const paidAmount = packagedPayments.reduce((s, p) => {
     if (!_legalPaymentCountsAsCollected(p.status)) return s
     return s + (p.cash_before_vat != null ? Number(p.cash_before_vat) : calcRevenueNet(p.paid_amount||0, p.vat_pct||0, 0))
