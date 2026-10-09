@@ -18,10 +18,10 @@ export async function handleDdcnMcp(request: Request, read: Read): Promise<Respo
   })
   const pagination = { limit: z.number().int().min(1).max(100).optional(), offset: z.number().int().min(0).max(100000).optional() }
   const register = (name: string, description: string, path: string, inputSchema: Record<string, z.ZodType>) => {
-    server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async (args) => {
+    server.registerTool(name, { description, inputSchema, _meta: { securitySchemes: [{ type: 'oauth2', scopes: ['ddcn:read'] }] }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async (args) => {
       try {
         const response = await read(path, args as Query)
-        if (!response.ok) return { isError: true, content: [{ type: 'text' as const, text: `DDCN read failed (HTTP ${response.status}).` }] }
+        if (!response.ok) return { isError: true, ...(response.status === 401 ? { _meta: { 'mcp/www_authenticate': response.headers.get('WWW-Authenticate') || 'Bearer' } } : {}), content: [{ type: 'text' as const, text: `DDCN read failed (HTTP ${response.status}).` }] }
         const data = await response.json() as Record<string, unknown>
         return { content: [{ type: 'text' as const, text: JSON.stringify(data) }], structuredContent: data }
       } catch {
@@ -38,6 +38,13 @@ export async function handleDdcnMcp(request: Request, read: Read): Promise<Respo
   try {
     const response = await transport.handleRequest(request)
     response.headers.set('Cache-Control', 'no-store')
+    if (response.headers.get('Content-Type')?.includes('application/json') && response.status === 200) {
+      const body = await response.json() as any
+      if (Array.isArray(body.result?.tools)) {
+        for (const tool of body.result.tools) tool.securitySchemes = [{ type: 'oauth2', scopes: ['ddcn:read'] }]
+      }
+      return Response.json(body, { status: response.status, headers: response.headers })
+    }
     return response
   } finally { await server.close() }
 }

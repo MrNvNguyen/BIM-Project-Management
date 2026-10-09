@@ -33,3 +33,7 @@ Dùng dữ liệu mới cho mỗi báo cáo, ghi `generated_at`, nguồn DDCN v�
 Cổng GET và GPT Actions hiện tại tiếp tục hoạt động để đối chiếu trong quá trình chuyển đổi.
 
 Tài liệu chính thức: https://developers.openai.com/plugins/build/plugins
+
+## ChatGPT web: kết nối OAuth
+
+Xem [hướng dẫn OAuth](../../docs/ai-gateway/oauth.md). Sau khi migration và mã OAuth được triển khai, đăng ký custom MCP server với URL ở trên và chọn OAuth. Sau khi liên kết thành công cần thêm ID `plugin_asdk_app...` vào app mapping của gói; việc cài marketplace đơn thuần chưa đăng ký kết nối trên ChatGPT web.
