@@ -31589,6 +31589,20 @@ function appendAssistantBubble(text, mine, extraHtml) {
   thread.scrollTop = thread.scrollHeight
 }
 
+function assistantThreadHistory() {
+  const thread = $('assistantThread')
+  if (!thread) return []
+  const bubbles = [...thread.querySelectorAll(':scope > .chat-bubble')]
+  return bubbles.slice(-6).map(el => {
+    const mine = el.classList.contains('me')
+    const text = (el.querySelector('.bubble-inner')?.innerText || '')
+      .replace(/\s*Xác nhận\s*$/u, '')
+      .trim()
+      .slice(0, 800)
+    return { role: mine ? 'user' : 'assistant', content: text }
+  }).filter(item => item.content)
+}
+
 async function submitAssistantAsk(ev) {
   ev.preventDefault()
   const input = $('assistantInput')
@@ -31596,9 +31610,10 @@ async function submitAssistantAsk(ev) {
   if (!message) return
   input.value = ''
   _assistantDraft = null
+  const history = assistantThreadHistory()
   appendAssistantBubble(message, true)
   try {
-    const data = await api('/assistant/ask', { method: 'POST', data: { message } })
+    const data = await api('/assistant/ask', { method: 'POST', data: { message, history } })
     _assistantDraft = data.draft || null
     const extra = data.draft
       ? `<div class="assistant-confirm"><button type="button" class="btn-primary text-xs" onclick="confirmAssistantDraft()">Xác nhận</button></div>`
