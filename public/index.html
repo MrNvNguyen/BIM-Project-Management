@@ -6674,6 +6674,9 @@
             <button onclick="openImportExcelModal()" id="btnImportExcel" class="btn-secondary" title="Import từ file Excel" style="display:none">
               <i class="fas fa-file-excel mr-1" style="color:#1d6f42"></i>Import Excel
             </button>
+            <button onclick="openLegalSyncModal()" id="btnLegalSync" class="btn-secondary" title="Đồng bộ hồ sơ pháp lý từ deployment khác" style="display:none">
+              <i class="fas fa-cloud-download-alt mr-1"></i>Đồng bộ
+            </button>
             <button onclick="openLegalChangeLogModal()" id="btnLegalChangeLog" class="btn-secondary" title="Xem lịch sử chỉnh sửa HSPL" style="display:none">
               <i class="fas fa-history mr-1"></i>Lịch sử thay đổi
             </button>
@@ -9043,7 +9046,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261009c"></script>
+<script src="/static/app.js?v=20261010a"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
@@ -9847,6 +9850,31 @@ document.addEventListener('keydown', function(e) {
         <button type="button" class="btn-secondary" onclick="closeLegalCopyFromModal()">Hủy</button>
         <button type="button" class="btn-primary" id="btnLegalCopyFromSubmit" onclick="executeLegalCopyFrom()">
           <i class="fas fa-copy mr-1"></i>Sao chép
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="modalLegalSync" class="modal-overlay hidden" style="z-index:1100">
+  <div class="modal legal-copy-dialog">
+    <div class="legal-copy-head">
+      <div>
+        <h3><i class="fas fa-cloud-download-alt" style="color:var(--primary);margin-right:8px"></i>Đồng bộ từ deployment khác</h3>
+        <p>Chọn dự án nguồn trên hệ thống đối tác. Dữ liệu được áp vào dự án đang mở trên deployment này (giữ mã và tên dự án đích).</p>
+      </div>
+      <button type="button" class="legal-copy-x" onclick="closeLegalSyncModal()" aria-label="Đóng"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="legal-copy-body">
+      <div>
+        <label class="legal-copy-label" for="legalSyncPeerProject">Dự án nguồn (peer)</label>
+        <select id="legalSyncPeerProject" class="input-field"></select>
+        <p id="legalSyncPeerHint" class="legal-copy-note" style="margin-top:8px"></p>
+      </div>
+      <div class="legal-copy-actions">
+        <button type="button" class="btn-secondary" onclick="closeLegalSyncModal()">Hủy</button>
+        <button type="button" class="btn-primary" id="btnLegalSyncSubmit" onclick="executeLegalSyncFromPeer()">
+          <i class="fas fa-sync mr-1"></i>Đồng bộ
         </button>
       </div>
     </div>

@@ -73,6 +73,17 @@ import {
 } from './legal-auth'
 import { copyLegalPackageInnerContent, planLegalCopyFromBody } from './legal-copy'
 import {
+  applyLegalSyncBundle,
+  buildLegalSyncBundle,
+  buildLegalSyncProjectList,
+  fetchPeerLegalSyncBundle,
+  fetchPeerLegalSyncProjectList,
+  isLegalSyncRun2,
+  legalSyncSecretFromRequest,
+  legalSyncSecretOk,
+  resolveLegalSyncDocumentFile,
+} from './legal-sync'
+import {
   auditCostAFields,
   auditLegalItemFields,
   auditPackageCreateEntries,
@@ -116,6 +127,10 @@ type Bindings = {
   ZALO_GROUP_CHAT_ID?: string
   /** Secret Token trên màn webhook của Zalo Bot. UI lưu trong system_config. */
   ZALO_WEBHOOK_SECRET?: string
+  /** Origin of peer deployment for legal dossier sync (HTTPS, no trailing slash). */
+  LEGAL_SYNC_PEER_ORIGIN?: string
+  /** Shared secret for /api/legal-sync/* export on both workers. */
+  LEGAL_SYNC_SECRET?: string
 }
 
 // ===================================================
@@ -13762,6 +13777,152 @@ function legalPackageContractInput(data: any) {
   return { code, start_date: start, end_date: end, contract_value: contractValue, contract_signed }
 }
 
+// ── Legal cross-deployment sync (secret export + authenticated apply) ─────────
+
+function legalSyncExportAuthorized(c: { req: { header: (n: string) => string | undefined }; env: Bindings }): boolean {
+  const provided = legalSyncSecretFromRequest((name) => c.req.header(name))
+  return legalSyncSecretOk(provided, c.env.LEGAL_SYNC_SECRET)
+}
+
+// GET /api/legal-sync/projects — peer export (secret only)
+app.get('/api/legal-sync/projects', async (c) => {
+  if (!legalSyncExportAuthorized(c)) return c.json({ error: 'Unauthorized' }, 401)
+  try {
+    const projects = await buildLegalSyncProjectList(c.env.DB)
+    return c.json({ projects })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/legal-sync/projects/:id — peer export bundle (secret only)
+app.get('/api/legal-sync/projects/:id', async (c) => {
+  if (!legalSyncExportAuthorized(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const projectId = parseInt(c.req.param('id'))
+  if (!Number.isFinite(projectId) || projectId <= 0) return c.json({ error: 'Invalid project id' }, 400)
+  try {
+    const bundle = await buildLegalSyncBundle(c.env.DB, projectId)
+    return c.json(bundle)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/legal-sync/files/:documentId — peer document bytes (secret only)
+app.get('/api/legal-sync/files/:documentId', async (c) => {
+  if (!legalSyncExportAuthorized(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const documentId = parseInt(c.req.param('documentId'))
+  if (!Number.isFinite(documentId) || documentId <= 0) return c.json({ error: 'Invalid document id' }, 400)
+  try {
+    const resolved = await resolveLegalSyncDocumentFile(c.env.DB, c.env, documentId)
+    if (!resolved) return c.body(null, 404)
+    const { row, key } = resolved
+    if (key) {
+      const obj = await getR2(c.env, key)
+      if (obj) {
+        return new Response(obj.body, {
+          headers: {
+            'Content-Type': (row.content_type as string) || obj.httpMetadata?.contentType || 'application/octet-stream',
+            'Content-Disposition': `inline; filename="${row.file_name || 'document'}"`,
+          },
+        })
+      }
+    }
+    if (typeof row.file_url === 'string' && row.file_url.startsWith('data:')) {
+      const parsed = parseDataUri(row.file_url)
+      if (!parsed) return c.body(null, 404)
+      return new Response(parsed.bytes, {
+        headers: {
+          'Content-Type': parsed.contentType,
+          'Content-Disposition': `inline; filename="${row.file_name || 'document'}"`,
+        },
+      })
+    }
+    return c.body(null, 404)
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// GET /api/legal/sync/peer-projects — list peer projects (Bearer system_admin; secret stays on server)
+app.get('/api/legal/sync/peer-projects', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  if (user.role !== 'system_admin') return c.json({ error: 'Forbidden' }, 403)
+  const peerOrigin = String(c.env.LEGAL_SYNC_PEER_ORIGIN || '').trim()
+  const secret = String(c.env.LEGAL_SYNC_SECRET || '').trim()
+  if (!peerOrigin || !secret) {
+    return c.json({ error: 'Chưa cấu hình LEGAL_SYNC_PEER_ORIGIN / LEGAL_SYNC_SECRET trên worker' }, 503)
+  }
+  try {
+    const projects = await fetchPeerLegalSyncProjectList(peerOrigin, secret)
+    return c.json({ projects })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// POST /api/legal/:projectId/sync-from — apply peer bundle onto local project
+app.post('/api/legal/:projectId/sync-from', authMiddleware, async (c) => {
+  const user = c.get('user') as any
+  const localProjectId = parseInt(c.req.param('projectId'))
+  if (user.role !== 'system_admin') return c.json({ error: 'Forbidden' }, 403)
+  if (!Number.isFinite(localProjectId) || localProjectId <= 0) {
+    return c.json({ error: 'Invalid project id' }, 400)
+  }
+  if (!(await canAccessProject(c.env.DB, user, localProjectId))) {
+    return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
+  }
+  const peerOrigin = String(c.env.LEGAL_SYNC_PEER_ORIGIN || '').trim()
+  const secret = String(c.env.LEGAL_SYNC_SECRET || '').trim()
+  if (!peerOrigin || !secret) {
+    return c.json({ error: 'Chưa cấu hình LEGAL_SYNC_PEER_ORIGIN / LEGAL_SYNC_SECRET trên worker' }, 503)
+  }
+  let body: { source_project_id?: number }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+  const sourceProjectId = parseInt(String(body.source_project_id ?? ''))
+  if (!Number.isFinite(sourceProjectId) || sourceProjectId <= 0) {
+    return c.json({ error: 'source_project_id required' }, 400)
+  }
+  try {
+    const localProj = await c.env.DB.prepare(
+      'SELECT id, code, name, legal_sync_peer_origin, legal_sync_source_project_id FROM projects WHERE id = ?'
+    ).bind(localProjectId).first() as any
+    if (!localProj) return c.json({ error: 'Project not found' }, 404)
+
+    const run2 = isLegalSyncRun2(
+      localProj.legal_sync_peer_origin,
+      localProj.legal_sync_source_project_id,
+      peerOrigin,
+      sourceProjectId
+    )
+    const bundle = await fetchPeerLegalSyncBundle(peerOrigin, secret, sourceProjectId)
+    const result = await applyLegalSyncBundle({
+      db: c.env.DB,
+      env: c.env,
+      localProjectId,
+      bundle,
+      peerOrigin,
+      secret,
+      actorUserId: user.id,
+      run2,
+    })
+    await syncProjectContractFromPackages(c.env.DB, localProjectId)
+    return c.json({
+      success: true,
+      mode: result.mode,
+      payments_inserted: result.payments_inserted,
+      payments_skipped: result.payments_skipped,
+      local_project: { id: localProj.id, code: localProj.code, name: localProj.name },
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
 // ── Package CRUD ──────────────────────────────────────────────────────────────
 
 // GET /api/legal/projects — danh sách dự án cho HSPL (system_admin + Support member)
@@ -14325,7 +14486,9 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
          FROM legal_items WHERE project_id = ? ORDER BY stage_id, sort_order, id`
       ).bind(projectId),
       db.prepare(
-        `SELECT id, name, code, contract_value, management_fee_pct, vat_pct FROM projects WHERE id = ?`
+        `SELECT id, name, code, contract_value, management_fee_pct, vat_pct,
+                legal_sync_peer_origin, legal_sync_source_project_id
+         FROM projects WHERE id = ?`
       ).bind(projectId),
       db.prepare(`SELECT COUNT(*) AS n FROM outgoing_letters WHERE project_id = ?`).bind(projectId),
       db.prepare(`SELECT COUNT(*) AS n FROM legal_documents WHERE project_id = ?`).bind(projectId),
@@ -14464,6 +14627,17 @@ app.get('/api/legal/:projectId/overview', authMiddleware, async (c) => {
       minutes: shell ? null : minutes.results,
       project: projectInfo,
       can_manage,
+      legal_sync: user.role === 'system_admin'
+        ? {
+            source_project_id: projectRow?.legal_sync_source_project_id ?? null,
+            same_peer: isLegalSyncRun2(
+              projectRow?.legal_sync_peer_origin,
+              projectRow?.legal_sync_source_project_id,
+              String(c.env.LEGAL_SYNC_PEER_ORIGIN || ''),
+              Number(projectRow?.legal_sync_source_project_id)
+            ),
+          }
+        : undefined,
     })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)

@@ -21006,7 +21006,7 @@ async function _legalAfterProjectListFilterChange() {
   _legalShowProjectShell(false)
   if ($('legalKPIRow')) $('legalKPIRow').style.display = 'none'
   if ($('legalTabs')) $('legalTabs').style.display = 'none'
-  ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnCopyFromLegal', 'btnLegalChangeLog'].forEach(id => {
+  ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnLegalSync', 'btnCopyFromLegal', 'btnLegalChangeLog'].forEach(id => {
     if ($(id)) $(id).style.display = 'none'
   })
   if ($('legalProjectSelectCombobox') && typeof _cbAssignValue === 'function') {
@@ -21185,7 +21185,7 @@ async function loadLegal() {
     _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnLegalSync','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
   }
 }
 
@@ -21196,7 +21196,7 @@ async function _onLegalProjectComboChange(val) {
     _legalShowProjectShell(false)
     $('legalKPIRow').style.display = 'none'
     $('legalTabs').style.display = 'none'
-    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
+    ;['btnAddLetter','btnAddDoc','btnLetterConfig','btnImportExcel','btnLegalSync','btnCopyFromLegal','btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display='none' })
     renderLegalProjectList()
     return
   }
@@ -21279,7 +21279,7 @@ async function loadLegalProject(projectId) {
       // Nút header: hiện Gửi văn bản và Thêm tài liệu, ẩn các nút admin
       if ($('btnAddLetter')) $('btnAddLetter').style.display = ''
       if ($('btnAddDoc')) $('btnAddDoc').style.display = ''
-      ;['btnLetterConfig', 'btnImportExcel'].forEach(id => { if($(id)) $(id).style.display = 'none' })
+      ;['btnLetterConfig', 'btnImportExcel', 'btnLegalSync'].forEach(id => { if($(id)) $(id).style.display = 'none' })
       if ($('btnLegalChangeLog')) $('btnLegalChangeLog').style.display = ''
       // Ẩn KPI cards liên quan đến stages và payments
       const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
@@ -21298,6 +21298,9 @@ async function loadLegalProject(projectId) {
         if (btn) btn.style.display = ''
       })
       ;['btnAddLetter', 'btnAddDoc', 'btnLetterConfig', 'btnImportExcel', 'btnLegalChangeLog'].forEach(id => { if($(id)) $(id).style.display = '' })
+      if ($('btnLegalSync')) {
+        $('btnLegalSync').style.display = currentUser?.role === 'system_admin' ? '' : 'none'
+      }
       // Khôi phục tất cả KPI cards
       const kpiCards = $('legalKPIRow')?.querySelectorAll('.kpi-card')
       if (kpiCards) kpiCards.forEach(card => card.style.display = '')
@@ -25537,6 +25540,90 @@ async function deleteLegalItemSubtask(subtaskId, taskId) {
 // ============================================================
 
 let _importExcelFile = null
+
+function closeLegalSyncModal() {
+  const m = $('modalLegalSync')
+  if (m) m.classList.add('hidden')
+}
+
+async function openLegalSyncModal() {
+  if (!_legalCurrentProjectId) {
+    toast('Vui lòng chọn dự án đích trước', 'warning')
+    return
+  }
+  if (currentUser?.role !== 'system_admin') {
+    toast('Chỉ System Admin mới được đồng bộ HSPL từ deployment khác', 'error')
+    return
+  }
+  const sel = $('legalSyncPeerProject')
+  const hint = $('legalSyncPeerHint')
+  if (sel) {
+    sel.innerHTML = '<option value="">— Đang tải danh sách peer… —</option>'
+    sel.disabled = true
+  }
+  if (hint) hint.textContent = ''
+  $('modalLegalSync')?.classList.remove('hidden')
+  try {
+    const data = await api('/legal/sync/peer-projects')
+    const projects = data?.projects || []
+    if (sel) {
+      if (!projects.length) {
+        sel.innerHTML = '<option value="">— Không có dự án trên peer —</option>'
+      } else {
+        sel.innerHTML = `<option value="">— Chọn dự án nguồn —</option>${projects.map(p =>
+          `<option value="${p.id}">[${escHtml(p.code || '')}] ${escHtml(p.name || '')}${p.client ? ' — ' + escHtml(p.client) : ''}</option>`
+        ).join('')}`
+      }
+      sel.disabled = false
+    }
+    const sync = _legalOverviewData?.legal_sync
+    if (hint) {
+      hint.textContent = sync?.same_peer && sync.source_project_id
+        ? `Lần trước đã đồng bộ từ dự án nguồn #${sync.source_project_id}. Chọn cùng dự án để chỉ thêm dòng mới; chọn dự án khác sẽ xóa toàn bộ hồ sơ pháp lý hiện tại.`
+        : 'Lần đầu với một dự án nguồn sẽ xóa hồ sơ pháp lý hiện tại của dự án đang mở rồi ghi lại bản từ hệ thống kia.'
+    }
+  } catch (err) {
+    if (sel) sel.innerHTML = `<option value="">— Lỗi: ${escHtml(err.message || 'Không tải peer')} —</option>`
+    toast(err.message || 'Không tải danh sách dự án peer', 'error')
+  }
+}
+
+async function executeLegalSyncFromPeer() {
+  if (!_legalCurrentProjectId) return
+  if (currentUser?.role !== 'system_admin') {
+    toast('Forbidden', 'error')
+    return
+  }
+  const sourceId = parseInt($('legalSyncPeerProject')?.value, 10)
+  if (!sourceId) {
+    toast('Chọn dự án nguồn trên peer', 'warning')
+    return
+  }
+  const sync = _legalOverviewData?.legal_sync
+  const run2 = !!(sync?.same_peer && Number(sync.source_project_id) === sourceId)
+  const msg = run2
+    ? 'Chỉ thêm các hàng HSPL còn thiếu từ nguồn (không cập nhật số tiền hay trạng thái đã có).\n\nTiếp tục?'
+    : 'Toàn bộ hồ sơ pháp lý hiện tại của dự án đích sẽ bị xóa và thay bằng bản sao từ deployment nguồn.\n\nTiếp tục?'
+  if (!confirm(msg)) return
+  const btn = $('btnLegalSyncSubmit')
+  if (btn) btn.disabled = true
+  try {
+    const res = await api(`/legal/${_legalCurrentProjectId}/sync-from`, {
+      method: 'POST',
+      data: { source_project_id: sourceId },
+    })
+    const modeLabel = res.mode === 'run2' ? 'Bổ sung' : 'Thay thế'
+    toast(`${modeLabel} HSPL thành công (${res.payments_inserted || 0} phiếu TT mới)`, 'success')
+    closeLegalSyncModal()
+    await loadLegalProject(_legalCurrentProjectId)
+    await loadLegalPackageCounts()
+    renderLegalProjectList()
+  } catch (err) {
+    toast(err.message || 'Đồng bộ thất bại', 'error')
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
 
 function closeLegalCopyFromModal() {
   const m = $('modalLegalCopyFrom')
