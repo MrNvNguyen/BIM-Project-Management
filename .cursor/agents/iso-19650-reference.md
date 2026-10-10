@@ -2,36 +2,58 @@
 name: iso-19650-reference
 model: composer-2.5-fast
 description: >-
-  Tham chiếu ISO 19650 / CDE naming cho tài liệu & deliverable Forma/ACC Docs —
-  dùng kèm @technical-advisor hoặc @lead-dev. Model: Composer. Readonly.
+  Tham chiếu ISO 19650 / đặt tên file model HSTK của BIM Project Management —
+  parseBepFileName, folder gói YYMMDD, cột role_codes. Dùng kèm
+  @technical-advisor hoặc @lead-dev. Model: Composer. Readonly.
 readonly: true
 ---
 
 # ISO 19650 Reference
 
-Quick reference for CDE and documentation naming. Read when CDE or deliverable naming
-is in scope (Forma Data Management / ACC Docs paths, evidence folders, campaign docs).
+Quick reference for model-file naming in this app (HSTK / BEP). Read when design
+packages, model filenames, or CDE deliverable names are in scope.
 
 **Dispatch:** `@Task(iso-19650-reference)` · **cấm** `model=` · Composer từ frontmatter.
 
-## Container Naming
+Parser: `parseBepFileName` in `src/design.ts`. Extension is stripped first
+(`.rvt`, `.nwc`, `.ifc`, `.dwg`, `.pdf`, `.nwd`, `.nwf`). The base name needs at
+least seven hyphen-separated fields. Field 7 is 4–6 digits. Extra fields join as
+the description.
+
+## Container naming
 
 ```
-[Project]-[Originator]-[Volume/System]-[Level/Location]-[Type]-[Role/Number]
+[Project]-[Originator]-[Volume]-[Level]-[Type]-[Role]-[Number]-[Description]
 ```
 
-| Segment | Example |
-|---------|---------|
-| Project | `ONEX`, `FORMA` |
-| Originator | `ARC`, `STR`, `MEP`, `DOC` |
-| Volume/System | `BLDG-A`, `ZONE-01` |
-| Level/Location | `L02`, `CORE` |
-| Type | `DR`, `SK`, `RP`, `SC` |
-| Role/Number | `GA-001` |
+| Field | Parser key | Example `TT09-OAD-HZ-BF-M3-A-0001-HAM TT.rvt` |
+|-------|------------|------------------------------------------------|
+| Project | `project` | `TT09` |
+| Originator | `originator` | `OAD` |
+| Volume | `volume` | `HZ` |
+| Level | `level` | `BF` |
+| Type | `type` (uppercased) | `M3` |
+| Role | `role` (uppercased) | `A` |
+| Number | `number` (4–6 digits) | `0001` |
+| Description | `description` | `HAM TT` |
 
-Example: `ONEX-DOC-ZONE-01-L02-SC-COPY-001` (scenario / copy job artifact)
+`type` values the scanner treats as models include `M2`, `M3`, and `CM`. A name with fewer than seven fields, or a number field that is not 4–6 digits, returns `{ error }` (`too_few_fields`, `invalid_number_field`, or `empty`).
 
-## Status / Suitability
+`project` is checked against `projects.code`, `projects.project_code_letter`, and outgoing `letter_number` (`modelBepProjectCodeMismatch`). It is not a free label.
+
+## Package folder
+
+A design package folder is `YYMMDD-Mô tả` (underscore also parses): `parseYyMmDdFolder`, pattern `^(\d{6})[-_](.+)$`.
+
+Example: `260915-Phát hành TKCS` → date `2026-09-15`, description `Phát hành TKCS`.
+
+Invalid month/day (for example `261345-x`) does not parse. Revision labels (`R0`, `R1`, …) are assigned by package date, then folder name (`assignRevisionNumbers`).
+
+## Discipline `role_codes`
+
+`project_design_disciplines.role_codes` is a comma-separated list on the discipline row (fallback: `discipline_code`). `parseBepFileName().role` matches that list through `roleInCodes` (case-insensitive, exact code). Example: role `EM` matches `HVAC,EM`.
+
+## Status / suitability
 
 | Code | Meaning |
 |------|---------|
@@ -59,9 +81,11 @@ Revision · Status code · Originator · Classification · Created/Modified + au
 
 ## Flag
 
-- Skip Shared before Published
-- Missing originator/revision
-- WIP edits in Published
+- Fewer than seven hyphen fields, or number field not 4–6 digits
+- `role` absent from the discipline `role_codes`
+- Package folder that is not `YYMMDD-Mô tả` (or `YYMMDD_Mô tả`)
+- `project` token that matches neither project code nor an outgoing letter number
+- Missing originator or revision
+- WIP edits treated as Published
 - Inconsistent discipline codes across federated models
 - Deliverables without EIR/PIR traceability
-- Confusing Docs “Approved” (Reviews workflow) with PDF sheet `reviewStatus`

@@ -2,10 +2,10 @@
 name: orchestrator-router
 model: composer-2.5-fast
 description: >-
-  Routes OneX Forma copy-app campaign work through strategy PO-proxy, technical
-  planning, lead/QA execution, run-validity and footer gates. Enforces channel
-  hygiene so only clean Success/Ceiling/PO Visual/scope packets reach PO-human.
-  Never edits production.
+  Routes BIM Project Management (Hono + D1 + SPA) campaign work through strategy
+  PO-proxy, technical planning, lead/QA execution, run-validity and footer gates.
+  Enforces channel hygiene so only clean Success/Ceiling/PO Visual/scope packets
+  reach PO-human. Never edits production.
 readonly: false
 ---
 

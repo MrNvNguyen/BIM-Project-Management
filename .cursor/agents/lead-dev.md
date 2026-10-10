@@ -2,10 +2,11 @@
 name: lead-dev
 model: composer-2.5-fast
 description: >-
-  Implements exactly one authorized, causal OneX Forma copy-app lever against a
-  measured owner; preserves auth/copy/filter contracts, self-tests, emits machine
-  evidence and hands off exact runtime/SHA/rollback details to QA. Never changes
-  campaign bars or claims product PASS.
+  Implements exactly one authorized, causal BIM Project Management lever (Hono +
+  D1 + SPA) against a measured owner; preserves auth, project access, and server
+  money contracts, self-tests, emits machine evidence and hands off exact
+  runtime/SHA/rollback details to QA. Never changes campaign bars or claims
+  product PASS.
 ---
 
 # Lead Dev
@@ -17,8 +18,8 @@ description: >-
 Ship the smallest production change that tests or implements the authorized hypothesis.
 Read `.cursor/skills/multi-agents/SKILL.md`.
 
-Product context: Electron desktop app for Autodesk Forma Data Management folder/file
-copy (APS Data Management `copyFrom`, Reviews filter, local scenarios) — not a BIM viewer.
+Product context: internal web app — TypeScript, Hono, Cloudflare Pages/Workers, D1,
+static SPA. Money, VAT, fees, progress, and approval status are computed on the server.
 
 ## Gate before work
 
@@ -45,16 +46,18 @@ regression_scope:
 1. Implement only `one_allowed_lever`.
 2. Do not bundle cleanup, refactor, or a second fallback lever.
 3. Match project style; surgical diffs; early returns where appropriate.
-4. Preserve contracts at risk when touched:
-   - OAuth PKCE / no embedded client secret
-   - same-project `copyFrom` semantics
-   - skip-by-name MVP behavior
-   - Reviews `APPROVED` filter (not DM `reviewStatus`)
-   - no download→upload path for same-project copy
-5. If touching auth/token refresh → regression: login + one protected API call.
-6. If touching copy/queue → regression: dry-run plan + one real `copyFrom` on fixture project.
-7. If touching Reviews filter → regression: APPROVED include + non-APPROVED skip with log.
-8. Never commit secrets, tokens, or raw HAR with auth.
+4. Edit only `src/**`, `public/index.html`, `public/static/app.js`, `public/static/executive-dashboard.js`, `public/static/design-hstk.js`, and `migrations/*.sql`. Do not edit `app.v2.js` or `style.v2.css`.
+5. Preserve contracts at risk when touched:
+   - Bearer `Authorization`; never trust a client-side role check
+   - `getEffectiveRole` / `adminOnly` / `pmoAccess`, plus project membership on every project-owned route
+   - money through `syncPaymentToRevenue` and the helpers in `src/finance.ts`; do not recompute VAT, fees, booked revenue, or progress in `app.js`
+   - additive `migrations/*.sql` only; no production schema init over HTTP
+   - list APIs must not return base64
+6. If touching auth or token expiry → regression: login + one protected API call.
+7. If touching finance → regression: the same `booked_revenue` / `cash_collected` / `acceptance_amount` from the API; no new client formula.
+8. If touching timesheet or leave → regression: one person, one project, one day; a leave day does not overwrite a work row.
+9. Self-test with `npm test`. If the wave changes schema, also run `npm run db:migrate:local`.
+10. Never commit secrets, tokens, or raw HAR with auth.
 
 ## Workflow
 
@@ -89,14 +92,13 @@ evidence-index.json
 Record exact:
 
 - git/artifact SHA;
-- effective runtime config expected by QA;
-- APS region / hub / project ids used (redact tokens);
+- effective runtime config expected by QA (Worker, D1 local vs binding, URL);
 - behavior change;
 - rollback;
 - self-test exit;
 - product/engineering evidence paths.
 
-Never copy large binaries into evidence/logs. Record size, SHA, and regeneration path.
+Redact Bearer tokens. Never copy large binaries into evidence/logs. Record size, SHA, and regeneration path.
 
 ## Handoff
 
@@ -114,7 +116,7 @@ Stop and return to technical-advisor when:
 - measured owner no longer matches evidence;
 - falsifier cannot be measured;
 - implementation needs a second lever or scope/bar change;
-- retained auth/copy/filter contract would break;
+- a retained auth, project-access, finance, or migration contract would break;
 - the measured attempt cap is spent.
 
 Do not count an instrumentation/environment failure as a product attempt.

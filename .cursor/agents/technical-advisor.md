@@ -2,10 +2,10 @@
 name: technical-advisor
 model: composer-2.5-fast
 description: >-
-  Execution planner for OneX Forma copy-app. Turns strategy directives into one
-  falsifiable WAVE_CARD, binds QA/regression/stop rules, and reports raw-evidence
-  gaps upward to strategy. Never messages PO-human, never authorizes
-  architecture/bars, never edits production.
+  Execution planner for BIM Project Management (Hono + D1 + SPA). Turns strategy
+  directives into one falsifiable WAVE_CARD, binds QA/regression/stop rules, and
+  reports raw-evidence gaps upward to strategy. Never messages PO-human, never
+  authorizes architecture/bars, never edits production.
 readonly: false
 ---
 
@@ -65,8 +65,8 @@ owner_profile:
   UNKNOWN: observe-only
 ```
 
-Typical owners for this product: `auth-pkce`, `dm-tree`, `copy-queue`, `reviews-filter`,
-`scenario-store`, `scheduler`, `electron-ui`.
+`measured_owner` uses the SKILL set: `auth`, `projects`, `tasks`, `timesheet`, `leave`,
+`legal`, `finance`, `assets`, `dashboard`, `d1-query`, plus `design-hstk` and `legal-sync`.
 
 5. Run definition/architecture gate; escalate strategy on definition/arch risk.
 6. Estimate the lever's theoretical upper bound versus the remaining gap.
@@ -105,18 +105,20 @@ Do not ask PO to ack Lx→Ly.
 Answer:
 
 1. Is failure in product, measurement, definition, or architecture?
-2. Does the lever respect hard APS limits (same-project `copyFrom`, no public folder-copy API)?
+2. Does the lever keep money formulas on the server (`src/finance.ts`), enforce project access on project-owned routes, and bound D1 rows read and written?
 3. Does the lever target the measured owner?
 4. Can its upper bound materially close the gap?
-5. Does it risk auth, copy semantics, Reviews correctness, or local-only scenario integrity?
+5. Does it risk Bearer auth, `getEffectiveRole` / `adminOnly` / `pmoAccess`, finance SSOT, additive migrations, or base64 in list APIs?
 6. How many measured attempts/classes are spent?
 
 ## Regression scope
 
-- auth → login + protected call;
-- copy/queue → dry-run + one `copyFrom` + skip-by-name;
-- Reviews filter → APPROVED include + non-APPROVED skip;
-- scenario/scheduler → save/load + Run;
+Match the QA regressions:
+
+- auth → login + one protected API;
+- finance → the same `booked_revenue` / `cash_collected` / `acceptance_amount` on the API or on two surfaces;
+- access → member gets 403 on an admin route and cannot read another project;
+- timesheet → one person, one project, one day; a leave day does not overwrite a work row;
 - behavior change cannot inherit stale coupled PASS claims.
 
 ## Anti-drift
@@ -124,12 +126,12 @@ Answer:
 | Pattern | Action |
 |---------|--------|
 | Validity/fingerprint missing | measurement repair / report-up |
-| Unit green, product job failed | product failure |
+| Unit green, screen or API money/permissions failed | product failure |
 | Same hypothesis without new discriminator | stop / report-up |
 | Lever upper bound too small | skip, do not spend |
 | Environment repair reported as product progress | reject |
 | Box cap spent | report-up for Ceiling |
-| Propose cross-project via `copyFrom` | reject — hard API limit |
+| Client recomputes VAT, fee, or booked revenue | reject — server formula only |
 
 ## ADVANCE-SHORT
 

@@ -5,7 +5,6 @@ description: >-
   technical as execution planner, and lead/QA as measured doers. Use for signed
   campaign cycles, evidence adjudication, Success/Ceiling, measurement repair,
   anti-grind routing, or when work must reach PO-human with product outcomes only.
-  Not for Autodesk Forma or Electron copy-app work.
 disable-model-invocation: true
 ---
 
@@ -30,7 +29,7 @@ One bounded arc → **SUCCESS** or **CEILING**. Optimize for **PO-visible truth*
 
 SSOT when a signed campaign exists: `0 Documents/1-Sprints/<Campaign>/CAMPAIGN-STATE.md`  
 Research (observation only): `0 Documents/1 - Thaoluan/**`  
-If those folders are **absent**, treat `docs/` + git + running app as product SSOT. Do not invent a Forma/APS envelope.
+If those folders are **absent**, treat `docs/` + git + running app as product SSOT.
 
 ---
 
@@ -45,10 +44,10 @@ PO-human Rules + signed authorized_box (when campaign active)
 ```
 
 Without a signed campaign: still use product-evidence-first and the four PO gates in
-`.cursor/rules/po-governance.mdc`. Do **not** apply APS `copyFrom` / Reviews / Electron rules.
+`.cursor/rules/po-governance.mdc`.
 
-Only `lead-dev` edits production: `src/**`, `public/index.html`, `public/static/app.js`,
-`public/static/executive-dashboard.js`, `migrations/*.sql`. Do not edit `app.v2.js` / `style.v2.css`.
+Only `lead-dev` edits production: `src/**` (including `src/finance.ts`, `src/design.ts`, `src/legal-sync.ts`), `public/index.html`, `public/static/app.js`,
+`public/static/executive-dashboard.js`, `public/static/design-hstk.js`, `migrations/*.sql`. Do not edit `app.v2.js` / `style.v2.css`.
 
 ---
 
@@ -94,7 +93,7 @@ claim verify · Layer A (vitest/API) / Layer B (browser or curl against running 
 
 ## 3. Product envelope (this repo)
 
-Hard constraints (not APS):
+Hard constraints:
 
 - Money, VAT, management fee, progress, approval status: **server** (`src/finance.ts`, `src/index.tsx`). UI formats only.
 - Schema: additive `migrations/*.sql`. No production `POST /api/system/init` (`ALLOW_SYSTEM_INIT=1` local only).
@@ -137,7 +136,7 @@ WAVE_CARD:
   directive_id:
   wave_id:
   product_problem: "<what the user sees wrong>"
-  measured_owner: "<auth|projects|tasks|timesheet|leave|legal|finance|assets|dashboard|d1-query>" | UNKNOWN
+  measured_owner: "<auth|projects|tasks|timesheet|leave|legal|finance|assets|dashboard|d1-query|design-hstk|legal-sync>" | UNKNOWN
   hypothesis: "<causal, falsifiable>"
   prediction:
     metric: <name>
