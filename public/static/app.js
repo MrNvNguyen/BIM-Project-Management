@@ -21107,7 +21107,7 @@ function _legalInstallClientFilterCombobox() {
     items: clientItems,
     multiple: true,
     value: _legalProjectClientFilter,
-    minWidth: '180px',
+    minWidth: '220px',
     onchange: (val) => legalOnClientFilterChange(val)
   })
 }
