@@ -1,0 +1,49 @@
+---
+description: BIM Project Management context — product scope, architecture, repo map, and implementation boundaries.
+alwaysApply: true
+---
+
+# BIM Project Management
+
+This repo is an internal web application for managing BIM projects, personnel, work, legal documents, finance, assets, and executive reporting. It is not an Electron or Autodesk Forma copy application.
+
+## Product scope
+
+- Core domains: projects, categories, tasks/subtasks, timesheets, leave, legal documents, payments/revenues/costs, assets, weekly plans/reports, checklists, meeting minutes, notifications, and executive dashboards.
+- Roles: `system_admin`, `project_admin`, `project_leader`, and `member`; access must also be scoped to project membership.
+- Financial and approval data require server-side authorization, validated state transitions, and auditability.
+
+## Architecture
+
+- Backend: TypeScript, Hono, Cloudflare Pages/Workers, D1/SQLite.
+- Frontend: static SPA in `public/index.html` and `public/static/app.js`; `executive-dashboard.js` is loaded separately.
+- Authentication: Bearer token through `Authorization`; never rely on client-side role checks.
+- Database changes must be additive D1 migrations; do not use HTTP routes to initialize production schema.
+
+## Repo map
+
+| Path | Role |
+|------|------|
+| `src/index.tsx` | Hono API, middleware, and backend business logic |
+| `src/renderer.tsx` | Hono HTML renderer |
+| `public/index.html` | SPA markup and inline styles |
+| `public/static/app.js` | Main frontend behavior and API client |
+| `public/static/executive-dashboard.js` | Executive dashboard frontend |
+| `migrations/*.sql` | Ordered D1 schema and seed migrations |
+| `.cursor/**` | Rules and agent support files |
+
+## Boundaries
+
+- Do not add business logic only in the browser; calculations for money, VAT, fees, progress, and approval status belong in the backend.
+- Every project-owned resource must enforce project access on list, detail, create, update, and delete routes.
+- Every approval flow must enforce allowed transitions and record actor, time, old value, and new value.
+- Reuse centralized authorization helpers; do not scatter new ad-hoc role checks.
+- Preserve existing behavior with tests before splitting large monolithic files; refactor one business domain at a time.
+- Do not edit dead forks such as `public/static/app.v2.js` or `style.v2.css`; production loads `app.js` and `executive-dashboard.js`.
+- Never hardcode secrets or store credentials/tokens in logs, fixtures, or committed files.
+- Never commit files >100 MiB or embed large base64 blobs in markdown.
+
+## Language
+
+- Product copy and internal documentation: Vietnamese; code and identifiers: English.
+- Commits: conventional (`feat:`, `fix:`, `docs:`, …) imperative subject.
