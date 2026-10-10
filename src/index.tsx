@@ -5617,6 +5617,7 @@ app.get('/api/revenues', authMiddleware, adminOnly, async (c) => {
         pq.status        AS linked_payment_status,
         pr.notes,
         'revenue'        AS source,
+        pq.id            AS payment_request_id,
         -- Theo HĐ = gross NT từ payment_requests (NULL nếu orphan — không COALESCE sang booked)
         pq.amount                          AS paid_amount_original,
         -- Dòng tiền = số tiền thực đã thu (paid_amount từ payment_requests)
