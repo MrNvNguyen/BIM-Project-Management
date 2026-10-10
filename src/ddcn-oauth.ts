@@ -23,7 +23,7 @@ function randomSecret() {
 export const oauthChallenge = `Bearer resource_metadata="${OAUTH_ISSUER}/.well-known/oauth-protected-resource/api/ai/v1/mcp", scope="${READ_SCOPE}"`
 export async function oauthPrincipal(token: string, env: OAuthBindings): Promise<number | null> {
   if (!token.startsWith('ddcn_oauth_')) return null
-  const row = await env.DB.prepare('SELECT user_id, resource, scope FROM ddcn_oauth_tokens WHERE token_hash = ? AND expires_at > ?').bind(await oauthHash(token), now()).first<any>()
+  const row = await env.DB.prepare('SELECT t.user_id, t.resource, t.scope FROM ddcn_oauth_tokens t JOIN ddcn_oauth_clients c ON c.client_id = t.client_id WHERE t.token_hash = ? AND t.expires_at > ?').bind(await oauthHash(token), now()).first<any>()
   if (!row || row.resource !== MCP_RESOURCE || row.scope !== READ_SCOPE || row.user_id !== Number(env.AI_GATEWAY_USER_ID)) return null
   return row.user_id
 }
@@ -94,16 +94,21 @@ export function createDdcnOAuth(verifySession: VerifySession) {
     redirect.searchParams.set('code', code)
     return c.json({ redirect: redirect.href })
   })
+  async function ensureRefreshTable(env: OAuthBindings) {
+    // Idempotent, additive bootstrap also protects deployments made before manual migration.
+    await env.DB.prepare('CREATE TABLE IF NOT EXISTS ddcn_oauth_refresh_tokens (token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, resource TEXT NOT NULL, scope TEXT NOT NULL, user_id INTEGER NOT NULL, expires_at INTEGER NOT NULL, access_token_hash TEXT NOT NULL)').run()
+  }
   app.post('/oauth/ddcn/token', async c => {
     const p = await c.req.parseBody()
     if (typeof p.client_id !== 'string' || !p.client_id || p.client_id.length > 100 || p.resource !== MCP_RESOURCE ||
       (p.scope !== undefined && p.scope !== READ_SCOPE)) return c.json({ error: 'invalid_grant' }, 400)
+    await ensureRefreshTable(c.env)
     let row: any
     let refreshExpires = now() + 30 * 86400
     if (p.grant_type === 'refresh_token') {
       if (typeof p.refresh_token !== 'string' || !/^ddcn_refresh_[a-f0-9]{64}$/.test(p.refresh_token)) return c.json({ error: 'invalid_grant' }, 400)
       // Consume once atomically: only one concurrent refresh may succeed.
-      row = await c.env.DB.prepare('DELETE FROM ddcn_oauth_refresh_tokens WHERE token_hash = ? AND client_id = ? AND resource = ? AND expires_at > ? RETURNING user_id, scope, expires_at, access_token_hash')
+      row = await c.env.DB.prepare('UPDATE ddcn_oauth_refresh_tokens SET expires_at = -expires_at WHERE token_hash = ? AND client_id = ? AND resource = ? AND expires_at > ? RETURNING user_id, scope, -expires_at AS expires_at, access_token_hash')
         .bind(await oauthHash(p.refresh_token), p.client_id, MCP_RESOURCE, now()).first<any>()
       if (row) {
         refreshExpires = row.expires_at
@@ -122,26 +127,31 @@ export function createDdcnOAuth(verifySession: VerifySession) {
     const refresh_token = 'ddcn_refresh_' + randomSecret()
     const accessHash = await oauthHash(access_token)
     // D1 batch is transactional: never publish a partially persisted token pair.
-    await c.env.DB.batch([
-      c.env.DB.prepare('INSERT INTO ddcn_oauth_tokens (token_hash, client_id, resource, scope, user_id, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(accessHash, p.client_id, MCP_RESOURCE, READ_SCOPE, row.user_id, now() + 28800),
-      c.env.DB.prepare('INSERT INTO ddcn_oauth_refresh_tokens (token_hash, client_id, resource, scope, user_id, expires_at, access_token_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .bind(await oauthHash(refresh_token), p.client_id, MCP_RESOURCE, READ_SCOPE, row.user_id, refreshExpires, accessHash),
+    const issued = await c.env.DB.batch([
+      c.env.DB.prepare('INSERT INTO ddcn_oauth_tokens (token_hash, client_id, resource, scope, user_id, expires_at) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM ddcn_oauth_clients WHERE client_id = ?)')
+        .bind(accessHash, p.client_id, MCP_RESOURCE, READ_SCOPE, row.user_id, now() + 28800, p.client_id),
+      c.env.DB.prepare('INSERT INTO ddcn_oauth_refresh_tokens (token_hash, client_id, resource, scope, user_id, expires_at, access_token_hash) SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM ddcn_oauth_clients WHERE client_id = ?)')
+        .bind(await oauthHash(refresh_token), p.client_id, MCP_RESOURCE, READ_SCOPE, row.user_id, refreshExpires, accessHash, p.client_id),
       c.env.DB.prepare('DELETE FROM ddcn_oauth_codes WHERE expires_at <= ?').bind(now()),
       c.env.DB.prepare('DELETE FROM ddcn_oauth_tokens WHERE expires_at <= ?').bind(now()),
-      c.env.DB.prepare('DELETE FROM ddcn_oauth_refresh_tokens WHERE expires_at <= ?').bind(now()),
+      c.env.DB.prepare('DELETE FROM ddcn_oauth_refresh_tokens WHERE ABS(expires_at) <= ?').bind(now()),
     ])
+    if (issued[0].meta.changes !== 1 || issued[1].meta.changes !== 1) return c.json({ error: 'invalid_grant' }, 400)
     return c.json({ access_token, refresh_token, token_type: 'Bearer', expires_in: 28800, scope: READ_SCOPE })
   })
   app.post('/oauth/ddcn/revoke', async c => {
     const p = await c.req.parseBody()
     if (typeof p.token !== 'string' || typeof p.client_id !== 'string') return c.json({ error: 'invalid_request' }, 400)
     const hash = await oauthHash(p.token)
-    // Revoking either member invalidates the current pair.
-    const refresh = await c.env.DB.prepare('DELETE FROM ddcn_oauth_refresh_tokens WHERE (token_hash = ? OR access_token_hash = ?) AND client_id = ? RETURNING access_token_hash')
-      .bind(hash, hash, p.client_id).first<any>()
-    if (refresh) await c.env.DB.prepare('DELETE FROM ddcn_oauth_tokens WHERE token_hash = ?').bind(refresh.access_token_hash).run()
-    await c.env.DB.prepare('DELETE FROM ddcn_oauth_tokens WHERE token_hash = ? AND client_id = ?').bind(await oauthHash(p.token), p.client_id).run()
+    await ensureRefreshTable(c.env)
+    // Invalidate the dedicated OAuth client. Retained spent-token hashes let an
+    // old credential revoke successors even while rotation is in flight.
+    await c.env.DB.batch([
+      c.env.DB.prepare('DELETE FROM ddcn_oauth_clients WHERE client_id = ? AND (EXISTS (SELECT 1 FROM ddcn_oauth_refresh_tokens WHERE client_id = ? AND (token_hash = ? OR access_token_hash = ?)) OR EXISTS (SELECT 1 FROM ddcn_oauth_tokens WHERE client_id = ? AND token_hash = ?))')
+        .bind(p.client_id, p.client_id, hash, hash, p.client_id, hash),
+      c.env.DB.prepare('DELETE FROM ddcn_oauth_tokens WHERE client_id = ? AND NOT EXISTS (SELECT 1 FROM ddcn_oauth_clients WHERE client_id = ?)').bind(p.client_id, p.client_id),
+      c.env.DB.prepare('DELETE FROM ddcn_oauth_refresh_tokens WHERE client_id = ? AND NOT EXISTS (SELECT 1 FROM ddcn_oauth_clients WHERE client_id = ?)').bind(p.client_id, p.client_id),
+    ])
     return c.body(null, 200)
   })
   return app

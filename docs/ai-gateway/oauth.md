@@ -29,3 +29,7 @@ Tham chiếu: https://developers.openai.com/plugins/build/auth
 ## Nâng cấp refresh token
 
 Áp dụng `migrations/0073_ddcn_oauth_refresh.sql` trên D1 production trước khi triển khai bản refresh. Migration chỉ thêm bảng OAuth độc lập, có thể chạy lại. Sau deployment, làm mới công cụ/metadata plugin và ngắt kết nối rồi cấp quyền lại một lần: access token cũ không tự nhận refresh token. Không cần đổi AI_GATEWAY_KEY hay JWT_SECRET. ChatGPT phải lưu và dùng refresh token mới nhất trả về trong mỗi lần gia hạn. Chưa xác nhận tác vụ định kỳ có tự gia hạn cho tới khi kiểm tra trên host thực tế.
+
+## Thu hồi an toàn khi gia hạn đồng thời
+
+Refresh token đã dùng được giữ dưới dạng hash với expiry âm tới thời hạn gốc để nhận diện yêu cầu thu hồi. Thu hồi bằng access/refresh token hợp lệ (kể cả token đã xoay vòng) xóa OAuth client riêng của kết nối và toàn bộ token của client đó. Các client khác không bị ảnh hưởng. Cấp token dùng INSERT SELECT có điều kiện client còn tồn tại trong cùng D1 batch; gateway cũng yêu cầu client còn tồn tại. Vì vậy token tiếp nối không dùng được sau khi thu hồi, kể cả refresh đang chạy. Sau thu hồi phải đăng ký client DCR mới; Client ID nhập tay cũ không tái sử dụng. Bảng refresh được tạo bằng CREATE TABLE IF NOT EXISTS ở endpoint token/revoke nếu migration 0073 chưa chạy; migration vẫn bổ sung các index, nên khuyến nghị áp dụng.

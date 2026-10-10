@@ -5,23 +5,30 @@ function fixture() {
   const clients = new Map<string, any>(), codes = new Map<string, any>(), tokens = new Map<string, any>(), refreshTokens = new Map<string, any>()
   const user = { id: 1, role: 'system_admin', is_active: 1 }
   const DB = { prepare(sql: string) { let args: any[] = []; return { bind(...a: any[]) { args = a; return this }, async run() {
+    if (sql.startsWith('INSERT') && sql.includes('WHERE EXISTS') && !clients.has(args[args.length-1])) return {success:true,meta:{changes:0}}
+    if (sql.startsWith('DELETE FROM ddcn_oauth_clients')) {
+      const matches=[...refreshTokens].some(([hash,row])=>row.client_id===args[0] && (hash===args[2] || row.access_token_hash===args[3])) || [...tokens].some(([hash,row])=>row.client_id===args[0] && hash===args[5])
+      if(matches) clients.delete(args[0])
+    }
+    if(sql.startsWith('DELETE FROM ddcn_oauth_tokens WHERE client_id') && !clients.has(args[0])) for(const [hash,row] of tokens) if(row.client_id===args[0]) tokens.delete(hash)
+    if(sql.startsWith('DELETE FROM ddcn_oauth_refresh_tokens WHERE client_id') && !clients.has(args[0])) for(const [hash,row] of refreshTokens) if(row.client_id===args[0]) refreshTokens.delete(hash)
     if (sql.startsWith('INSERT INTO ddcn_oauth_clients')) clients.set(args[0], { redirect_uri: args[1] })
     if (sql.startsWith('INSERT INTO ddcn_oauth_codes')) codes.set(args[0], { client_id: args[1], redirect_uri: args[2], challenge: args[3], resource: args[4], scope: args[5], user_id: args[6], expires_at: args[7] })
     if (sql.startsWith('INSERT INTO ddcn_oauth_refresh_tokens')) refreshTokens.set(args[0], { client_id: args[1], resource: args[2], scope: args[3], user_id: args[4], expires_at: args[5], access_token_hash: args[6] })
     if (sql.startsWith('INSERT INTO ddcn_oauth_tokens')) tokens.set(args[0], { client_id: args[1], resource: args[2], scope: args[3], user_id: args[4], expires_at: args[5] })
     if (sql.startsWith('DELETE FROM ddcn_oauth_tokens WHERE token_hash') && (args.length === 1 || tokens.get(args[0])?.client_id === args[1])) tokens.delete(args[0])
-    return { success: true }
+    return { success: true, meta: {changes:1} }
   }, async first() {
-    if (sql.startsWith('DELETE FROM ddcn_oauth_refresh_tokens')) {
+    if (sql.startsWith('UPDATE ddcn_oauth_refresh_tokens')) {
       if (sql.includes('OR access_token_hash')) { for (const [hash, row] of refreshTokens) if ((hash === args[0] || row.access_token_hash === args[1]) && row.client_id === args[2]) { refreshTokens.delete(hash); return row } return null }
-      const row = refreshTokens.get(args[0]); if (row && row.client_id === args[1] && row.resource === args[2] && row.expires_at > args[3]) { refreshTokens.delete(args[0]); return row } return null
+      const row = refreshTokens.get(args[0]); if (row && row.client_id === args[1] && row.resource === args[2] && row.expires_at > args[3]) { refreshTokens.set(args[0], {...row,expires_at:-row.expires_at}); return row } return null
     }
     if (sql.includes('FROM users')) return user
     if (sql.includes('FROM ddcn_oauth_clients')) return clients.get(args[0]) || null
     if (sql.startsWith('DELETE FROM ddcn_oauth_codes')) { const row = codes.get(args[0]); if (row && row.client_id === args[1] && row.redirect_uri === args[2] && row.challenge === args[3] && row.resource === args[4] && row.expires_at > args[5]) { codes.delete(args[0]); return row } return null }
-    if (sql.includes('FROM ddcn_oauth_tokens')) { const row = tokens.get(args[0]); return row?.expires_at > args[1] ? row : null }
+    if (sql.includes('FROM ddcn_oauth_tokens')) { const row = tokens.get(args[0]); return row?.expires_at > args[1] && clients.has(row.client_id) ? row : null }
     return null
-  }, async all() { return { results: [] } } } }, async batch(statements: any[]) { await Promise.all(statements.map(s => s.run())); return [{ results: [] }, { results: [{}] }, { results: [] }] } }
+  }, async all() { return { results: [] } } } }, async batch(statements: any[]) { const results=[];for(const statement of statements) results.push({...await statement.run(),results:[{}]});return results } }
   const env = { DB, JWT_SECRET: 'test-secret', AI_GATEWAY_USER_ID: '1', AI_GATEWAY_KEY: 'abcdefghijklmnopqrstuvwxyz1234567890' } as any
   const app = createDdcnOAuth(async token => token === 'valid-session' ? { id: 1, exp: Date.now() + 60000 } : null)
   const request = (path: string, options = {}) => app.request(path, options, env)
@@ -79,6 +86,24 @@ describe('DDCN OAuth', () => {
     const f=fixture(); const metadata=await (await f.request('/.well-known/oauth-authorization-server')).json()
     expect(metadata.grant_types_supported).toContain('refresh_token')
     const r=await f.request('/oauth/ddcn/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({redirect_uris:[CHATGPT_CALLBACK],grant_types:['authorization_code','refresh_token'],token_endpoint_auth_method:'none'})});expect(r.status).toBe(201)
+  })
+
+  it('revoking a consumed credential blocks successor issuance', async () => {
+    const f=fixture(),a=await authorize(f),pair=await (await exchange(f,a)).json()
+    const originalBatch=f.env.DB.batch
+    f.env.DB.batch=async (statements:any[])=>{
+      f.env.DB.batch=originalBatch
+      await f.request('/oauth/ddcn/revoke',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:a.params.client_id,token:pair.refresh_token})})
+      return originalBatch(statements)
+    }
+    const r=await f.request('/oauth/ddcn/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'refresh_token',client_id:a.params.client_id,resource:MCP_RESOURCE,refresh_token:pair.refresh_token})})
+    expect(r.status).toBe(400);expect(f.clients.has(a.params.client_id)).toBe(false);expect(f.tokens.size).toBe(0);expect(f.refreshTokens.size).toBe(0)
+  })
+  it('revoking an old token invalidates already issued successors but not other clients', async () => {
+    const f=fixture(),a=await authorize(f),pair=await (await exchange(f,a)).json(),b=await authorize(f),other=await (await exchange(f,b)).json()
+    const next=await (await f.request('/oauth/ddcn/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'refresh_token',client_id:a.params.client_id,resource:MCP_RESOURCE,refresh_token:pair.refresh_token})})).json()
+    await f.request('/oauth/ddcn/revoke',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:a.params.client_id,token:pair.access_token})})
+    expect(await oauthPrincipal(next.access_token,f.env)).toBeNull();expect(await oauthPrincipal(other.access_token,f.env)).toBe(1)
   })
 
 })
