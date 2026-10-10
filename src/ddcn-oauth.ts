@@ -23,7 +23,7 @@ function randomSecret() {
 export const oauthChallenge = `Bearer resource_metadata="${OAUTH_ISSUER}/.well-known/oauth-protected-resource/api/ai/v1/mcp", scope="${READ_SCOPE}"`
 export async function oauthPrincipal(token: string, env: OAuthBindings): Promise<number | null> {
   if (!token.startsWith('ddcn_oauth_')) return null
-  const row = await env.DB.prepare('SELECT user_id, resource, scope FROM ddcn_oauth_tokens WHERE token_hash = ? AND expires_at > ?').bind(await oauthHash(token), now()).first<any>()
+  const row = await env.DB.prepare('SELECT t.user_id, t.resource, t.scope FROM ddcn_oauth_tokens t JOIN ddcn_oauth_clients c ON c.client_id = t.client_id WHERE t.token_hash = ? AND t.expires_at > ?').bind(await oauthHash(token), now()).first<any>()
   if (!row || row.resource !== MCP_RESOURCE || row.scope !== READ_SCOPE || row.user_id !== Number(env.AI_GATEWAY_USER_ID)) return null
   return row.user_id
 }
@@ -38,7 +38,7 @@ export function createDdcnOAuth(verifySession: VerifySession) {
   app.get('/.well-known/oauth-authorization-server', c => c.json({
     issuer: OAUTH_ISSUER, authorization_endpoint: `${OAUTH_ISSUER}/oauth/ddcn/authorize`, token_endpoint: `${OAUTH_ISSUER}/oauth/ddcn/token`,
     registration_endpoint: `${OAUTH_ISSUER}/oauth/ddcn/register`, revocation_endpoint: `${OAUTH_ISSUER}/oauth/ddcn/revoke`,
-    response_types_supported: ['code'], grant_types_supported: ['authorization_code'], token_endpoint_auth_methods_supported: ['none'],
+    response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'], token_endpoint_auth_methods_supported: ['none'],
     code_challenge_methods_supported: ['S256'], scopes_supported: [READ_SCOPE], authorization_response_iss_parameter_supported: true,
   }))
   app.post('/oauth/ddcn/register', async c => {
@@ -47,11 +47,11 @@ export function createDdcnOAuth(verifySession: VerifySession) {
     // Closed internal integration: never register arbitrary callback destinations.
     if (!body || !Array.isArray(body.redirect_uris) || body.redirect_uris.length !== 1 || body.redirect_uris[0] !== CHATGPT_CALLBACK ||
       (body.token_endpoint_auth_method && body.token_endpoint_auth_method !== 'none') ||
-      (body.grant_types && JSON.stringify(body.grant_types) !== '["authorization_code"]') ||
+      (body.grant_types && (!Array.isArray(body.grant_types) || !body.grant_types.includes('authorization_code') || body.grant_types.some((g: unknown) => !['authorization_code', 'refresh_token'].includes(g as string)))) ||
       (body.response_types && JSON.stringify(body.response_types) !== '["code"]')) return c.json({ error: 'invalid_client_metadata' }, 400)
     const client_id = crypto.randomUUID()
     await c.env.DB.prepare('INSERT INTO ddcn_oauth_clients (client_id, redirect_uri, created_at) VALUES (?, ?, ?)').bind(client_id, CHATGPT_CALLBACK, now()).run()
-    return c.json({ client_id, client_id_issued_at: now(), redirect_uris: [CHATGPT_CALLBACK], grant_types: ['authorization_code'], response_types: ['code'], token_endpoint_auth_method: 'none' }, 201)
+    return c.json({ client_id, client_id_issued_at: now(), redirect_uris: [CHATGPT_CALLBACK], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }, 201)
   })
   async function validRequest(env: OAuthBindings, p: Record<string, string>) {
     if (p.response_type !== 'code' || p.redirect_uri !== CHATGPT_CALLBACK || p.resource !== MCP_RESOURCE || p.scope !== READ_SCOPE ||
@@ -94,31 +94,64 @@ export function createDdcnOAuth(verifySession: VerifySession) {
     redirect.searchParams.set('code', code)
     return c.json({ redirect: redirect.href })
   })
+  async function ensureRefreshTable(env: OAuthBindings) {
+    // Idempotent, additive bootstrap also protects deployments made before manual migration.
+    await env.DB.prepare('CREATE TABLE IF NOT EXISTS ddcn_oauth_refresh_tokens (token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, resource TEXT NOT NULL, scope TEXT NOT NULL, user_id INTEGER NOT NULL, expires_at INTEGER NOT NULL, access_token_hash TEXT NOT NULL)').run()
+  }
   app.post('/oauth/ddcn/token', async c => {
     const p = await c.req.parseBody()
-    if (p.grant_type !== 'authorization_code' || typeof p.client_id !== 'string' || p.client_id.length > 100 || typeof p.code !== 'string' || p.code.length !== 64 ||
-      typeof p.code_verifier !== 'string' || !/^[A-Za-z0-9._~-]{43,128}$/.test(p.code_verifier) || p.resource !== MCP_RESOURCE || p.redirect_uri !== CHATGPT_CALLBACK) return c.json({ error: 'invalid_grant' }, 400)
-    const codeHash = await oauthHash(p.code)
-    const challenge = await pkceChallenge(p.code_verifier)
-    // Atomic consume after matching every bound parameter; prevents concurrent replay.
-    const row = await c.env.DB.prepare('DELETE FROM ddcn_oauth_codes WHERE code_hash = ? AND client_id = ? AND redirect_uri = ? AND challenge = ? AND resource = ? AND expires_at > ? RETURNING user_id, scope')
-      .bind(codeHash, p.client_id, p.redirect_uri, challenge, MCP_RESOURCE, now()).first<any>()
+    if (typeof p.client_id !== 'string' || !p.client_id || p.client_id.length > 100 || p.resource !== MCP_RESOURCE ||
+      (p.scope !== undefined && p.scope !== READ_SCOPE)) return c.json({ error: 'invalid_grant' }, 400)
+    await ensureRefreshTable(c.env)
+    let row: any
+    let refreshExpires = now() + 30 * 86400
+    if (p.grant_type === 'refresh_token') {
+      if (typeof p.refresh_token !== 'string' || !/^ddcn_refresh_[a-f0-9]{64}$/.test(p.refresh_token)) return c.json({ error: 'invalid_grant' }, 400)
+      // Consume once atomically: only one concurrent refresh may succeed.
+      row = await c.env.DB.prepare('UPDATE ddcn_oauth_refresh_tokens SET expires_at = -expires_at WHERE token_hash = ? AND client_id = ? AND resource = ? AND expires_at > ? RETURNING user_id, scope, -expires_at AS expires_at, access_token_hash')
+        .bind(await oauthHash(p.refresh_token), p.client_id, MCP_RESOURCE, now()).first<any>()
+      if (row) {
+        refreshExpires = row.expires_at
+        await c.env.DB.prepare('DELETE FROM ddcn_oauth_tokens WHERE token_hash = ?').bind(row.access_token_hash).run()
+      }
+    } else if (p.grant_type === 'authorization_code') {
+      if (typeof p.code !== 'string' || p.code.length !== 64 || typeof p.code_verifier !== 'string' ||
+        !/^[A-Za-z0-9._~-]{43,128}$/.test(p.code_verifier) || p.redirect_uri !== CHATGPT_CALLBACK) return c.json({ error: 'invalid_grant' }, 400)
+      row = await c.env.DB.prepare('DELETE FROM ddcn_oauth_codes WHERE code_hash = ? AND client_id = ? AND redirect_uri = ? AND challenge = ? AND resource = ? AND expires_at > ? RETURNING user_id, scope')
+        .bind(await oauthHash(p.code), p.client_id, p.redirect_uri, await pkceChallenge(p.code_verifier), MCP_RESOURCE, now()).first<any>()
+    } else return c.json({ error: 'unsupported_grant_type' }, 400)
     if (!row || row.scope !== READ_SCOPE || row.user_id !== Number(c.env.AI_GATEWAY_USER_ID)) return c.json({ error: 'invalid_grant' }, 400)
     const user = await c.env.DB.prepare('SELECT role, is_active FROM users WHERE id = ?').bind(row.user_id).first<any>()
     if (user?.role !== 'system_admin' || user.is_active !== 1) return c.json({ error: 'invalid_grant' }, 400)
     const access_token = 'ddcn_oauth_' + randomSecret()
-    await c.env.DB.prepare('INSERT INTO ddcn_oauth_tokens (token_hash, client_id, resource, scope, user_id, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .bind(await oauthHash(access_token), p.client_id, MCP_RESOURCE, READ_SCOPE, row.user_id, now() + 28800).run()
-    await c.env.DB.batch([
+    const refresh_token = 'ddcn_refresh_' + randomSecret()
+    const accessHash = await oauthHash(access_token)
+    // D1 batch is transactional: never publish a partially persisted token pair.
+    const issued = await c.env.DB.batch([
+      c.env.DB.prepare('INSERT INTO ddcn_oauth_tokens (token_hash, client_id, resource, scope, user_id, expires_at) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM ddcn_oauth_clients WHERE client_id = ?)')
+        .bind(accessHash, p.client_id, MCP_RESOURCE, READ_SCOPE, row.user_id, now() + 28800, p.client_id),
+      c.env.DB.prepare('INSERT INTO ddcn_oauth_refresh_tokens (token_hash, client_id, resource, scope, user_id, expires_at, access_token_hash) SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM ddcn_oauth_clients WHERE client_id = ?)')
+        .bind(await oauthHash(refresh_token), p.client_id, MCP_RESOURCE, READ_SCOPE, row.user_id, refreshExpires, accessHash, p.client_id),
       c.env.DB.prepare('DELETE FROM ddcn_oauth_codes WHERE expires_at <= ?').bind(now()),
       c.env.DB.prepare('DELETE FROM ddcn_oauth_tokens WHERE expires_at <= ?').bind(now()),
+      c.env.DB.prepare('DELETE FROM ddcn_oauth_refresh_tokens WHERE ABS(expires_at) <= ?').bind(now()),
     ])
-    return c.json({ access_token, token_type: 'Bearer', expires_in: 28800, scope: READ_SCOPE })
+    if (issued[0].meta.changes !== 1 || issued[1].meta.changes !== 1) return c.json({ error: 'invalid_grant' }, 400)
+    return c.json({ access_token, refresh_token, token_type: 'Bearer', expires_in: 28800, scope: READ_SCOPE })
   })
   app.post('/oauth/ddcn/revoke', async c => {
     const p = await c.req.parseBody()
     if (typeof p.token !== 'string' || typeof p.client_id !== 'string') return c.json({ error: 'invalid_request' }, 400)
-    await c.env.DB.prepare('DELETE FROM ddcn_oauth_tokens WHERE token_hash = ? AND client_id = ?').bind(await oauthHash(p.token), p.client_id).run()
+    const hash = await oauthHash(p.token)
+    await ensureRefreshTable(c.env)
+    // Invalidate the dedicated OAuth client. Retained spent-token hashes let an
+    // old credential revoke successors even while rotation is in flight.
+    await c.env.DB.batch([
+      c.env.DB.prepare('DELETE FROM ddcn_oauth_clients WHERE client_id = ? AND (EXISTS (SELECT 1 FROM ddcn_oauth_refresh_tokens WHERE client_id = ? AND (token_hash = ? OR access_token_hash = ?)) OR EXISTS (SELECT 1 FROM ddcn_oauth_tokens WHERE client_id = ? AND token_hash = ?))')
+        .bind(p.client_id, p.client_id, hash, hash, p.client_id, hash),
+      c.env.DB.prepare('DELETE FROM ddcn_oauth_tokens WHERE client_id = ? AND NOT EXISTS (SELECT 1 FROM ddcn_oauth_clients WHERE client_id = ?)').bind(p.client_id, p.client_id),
+      c.env.DB.prepare('DELETE FROM ddcn_oauth_refresh_tokens WHERE client_id = ? AND NOT EXISTS (SELECT 1 FROM ddcn_oauth_clients WHERE client_id = ?)').bind(p.client_id, p.client_id),
+    ])
     return c.body(null, 200)
   })
   return app
