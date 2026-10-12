@@ -28623,13 +28623,19 @@ function renderWeeklyBoardRow(it) {
   </tr>`
 }
 
+function weeklyBoardProjectLabel(p) {
+  const code = String(p.code || '').trim()
+  const name = String(p.name || '').trim()
+  return code ? `${code} · ${name}` : name
+}
+
 function weeklyBoardMountProjectCombos(addable, reportable) {
   const mount = (id, projects, onchange) => {
     const host = $(id)
     if (!host || !projects?.length) return
     createCombobox(id, {
       placeholder: 'Chọn dự án',
-      items: projects.map(p => ({ value: String(p.id), label: p.name })),
+      items: projects.map(p => ({ value: String(p.id), label: weeklyBoardProjectLabel(p) })),
       value: String(projects[0].id),
       fullWidth: true,
       teleport: true,

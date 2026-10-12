@@ -18467,18 +18467,18 @@ app.get('/api/weekly-board', authMiddleware, async (c) => {
     `).bind(wi.weekStart, legacyStart, ...access.params).all()
 
     const addableProjects = await db.prepare(`
-      SELECT p.id, p.name
+      SELECT p.id, p.code, p.name
       FROM projects p
       WHERE ${access.clause}
-      ORDER BY p.name COLLATE NOCASE
+      ORDER BY p.code COLLATE NOCASE, p.name COLLATE NOCASE
     `).bind(...access.params).all()
 
     const uid = Number(user.id)
-    const reportable: { id: number; name: string }[] = []
-    const addable: { id: number; name: string }[] = []
+    const reportable: { id: number; name: string; code: string }[] = []
+    const addable: { id: number; name: string; code: string }[] = []
     for (const p of (addableProjects.results || []) as any[]) {
       const pid = Number(p.id)
-      const row = { id: pid, name: String(p.name) }
+      const row = { id: pid, name: String(p.name), code: p.code ? String(p.code) : '' }
       reportable.push(row)
       if (await isProjectLeaderOrAdmin(db, user, pid)) addable.push(row)
     }
