@@ -2057,6 +2057,8 @@ async function handleNotifClick(notifId, type, relatedType, relatedId) {
   if (relatedType === 'task') {
     // Open task detail and switch to Chat tab
     await openTaskDetail(relatedId, true)
+  } else if (relatedType === 'weekly_board') {
+    navigate('weekly-board')
   } else if (relatedType === 'project') {
     // Open project detail and switch to Chat tab
     await openProjectDetail(relatedId, true)
@@ -28623,7 +28625,7 @@ function renderWeeklyBoardRow(it) {
     : ''
   return `<tr class="hover:bg-gray-50">
     <td class="py-2 px-3 text-xs">${escHtml(it.description)}${weeklyBoardLateBadge(it)}</td>
-    <td class="py-2 px-3 text-xs">${weeklyBoardAssigneeChips(it)}</td>
+    <td class="py-2 px-3 text-xs">${weeklyBoardAssigneeCell(it)}</td>
     <td class="py-2 px-3 text-xs wb-col-date">${it.target_date ? fmtDate(it.target_date) : '—'}</td>
     <td class="py-2 px-3 wb-result-cell">${weeklyBoardResultControl(it)}</td>
     <td class="py-2 px-3 wb-col-status">${statusCell}</td>
@@ -28660,6 +28662,69 @@ function weeklyBoardProjectId(comboboxId) {
   const raw = _cbState[comboboxId]?.value
   const id = Number(raw)
   return id > 0 ? id : 0
+}
+
+function weeklyBoardAssigneeCell(it) {
+  const chips = weeklyBoardAssigneeChips(it)
+  if (!it.can_reassign) return chips
+  return `${chips}<button type="button" class="block mt-1 text-[11px] font-medium" style="color:#38bdf8" onclick="weeklyBoardOpenReassign(${Number(it.id)}, ${Number(it.project_id)})">Đổi người</button><div id="wbReassign_${Number(it.id)}" class="mt-1" hidden></div>`
+}
+
+async function weeklyBoardOpenReassign(itemId, projectId) {
+  const host = $('wbReassign_' + itemId)
+  if (!host) return
+  if (host.dataset.open === '1') {
+    host.hidden = true
+    host.dataset.open = '0'
+    return
+  }
+  host.hidden = false
+  host.dataset.open = '1'
+  host.innerHTML = '<div class="text-xs text-gray-400">Đang tải thành viên…</div>'
+  try {
+    const proj = await api('/projects/' + projectId)
+    const seen = new Set()
+    const members = []
+    ;(proj.members || []).forEach((m) => {
+      const uid = Number(m.user_id ?? m.id)
+      if (!uid || seen.has(uid)) return
+      seen.add(uid)
+      members.push({ id: uid, name: m.full_name || m.name || ('#' + uid) })
+    })
+    if (proj.leader_id && !seen.has(Number(proj.leader_id))) {
+      members.push({ id: Number(proj.leader_id), name: proj.leader_name || 'Leader' })
+    }
+    if (proj.admin_id && !seen.has(Number(proj.admin_id))) {
+      members.push({ id: Number(proj.admin_id), name: proj.admin_name || 'Admin dự án' })
+    }
+    members.sort((a, b) => String(a.name).localeCompare(String(b.name), 'vi'))
+    const boxId = 'wbReassignCb_' + itemId
+    host.innerHTML = `<div id="${boxId}"></div>`
+    createCombobox(boxId, {
+      placeholder: 'Chọn người phụ trách mới',
+      items: members.map((m) => ({ value: String(m.id), label: m.name })),
+      fullWidth: true,
+      teleport: true,
+      panelMaxWidth: '280px',
+      dropdownMaxHeight: '220px',
+      onchange: (val) => { if (val) weeklyBoardReassign(itemId, val) },
+    })
+  } catch (e) {
+    host.innerHTML = `<div class="text-xs text-red-400">${escHtml(e.message || 'Không tải được thành viên')}</div>`
+  }
+}
+
+async function weeklyBoardReassign(itemId, userId) {
+  try {
+    await api(`/weekly-board/items/${itemId}/assignee`, {
+      method: 'PATCH',
+      data: { assignee_id: Number(userId) },
+    })
+    toast('Đã giao lại người phụ trách', 'success')
+    await loadWeeklyBoardPage(true)
+  } catch (err) {
+    toast(err.message, 'error')
+  }
 }
 
 function weeklyBoardAssigneeChips(it) {
@@ -28849,7 +28914,7 @@ async function submitWeeklyBoardItem(e) {
   }
   try {
     await api('/weekly-board/items', { method: 'POST', data: payload })
-    toast('Đã thêm việc', 'success')
+    toast('Đã giao việc, tạo task và gửi thông báo', 'success')
     e.target.reset()
     const pid = payload.project_id
     if (pid) weeklyBoardLoadMembers(pid)
