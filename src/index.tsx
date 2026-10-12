@@ -2799,6 +2799,7 @@ app.get('/api/tasks', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
+    await clearWeeklyBoardTaskPhase(db)
     const { project_id, status, assigned_to, overdue, search, limit: limitQ, offset: offsetQ, discipline, phase, priority, category_id, exclude_done } = c.req.query()
     // Theo dự án: cho phép nhiều hơn (detail/Gantt); danh sách toàn cục: mặc định thấp hơn
     const defaultLimit = project_id ? 5000 : 1000
@@ -3029,7 +3030,19 @@ app.get('/api/tasks/:id', authMiddleware, async (c) => {
   }
 })
 
-async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: any, opts?: { skipNotify?: boolean }): Promise<{ status: number, body: any }> {
+async function clearWeeklyBoardTaskPhase(db: D1Database) {
+  try {
+    await db.prepare(`
+      UPDATE tasks
+      SET phase = NULL
+      WHERE task_type = 'other'
+        AND phase = 'basic_design'
+        AND description LIKE 'Tuần %'
+    `).run()
+  } catch { /* task cũ chưa có cột thì bỏ qua */ }
+}
+
+async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: any, opts?: { skipNotify?: boolean; emptyPhase?: boolean }): Promise<{ status: number, body: any }> {
   try {
     const { project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, start_date, due_date, estimated_hours, task_type, model_filename, cde_report, work_notes, hstk_date, design_package_id } = data
 
@@ -3062,7 +3075,7 @@ async function createTaskRecord(db: D1Database, env: Bindings, user: any, data: 
       `INSERT INTO tasks (project_id, category_id, legal_item_id, title, description, discipline_code, phase, priority, status, assigned_to, assigned_by, start_date, due_date, estimated_hours, task_type, model_filename, cde_report, work_notes, hstk_date, design_package_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(project_id, category_id || null, legal_item_id || null, title, descriptionStored || null, discipline_code || null,
-      phase || 'basic_design', priority || 'medium', status || 'todo',
+      opts?.emptyPhase ? null : (phase || 'basic_design'), priority || 'medium', status || 'todo',
       assigned_to || null, user.id, start_date || null, due_date || null, estimated_hours || 0,
       task_type || 'model', model_filename || null, cde_report ? 1 : 0, work_notes || null, hstk_date || null,
       design_package_id || null).run()
@@ -18895,7 +18908,7 @@ app.post('/api/weekly-board/items', authMiddleware, async (c) => {
           assigned_to: assigneeId,
           start_date: wi.weekStart,
           due_date: targetDate,
-        }, { skipNotify: true })
+        }, { skipNotify: true, emptyPhase: true })
         if (created.status !== 201 || !created.body?.id) {
           throw new Error(created.body?.error || 'Không tạo được task')
         }
@@ -19097,7 +19110,7 @@ app.patch('/api/weekly-board/items/:id/assignee', authMiddleware, async (c) => {
         assigned_to: nextId,
         start_date: row.week_start || null,
         due_date: row.target_date || null,
-      }, { skipNotify: true })
+      }, { skipNotify: true, emptyPhase: true })
       if (created.status !== 201 || !created.body?.id) {
         return c.json({ error: created.body?.error || 'Không tạo được task cho người mới' }, 500)
       }
