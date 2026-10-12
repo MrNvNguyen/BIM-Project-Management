@@ -18409,11 +18409,46 @@ function addCalendarDaysUTC(dateStr: string, days: number): string {
   return formatUTCDate(dt)
 }
 
-// Việc chưa xong của tuần liền trước được chép sang tuần đang mở, ghi chú Trễ hạn.
+// Hết tuần (Chủ nhật) mà việc chưa Xong thì chuyển sang tuần đang mở.
 async function carryUnfinishedWeeklyItems(db: D1Database, user: any, weekStart: string) {
   const prevStart = addCalendarDaysUTC(weekStart, -7)
   const prevLegacy = legacyWeekStart(prevStart)
+  const prevEnd = addCalendarDaysUTC(prevStart, 6)
+  const today = todayInVietnam()
+  const sourceWeekEnded = today > prevEnd
   const access = weeklyBoardAccessSql(user)
+  const legacyDest = legacyWeekStart(weekStart)
+  const completedSql = `
+    EXISTS (
+      SELECT 1 FROM weekly_reports wr
+      JOIN weekly_report_items wri ON wri.report_id = wr.id AND wri.plan_item_id = src.id
+      WHERE wr.plan_id = src.plan_id AND wri.status = 'completed'
+    )`
+  const stale = await db.prepare(`
+    SELECT wpi.id
+    FROM weekly_plan_items wpi
+    JOIN weekly_plans wp ON wp.id = wpi.plan_id
+    JOIN projects p ON p.id = wp.project_id
+    LEFT JOIN weekly_plan_items src ON src.id = wpi.carried_from_item_id
+    LEFT JOIN weekly_plans srcPlan ON srcPlan.id = src.plan_id
+    WHERE wp.week_start IN (?, ?)
+      AND wpi.carried_from_item_id IS NOT NULL
+      AND ${access.clause}
+      AND (
+        src.id IS NULL
+        OR ${completedSql}
+        OR (srcPlan.week_start IN (?, ?) AND ? = 0)
+      )
+  `).bind(weekStart, legacyDest, ...access.params, prevStart, prevLegacy, sourceWeekEnded ? 1 : 0).all()
+  const staleIds = ((stale.results || []) as { id?: number }[]).map((row) => Number(row.id)).filter((id) => id > 0)
+  if (staleIds.length) {
+    const ph = staleIds.map(() => '?').join(',')
+    await db.prepare(`DELETE FROM weekly_report_items WHERE plan_item_id IN (${ph})`).bind(...staleIds).run()
+    await db.prepare(`DELETE FROM weekly_plan_items WHERE id IN (${ph})`).bind(...staleIds).run()
+  }
+
+  if (!sourceWeekEnded) return
+
   const sources = await db.prepare(`
     SELECT wpi.id, wpi.description, wpi.assignee_ids, wpi.assignee_names, wpi.target_date, wpi.priority, wp.project_id
     FROM weekly_plans wp
