@@ -28517,7 +28517,7 @@ function renderWeeklyBoardTable() {
   const order = []
   tasks.forEach(it => {
     const k = it.project_id
-    if (!groups[k]) { groups[k] = { name: it.project_name, items: [] }; order.push(k) }
+    if (!groups[k]) { groups[k] = { name: weeklyBoardProjectLabel(it), items: [] }; order.push(k) }
     groups[k].items.push(it)
   })
 
@@ -28535,16 +28535,24 @@ function renderWeeklyBoardTable() {
       const rows = g.items.map(it => renderWeeklyBoardRow(it)).join('')
       return `
         <div class="mb-6">
-          <h3 class="text-sm font-bold text-gray-800 mb-2 flex items-center gap-2"><i class="fas fa-folder-open text-green-600"></i>${escHtml(g.name)}</h3>
-          <div class="overflow-x-auto border rounded-xl">
-            <table class="w-full text-sm">
+          <h3 class="wb-project-title"><i class="fas fa-folder-open text-green-600 mt-0.5"></i><span>${escHtml(g.name)}</span></h3>
+          <div class="border rounded-xl overflow-hidden">
+            <table class="wb-sheet text-sm">
+              <colgroup>
+                <col style="width:30%">
+                <col style="width:22%">
+                <col class="wb-col-date" style="width:92px">
+                <col style="width:26%">
+                <col class="wb-col-status" style="width:118px">
+                <col class="wb-col-act" style="width:40px">
+              </colgroup>
               <thead><tr class="text-left text-xs text-gray-500 border-b bg-gray-50">
                 <th class="py-2 px-3">Việc</th>
-                <th class="py-2 px-3 whitespace-nowrap">Người PT</th>
-                <th class="py-2 px-3 whitespace-nowrap">Hạn</th>
-                <th class="py-2 px-3 min-w-[200px]">Kết quả</th>
-                <th class="py-2 px-3 whitespace-nowrap">Trạng thái</th>
-                <th class="py-2 px-3 w-10"></th>
+                <th class="py-2 px-3">Người PT</th>
+                <th class="py-2 px-3 wb-col-date">Hạn</th>
+                <th class="py-2 px-3">Kết quả</th>
+                <th class="py-2 px-3 wb-col-status">Trạng thái</th>
+                <th class="py-2 px-3 wb-col-act"></th>
               </tr></thead>
               <tbody class="divide-y">${rows}</tbody>
             </table>
@@ -28616,16 +28624,16 @@ function renderWeeklyBoardRow(it) {
   return `<tr class="hover:bg-gray-50">
     <td class="py-2 px-3 text-xs">${escHtml(it.description)}${weeklyBoardLateBadge(it)}</td>
     <td class="py-2 px-3 text-xs">${weeklyBoardAssigneeChips(it)}</td>
-    <td class="py-2 px-3 text-xs whitespace-nowrap">${it.target_date ? fmtDate(it.target_date) : '—'}</td>
+    <td class="py-2 px-3 text-xs wb-col-date">${it.target_date ? fmtDate(it.target_date) : '—'}</td>
     <td class="py-2 px-3 wb-result-cell">${weeklyBoardResultControl(it)}</td>
-    <td class="py-2 px-3">${statusCell}</td>
-    <td class="py-2 px-3">${delBtn}</td>
+    <td class="py-2 px-3 wb-col-status">${statusCell}</td>
+    <td class="py-2 px-3 wb-col-act">${delBtn}</td>
   </tr>`
 }
 
 function weeklyBoardProjectLabel(p) {
-  const code = String(p.code || '').trim()
-  const name = String(p.name || '').trim()
+  const code = String(p.code || p.project_code || '').trim()
+  const name = String(p.name || p.project_name || '').trim()
   return code ? `${code} · ${name}` : name
 }
 
@@ -28699,15 +28707,23 @@ function renderWeeklyBoardAddForm(addable, wk) {
 function renderWeeklyBoardSelfReports(rows, reportable, wk) {
   const statusOpts = WB_STATUS_OPTS.map(o => `<option value="${o.value}">${o.label}</option>`).join('')
   const table = rows.length
-    ? `<div class="overflow-x-auto border rounded-xl">
-        <table class="w-full text-sm">
+    ? `<div class="border rounded-xl overflow-hidden">
+        <table class="wb-sheet text-sm">
+          <colgroup>
+            <col style="width:22%">
+            <col style="width:24%">
+            <col style="width:18%">
+            <col style="width:22%">
+            <col class="wb-col-status" style="width:118px">
+            <col class="wb-col-act" style="width:40px">
+          </colgroup>
           <thead><tr class="text-left text-xs text-gray-500 border-b bg-gray-50">
             <th class="py-2 px-3">Dự án</th>
             <th class="py-2 px-3">Nội dung</th>
             <th class="py-2 px-3">Người báo cáo</th>
-            <th class="py-2 px-3 min-w-[180px]">Kết quả</th>
-            <th class="py-2 px-3">Trạng thái</th>
-            <th class="py-2 px-3 w-10"></th>
+            <th class="py-2 px-3">Kết quả</th>
+            <th class="py-2 px-3 wb-col-status">Trạng thái</th>
+            <th class="py-2 px-3 wb-col-act"></th>
           </tr></thead>
           <tbody class="divide-y">${rows.map(it => renderWeeklyBoardSelfRow(it)).join('')}</tbody>
         </table>
@@ -28760,12 +28776,12 @@ function renderWeeklyBoardSelfRow(it) {
     ? `<button type="button" class="text-red-400 hover:text-red-600 text-xs" title="Xóa báo cáo" onclick="deleteWeeklyBoardItem(${it.id})"><i class="fas fa-trash"></i></button>`
     : ''
   return `<tr>
-    <td class="py-2 px-3 text-xs font-medium">${escHtml(it.project_name || '')}</td>
+    <td class="py-2 px-3 text-xs font-medium">${escHtml(weeklyBoardProjectLabel(it))}</td>
     <td class="py-2 px-3 text-xs">${escHtml(it.description)}</td>
     <td class="py-2 px-3 text-xs">${weeklyBoardAssigneeChips(it)}</td>
     <td class="py-2 px-3 wb-result-cell">${resultCell}</td>
-    <td class="py-2 px-3">${statusCell}</td>
-    <td class="py-2 px-3">${delBtn}</td>
+    <td class="py-2 px-3 wb-col-status">${statusCell}</td>
+    <td class="py-2 px-3 wb-col-act">${delBtn}</td>
   </tr>`
 }
 

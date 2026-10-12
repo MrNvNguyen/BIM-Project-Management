@@ -18426,6 +18426,7 @@ app.get('/api/weekly-board', authMiddleware, async (c) => {
     const rows = await db.prepare(`
       SELECT
         p.id AS project_id,
+        p.code AS project_code,
         p.name AS project_name,
         wpi.id AS item_id,
         wpi.description,
@@ -18449,6 +18450,7 @@ app.get('/api/weekly-board', authMiddleware, async (c) => {
     const extraRows = await db.prepare(`
       SELECT
         p.id AS project_id,
+        p.code AS project_code,
         p.name AS project_name,
         wri.id AS item_id,
         wri.description,
@@ -18517,6 +18519,7 @@ app.get('/api/weekly-board', authMiddleware, async (c) => {
       items.push({
         id: Number(row.item_id),
         project_id: projectId,
+        project_code: row.project_code ? String(row.project_code) : '',
         project_name: row.project_name,
         description: row.description,
         assignee_ids: assigneeIds,
@@ -18549,6 +18552,7 @@ app.get('/api/weekly-board', authMiddleware, async (c) => {
       items.push({
         id: `x${row.item_id}`,
         project_id: projectId,
+        project_code: row.project_code ? String(row.project_code) : '',
         project_name: row.project_name,
         description,
         assignee_ids: [],

@@ -442,7 +442,47 @@
       word-break: break-word;
       vertical-align: top;
     }
-    #page-weekly-board td.wb-result-cell { vertical-align: middle; min-width: 220px; }
+    #page-weekly-board .wb-project-title {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 0 0 8px;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.45;
+      color: var(--shell-text);
+      word-break: break-word;
+    }
+    #page-weekly-board .wb-project-title span {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    #page-weekly-board .wb-sheet {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
+    }
+    #page-weekly-board .wb-sheet th,
+    #page-weekly-board .wb-sheet td {
+      vertical-align: top;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: break-word;
+      line-height: 1.45;
+    }
+    #page-weekly-board .wb-sheet .wb-col-date,
+    #page-weekly-board .wb-sheet .wb-col-status,
+    #page-weekly-board .wb-sheet .wb-col-act {
+      white-space: nowrap;
+      word-break: normal;
+      overflow-wrap: normal;
+    }
+    #page-weekly-board .wb-sheet .select-field {
+      width: 100%;
+      min-width: 0;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
     #page-weekly-board .wb-result-read {
       display: block;
       margin: 0;
@@ -9104,7 +9144,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261012j"></script>
+<script src="/static/app.js?v=20261012l"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
