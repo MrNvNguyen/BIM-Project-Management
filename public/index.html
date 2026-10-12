@@ -425,6 +425,34 @@
     @keyframes slideUp { from { transform: translateX(-50%) translateY(20px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }
     @keyframes cbFadeIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
     .input-field { width: 100%; border: 1px solid var(--shell-border); border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; transition: border-color 0.2s; background: var(--shell-input-bg); color: var(--shell-text); }
+    #page-weekly-board textarea.wb-result {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 38px;
+      max-height: 120px;
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      resize: none;
+      overflow-x: hidden;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      vertical-align: top;
+    }
+    #page-weekly-board td.wb-result-cell { vertical-align: middle; min-width: 220px; }
+    #page-weekly-board .wb-result-read {
+      display: block;
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--shell-text);
+    }
     #taskTitle[readonly] { cursor: default; }
     .input-field:focus { border-color: #00A651; box-shadow: 0 0 0 3px rgba(0,166,81,0.1); }
     .select-field { width: 100%; border: 1px solid var(--shell-border); border-radius: 8px; padding: 8px 12px; font-size: 13px; background: var(--shell-input-bg); color: var(--shell-text); outline: none; }
@@ -9076,7 +9104,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261012e"></script>
+<script src="/static/app.js?v=20261012i"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO

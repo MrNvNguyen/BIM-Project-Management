@@ -28573,6 +28573,7 @@ function renderWeeklyBoardTable() {
     ${body}
     ${renderWeeklyBoardSelfReports(selfReports, reportable, wk)}
   `
+  weeklyBoardMountProjectCombos(showAdd ? addable : [], reportable)
   if (showAdd && addable[0]?.id) {
     setTimeout(() => weeklyBoardLoadMembers(addable[0].id), 0)
   }
@@ -28581,15 +28582,20 @@ function renderWeeklyBoardTable() {
 
 function weeklyBoardResultControl(it) {
   if (!it.can_edit_result) {
-    return `<span class="text-gray-600 text-xs whitespace-pre-wrap">${escHtml(it.result || '—')}</span>`
+    return `<span class="wb-result-read">${escHtml(it.result || '—')}</span>`
   }
-  return `<textarea class="input-field text-xs w-full wb-result" rows="1" id="wbResult_${it.id}" oninput="weeklyBoardAutosize(this)" onblur="saveWeeklyBoardResult(${it.id})" placeholder="Nhập kết quả, Enter để xuống dòng">${escHtml(it.result || '')}</textarea>`
+  return `<textarea class="input-field wb-result" rows="1" id="wbResult_${it.id}" oninput="weeklyBoardAutosize(this)" onblur="saveWeeklyBoardResult(${it.id})" placeholder="Kết quả">${escHtml(it.result || '')}</textarea>`
 }
 
 function weeklyBoardAutosize(el) {
   if (!el) return
-  el.style.height = 'auto'
-  el.style.height = Math.min(Math.max(el.scrollHeight, 32), 180) + 'px'
+  const max = 120
+  const min = 38
+  el.style.height = '0px'
+  const border = Math.max(el.offsetHeight - el.clientHeight, 0)
+  const next = Math.min(Math.max(el.scrollHeight + border, min), max)
+  el.style.height = next + 'px'
+  el.style.overflowY = el.scrollHeight > el.clientHeight + 1 ? 'auto' : 'hidden'
 }
 
 function weeklyBoardLateBadge(it) {
@@ -28611,10 +28617,35 @@ function renderWeeklyBoardRow(it) {
     <td class="py-2 px-3 text-xs">${escHtml(it.description)}${weeklyBoardLateBadge(it)}</td>
     <td class="py-2 px-3 text-xs">${weeklyBoardAssigneeChips(it)}</td>
     <td class="py-2 px-3 text-xs whitespace-nowrap">${it.target_date ? fmtDate(it.target_date) : '—'}</td>
-    <td class="py-2 px-3">${weeklyBoardResultControl(it)}</td>
+    <td class="py-2 px-3 wb-result-cell">${weeklyBoardResultControl(it)}</td>
     <td class="py-2 px-3">${statusCell}</td>
     <td class="py-2 px-3">${delBtn}</td>
   </tr>`
+}
+
+function weeklyBoardMountProjectCombos(addable, reportable) {
+  const mount = (id, projects, onchange) => {
+    const host = $(id)
+    if (!host || !projects?.length) return
+    createCombobox(id, {
+      placeholder: 'Chọn dự án',
+      items: projects.map(p => ({ value: String(p.id), label: p.name })),
+      value: String(projects[0].id),
+      fullWidth: true,
+      teleport: true,
+      panelMaxWidth: '320px',
+      dropdownMaxHeight: '240px',
+      onchange,
+    })
+  }
+  mount('wbProjectCombobox', addable, (val) => { if (val) weeklyBoardLoadMembers(val) })
+  mount('wbReportProjectCombobox', reportable, null)
+}
+
+function weeklyBoardProjectId(comboboxId) {
+  const raw = _cbState[comboboxId]?.value
+  const id = Number(raw)
+  return id > 0 ? id : 0
 }
 
 function weeklyBoardAssigneeChips(it) {
@@ -28628,7 +28659,6 @@ function weeklyBoardAssigneeChips(it) {
 }
 
 function renderWeeklyBoardAddForm(addable, wk) {
-  const opts = addable.map(p => `<option value="${p.id}">${escHtml(p.name)}</option>`).join('')
   return `
     <div class="card mb-6" id="weeklyBoardAddCard">
       <div class="flex items-center justify-between gap-3 mb-4">
@@ -28639,7 +28669,7 @@ function renderWeeklyBoardAddForm(addable, wk) {
         <input type="hidden" name="week_date" value="${wk.week_start}">
         <div class="xl:col-span-3">
           <label class="text-xs text-gray-500 block mb-1">Dự án</label>
-          <select name="project_id" class="select-field text-sm w-full" required onchange="weeklyBoardLoadMembers(this.value)">${opts}</select>
+          <div id="wbProjectCombobox"></div>
         </div>
         <div class="xl:col-span-4">
           <label class="text-xs text-gray-500 block mb-1">Nội dung</label>
@@ -28661,7 +28691,6 @@ function renderWeeklyBoardAddForm(addable, wk) {
 }
 
 function renderWeeklyBoardSelfReports(rows, reportable, wk) {
-  const opts = (reportable || []).map(p => `<option value="${p.id}">${escHtml(p.name)}</option>`).join('')
   const statusOpts = WB_STATUS_OPTS.map(o => `<option value="${o.value}">${o.label}</option>`).join('')
   const table = rows.length
     ? `<div class="overflow-x-auto border rounded-xl">
@@ -28679,11 +28708,11 @@ function renderWeeklyBoardSelfReports(rows, reportable, wk) {
       </div>`
     : `<p class="text-sm text-gray-400">Chưa có báo cáo nhân sự trong tuần này.</p>`
   const form = reportable.length ? `
-    <form class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-3 items-end mt-4" onsubmit="submitWeeklyBoardSelfReport(event)">
+    <form class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-3 items-start mt-4" onsubmit="submitWeeklyBoardSelfReport(event)">
       <input type="hidden" name="week_date" value="${wk.week_start}">
       <div class="xl:col-span-3">
         <label class="text-xs text-gray-500 block mb-1">Dự án</label>
-        <select name="project_id" class="select-field text-sm w-full" required>${opts}</select>
+        <div id="wbReportProjectCombobox"></div>
       </div>
       <div class="xl:col-span-4">
         <label class="text-xs text-gray-500 block mb-1">Nội dung báo cáo</label>
@@ -28691,7 +28720,7 @@ function renderWeeklyBoardSelfReports(rows, reportable, wk) {
       </div>
       <div class="xl:col-span-3">
         <label class="text-xs text-gray-500 block mb-1">Kết quả</label>
-        <textarea name="result" class="input-field text-sm w-full wb-result" rows="1" oninput="weeklyBoardAutosize(this)" placeholder="Nhập kết quả, Enter để xuống dòng"></textarea>
+        <textarea name="result" class="input-field wb-result" rows="1" oninput="weeklyBoardAutosize(this)" placeholder="Kết quả"></textarea>
       </div>
       <div class="xl:col-span-2">
         <label class="text-xs text-gray-500 block mb-1">Trạng thái</label>
@@ -28728,7 +28757,7 @@ function renderWeeklyBoardSelfRow(it) {
     <td class="py-2 px-3 text-xs font-medium">${escHtml(it.project_name || '')}</td>
     <td class="py-2 px-3 text-xs">${escHtml(it.description)}</td>
     <td class="py-2 px-3 text-xs">${weeklyBoardAssigneeChips(it)}</td>
-    <td class="py-2 px-3">${resultCell}</td>
+    <td class="py-2 px-3 wb-result-cell">${resultCell}</td>
     <td class="py-2 px-3">${statusCell}</td>
     <td class="py-2 px-3">${delBtn}</td>
   </tr>`
@@ -28786,11 +28815,15 @@ async function submitWeeklyBoardItem(e) {
   }
   const fd = new FormData(form)
   const payload = {
-    project_id: Number(fd.get('project_id')),
+    project_id: weeklyBoardProjectId('wbProjectCombobox'),
     week_date: String(fd.get('week_date')),
     description: String(fd.get('description')),
     assignee_ids: assigneeIds,
     target_date: String(fd.get('target_date')),
+  }
+  if (!payload.project_id) {
+    toast('Chọn dự án', 'error')
+    return
   }
   try {
     await api('/weekly-board/items', { method: 'POST', data: payload })
@@ -28808,11 +28841,15 @@ async function submitWeeklyBoardSelfReport(e) {
   e.preventDefault()
   const fd = new FormData(e.target)
   const payload = {
-    project_id: Number(fd.get('project_id')),
+    project_id: weeklyBoardProjectId('wbReportProjectCombobox'),
     week_date: String(fd.get('week_date')),
     description: String(fd.get('description') || '').trim(),
     result: String(fd.get('result') || '').trim(),
     status: String(fd.get('status') || 'in_progress'),
+  }
+  if (!payload.project_id) {
+    toast('Chọn dự án', 'error')
+    return
   }
   if (!payload.description) {
     toast('Nhập nội dung báo cáo', 'error')
