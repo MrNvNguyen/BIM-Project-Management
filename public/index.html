@@ -3055,6 +3055,9 @@
       <div class="nav-item" onclick="navigate('project-dashboard')" data-tooltip="Dashboard dự án — theo dõi HSTK toàn công ty">
         <i class="fas fa-th-large"></i><span>Dashboard dự án</span>
       </div>
+      <div class="nav-item" onclick="navigate('weekly-board')" data-tooltip="Kế hoạch tuần — việc cần làm theo tuần">
+        <i class="fas fa-calendar-week"></i><span>Kế hoạch tuần</span>
+      </div>
       <div class="nav-item" onclick="navigate('productivity')" data-tooltip="Năng suất nhân sự">
         <i class="fas fa-chart-bar"></i><span>Năng suất nhân sự</span>
       </div>
@@ -5970,6 +5973,11 @@
 
       </div>
 
+
+      <!-- ========== WEEKLY BOARD PAGE ========== -->
+      <div id="page-weekly-board" class="page">
+        <div id="weeklyBoardRoot"></div>
+      </div>
 
       <!-- ========== PRODUCTIVITY PAGE ========== -->
       <div id="page-productivity" class="page">
@@ -9068,7 +9076,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261010e"></script>
+<script src="/static/app.js?v=20261012e"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
