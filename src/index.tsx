@@ -9322,6 +9322,60 @@ app.get('/api/dashboard/stats', authMiddleware, async (c) => {
   }
 })
 
+// Gửi lời chúc đúng ngày sinh nhật theo giờ Việt Nam. Mỗi người một lần trong năm.
+async function runBirthdayWishes(env: Bindings) {
+  const db = env.DB
+  const today = todayInVietnam()
+  const mm = today.slice(5, 7)
+  const dd = today.slice(8, 10)
+  const year = today.slice(0, 4)
+  const todayBirthdays = await db.prepare(`
+    SELECT id, full_name, email, birthday, department
+    FROM users
+    WHERE is_active = 1
+      AND birthday IS NOT NULL AND birthday != ''
+      AND strftime('%m', birthday) = ?
+      AND strftime('%d', birthday) = ?
+  `).bind(mm, dd).all()
+
+  const results: any[] = []
+  for (const u of (todayBirthdays.results as any[])) {
+    if (!u.email) { results.push({ name: u.full_name, status: 'no_email' }); continue }
+    const already = await db.prepare(`
+      SELECT id FROM email_logs
+      WHERE user_id = ? AND event_type = 'birthday_wish' AND status = 'sent'
+        AND strftime('%Y', datetime(sent_at, '+7 hours')) = ?
+      LIMIT 1
+    `).bind(u.id, year).first()
+    if (already) { results.push({ name: u.full_name, status: 'already_sent' }); continue }
+    const birthYear = u.birthday ? parseInt(String(u.birthday).substring(0, 4), 10) : NaN
+    const age = Number.isFinite(birthYear) && birthYear > 1900 ? Number(year) - birthYear : null
+    try {
+      const result = await sendEmail(env, {
+        db,
+        to: u.email, toName: u.full_name,
+        userId: u.id,
+        eventType: 'birthday_wish',
+        data: { recipientName: u.full_name, age, department: u.department },
+        relatedType: 'user', relatedId: u.id,
+      })
+      results.push({ name: u.full_name, status: result, age })
+    } catch (err: any) {
+      results.push({ name: u.full_name, status: 'error', error: err.message })
+    }
+  }
+  return {
+    today,
+    sent: results.filter(r => r.status === 'sent').length,
+    failed: results.filter(r => r.status === 'failed' || r.status === 'error').length,
+    skipped: results.filter(r => r.status === 'skipped').length,
+    already_sent: results.filter(r => r.status === 'already_sent').length,
+    no_email: results.filter(r => r.status === 'no_email').length,
+    total: results.length,
+    results,
+  }
+}
+
 // POST /api/dashboard/send-birthday-emails — Gửi email chúc mừng sinh nhật hôm nay
 // Cho phép: system_admin, project_admin (không cần system_admin mới dùng được)
 app.post('/api/dashboard/send-birthday-emails', authMiddleware, async (c) => {
@@ -9330,49 +9384,7 @@ app.post('/api/dashboard/send-birthday-emails', authMiddleware, async (c) => {
     return c.json({ error: 'Chỉ Admin mới có thể gửi email chúc sinh nhật.' }, 403)
   }
   try {
-    const db = c.env.DB
-    const today = new Date()
-    const mm = String(today.getMonth() + 1).padStart(2, '0')
-    const dd = String(today.getDate()).padStart(2, '0')
-
-    // Lấy nhân sự có sinh nhật hôm nay (so sánh tháng + ngày)
-    const todayBirthdays = await db.prepare(`
-      SELECT id, full_name, email, birthday, department
-      FROM users
-      WHERE is_active = 1
-        AND birthday IS NOT NULL AND birthday != ''
-        AND strftime('%m', birthday) = ?
-        AND strftime('%d', birthday) = ?
-    `).bind(mm, dd).all()
-
-    const results: any[] = []
-    for (const u of (todayBirthdays.results as any[])) {
-      if (!u.email) { results.push({ name: u.full_name, status: 'no_email' }); continue }
-      const birthYear = u.birthday ? parseInt(u.birthday.substring(0, 4)) : null
-      const age = birthYear ? today.getFullYear() - birthYear : null
-      try {
-        // QUAN TRỌNG: dùng đúng signature sendEmail(env, opts) — không phải sendEmail({ env, ... })
-        const result = await sendEmail(c.env, {
-          db,
-          to: u.email, toName: u.full_name,
-          userId: u.id,
-          eventType: 'birthday_wish',
-          data: { recipientName: u.full_name, age, department: u.department },
-          relatedType: 'user', relatedId: u.id,
-        })
-        results.push({ name: u.full_name, email: u.email, status: result, age })
-      } catch (err: any) {
-        results.push({ name: u.full_name, email: u.email, status: 'error', error: err.message })
-      }
-    }
-    return c.json({
-      sent:    results.filter(r => r.status === 'sent').length,
-      failed:  results.filter(r => r.status === 'failed').length,
-      skipped: results.filter(r => r.status === 'skipped').length,
-      no_email: results.filter(r => r.status === 'no_email').length,
-      total:   results.length,
-      results
-    })
+    return c.json(await runBirthdayWishes(c.env))
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -10516,6 +10528,21 @@ app.post('/api/cron/friday-status-mails', async (c) => {
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : String(c.req.header('X-Cron-Secret') || '').trim()
   if (!cronSecretMatches(token, expected)) return c.json({ error: 'Unauthorized' }, 401)
   return c.json(await runFridayStatusMails(c.env))
+})
+
+/** Pages không chạy cron. Lịch ngoài gọi endpoint này mỗi ngày (9:00 VN) bằng CRON_SECRET. */
+app.post('/api/cron/birthday-wishes', async (c) => {
+  const expected = String(c.env.CRON_SECRET || '')
+  if (!expected) return c.json({ error: 'CRON_SECRET chưa cấu hình' }, 503)
+  const header = c.req.header('Authorization') || ''
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : String(c.req.header('X-Cron-Secret') || '').trim()
+  if (!cronSecretMatches(token, expected)) return c.json({ error: 'Unauthorized' }, 401)
+  try {
+    const body = await runBirthdayWishes(c.env)
+    return c.json({ ...body, results: undefined })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
 })
 
 // ===================================================
@@ -21317,6 +21344,9 @@ async function runFridayStatusMails(env: Bindings) {
 export default {
   fetch: (request: Request, env: Bindings, ctx: any) => app.fetch(request, env, ctx),
   scheduled: (_event: any, env: Bindings, ctx: any) => {
-    ctx.waitUntil(runFridayStatusMails(env))
+    ctx.waitUntil(Promise.all([
+      runFridayStatusMails(env),
+      runBirthdayWishes(env),
+    ]))
   },
 }

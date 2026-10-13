@@ -1646,6 +1646,8 @@ async function sendBirthdayEmailsToday() {
       const extra = res.failed > 0 ? ` (${res.failed} lỗi)` : ''
       const noMail = res.no_email > 0 ? `, ${res.no_email} người chưa có email` : ''
       showToast(`✅ Đã gửi email chúc mừng cho ${res.sent}/${res.total} nhân sự${extra}${noMail}!`, 'success')
+    } else if (res.already_sent > 0 && res.sent === 0 && !res.failed) {
+      showToast('Hôm nay đã gửi lời chúc rồi', 'info')
     } else if (res.skipped > 0 && res.sent === 0) {
       // Gửi bị skip — thường do chưa cấu hình RESEND API Key
       showToast(`⚠️ Email chưa được gửi — vào Admin → Cài đặt Email để cấu hình RESEND API Key`, 'warning')
