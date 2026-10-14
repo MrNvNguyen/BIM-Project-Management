@@ -1500,6 +1500,46 @@
     html[data-theme="dark"] #page-costs #tabPanelShared .text-blue-600 {
       color: #93c5fd !important;
     }
+    #page-costs #tabPanelShared .shared-alloc-chip {
+      display: inline-block;
+      margin: 0 4px 4px 0;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: #e0e7ff;
+      color: #312e81;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.35;
+    }
+    #page-costs #tabPanelShared .shared-row-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      margin-top: 2px;
+      border-radius: 999px;
+      background: #f3f4f6;
+      color: #4b5563;
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared .shared-alloc-chip {
+      background: rgba(99, 102, 241, 0.32) !important;
+      color: #eef2ff !important;
+      border: 1px solid rgba(199, 210, 254, 0.7);
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared .shared-row-num {
+      background: rgba(255, 255, 255, 0.14) !important;
+      color: #f8fafc !important;
+    }
+    html[data-theme="dark"] #page-costs #tabPanelShared .text-yellow-700 { color: #fde68a !important; }
+    html[data-theme="dark"] #page-costs #tabPanelShared .text-purple-700 { color: #e9d5ff !important; }
+    html[data-theme="dark"] #page-costs #tabPanelShared table tbody td .badge {
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      font-weight: 700;
+    }
     html[data-theme="dark"] #page-costs #tabPanelAnalysis label.border.rounded,
     html[data-theme="dark"] #page-costs #tabPanelDuplicates label.border.rounded {
       background: var(--shell-input-bg);
@@ -1571,6 +1611,34 @@
     html[data-theme="dark"] #analytics-project-finance .text-teal-600 { color: #5eead4 !important; }
     html[data-theme="dark"] #analytics-project-finance .bg-teal-50 .text-gray-600,
     html[data-theme="dark"] #analytics-project-finance .bg-teal-50 .text-gray-400 { color: #ccfbf1 !important; }
+    #analytics-project-finance tfoot tr.pf-total-row td {
+      background: #e8eef6;
+      border-top: 2px solid #0f172a;
+      color: #0f172a;
+    }
+    html[data-theme="dark"] #analytics-project-finance tfoot,
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row,
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row td {
+      background: #2c3d56 !important;
+      background-color: #2c3d56 !important;
+      color: #f8fafc !important;
+      border-top: 2px solid #fbbf24 !important;
+    }
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-gray-700,
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-gray-500,
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-indigo-700,
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-blue-600 {
+      color: #f8fafc !important;
+    }
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-cyan-700 { color: #a5f3fc !important; }
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-emerald-700,
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-emerald-600 { color: #a7f3d0 !important; }
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-orange-600 { color: #fdba74 !important; }
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-yellow-600 { color: #fde68a !important; }
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-red-500,
+    html[data-theme="dark"] #analytics-project-finance tfoot tr.pf-total-row .text-red-600 {
+      color: #fecaca !important;
+    }
     html[data-theme="dark"] #paymentSummaryCards .bg-amber-50 {
       background: rgba(251, 191, 36, 0.18) !important;
       border-color: rgba(252, 211, 77, 0.55) !important;
@@ -9148,7 +9216,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261014c"></script>
+<script src="/static/app.js?v=20261014e"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO

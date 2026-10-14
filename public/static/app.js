@@ -17977,7 +17977,7 @@ function renderSharedCostTable() {
 
   tbody.innerHTML = pageData.map((sc, idx) => {
     const allocInfo = (sc.allocations || []).map(a =>
-      `<span class="inline-block bg-indigo-100 text-indigo-700 rounded px-1 py-0.5 mr-1 mb-1 text-xs" title="${a.project_name}: ${fmtMoney(a.allocated_amount)} (${a.allocation_pct.toFixed(1)}%)">${a.project_code}: ${fmtMoney(a.allocated_amount)}</span>`
+      `<span class="shared-alloc-chip" title="${a.project_name}: ${fmtMoney(a.allocated_amount)} (${a.allocation_pct.toFixed(1)}%)">${a.project_code}: ${fmtMoney(a.allocated_amount)}</span>`
     ).join('')
     const period    = sc.month ? `T${sc.month}/${sc.year}` : (sc.year ? `NTC${sc.year}` : '-')
     const typeStyle = _getSharedTypeStyle(sc.cost_type)
@@ -17987,7 +17987,7 @@ function renderSharedCostTable() {
     return `<tr class="hover:bg-gray-50${isDepr ? ' bg-purple-50' : ''}">
       <td class="px-3 py-2">
         <div class="flex items-start gap-2">
-          <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 text-gray-400 text-xs font-bold flex-shrink-0 mt-0.5">${rowNum}</span>
+          <span class="shared-row-num">${rowNum}</span>
           <div>
             <div class="font-medium text-gray-800">${sc.description}</div>
             ${sc.notes ? `<div class="text-xs text-gray-400">${sc.notes}</div>` : ''}
@@ -20218,7 +20218,7 @@ async function renderProjectFinancialTab(force = false) {
               }).join('')}
             </tbody>
             <tfoot style="position:sticky;bottom:0;z-index:2">
-              <tr class="bg-gray-100 font-bold text-sm border-t-2 border-gray-300">
+              <tr class="pf-total-row bg-gray-100 font-bold text-sm border-t-2 border-gray-300">
                 <td class="py-3 px-3 text-gray-700 whitespace-nowrap" style="overflow:hidden;text-overflow:ellipsis;max-width:${nameColW}px"><i class="fas fa-sigma mr-1 text-gray-500"></i>Tổng cộng</td>
                 <td class="py-3 px-3 text-right text-indigo-700 whitespace-nowrap">${fmtM(totals.contract_value)}</td>
                 <td class="py-3 px-3 text-right text-cyan-700 whitespace-nowrap font-bold" style="background:#f0f9ff">${fmtM(totals.revenue_collected_original || totals.revenue_collected)}</td>
