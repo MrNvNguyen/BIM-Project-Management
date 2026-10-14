@@ -798,6 +798,38 @@ function emailTemplates(type: string, data: Record<string, any>): { subject: str
       }
     }
 
+    case 'weekly_board_overdue': {
+      const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      const list = Array.isArray(data.items) ? data.items : []
+      const rows = list.map((it: any) => `
+        <tr>
+          <td style="padding:8px 10px;font-size:13px;color:#1f2937;font-family:Arial,Helvetica,sans-serif;">${esc(it.description)}</td>
+          <td style="padding:8px 10px;font-size:13px;color:#4b5563;font-family:Arial,Helvetica,sans-serif;">${esc(it.projectName)}</td>
+          <td style="padding:8px 10px;font-size:13px;color:#dc2626;font-weight:700;font-family:Arial,Helvetica,sans-serif;">${esc(it.deadline)} (+${Number(it.daysOverdue) || 0} ngày)</td>
+        </tr>`).join('')
+      const more = Number(data.hiddenCount) > 0
+        ? `<p style="margin:10px 0 0;font-size:12px;color:#6b7280;font-family:Arial,Helvetica,sans-serif;">Và ${Number(data.hiddenCount)} việc trễ hạn khác.</p>`
+        : ''
+      const body = `
+        <p style="margin:0 0 8px 0;color:#374151;font-size:15px;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">Xin chào <strong>${esc(data.recipientName)}</strong>,</p>
+        <p style="margin:0 0 12px 0;color:#dc2626;font-size:14px;font-weight:bold;font-family:Arial,Helvetica,sans-serif;">Việc trong kế hoạch tuần đã quá hạn và chưa xong. Bạn là người phụ trách.</p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr style="background:#fef2f2;">
+            <th style="padding:8px 10px;text-align:left;font-size:12px;font-family:Arial,Helvetica,sans-serif;">Việc</th>
+            <th style="padding:8px 10px;text-align:left;font-size:12px;font-family:Arial,Helvetica,sans-serif;">Dự án</th>
+            <th style="padding:8px 10px;text-align:left;font-size:12px;font-family:Arial,Helvetica,sans-serif;">Hạn</th>
+          </tr>
+          ${rows}
+        </table>
+        ${more}
+        ${emailDivider()}
+        <p style="margin:0;color:#374151;font-size:14px;font-family:Arial,Helvetica,sans-serif;">Đăng nhập mục Kế hoạch tuần để cập nhật kết quả hoặc trạng thái.</p>`
+      return {
+        subject: `[OneCad BIM] ⚠️ Trễ hạn kế hoạch tuần (${Number(data.count) || list.length})`,
+        html: emailBase('⚠️ Việc trễ hạn', body),
+      }
+    }
+
     default:
       return { subject: '[OneCad BIM] Thông báo mới', html: emailBase('Thông báo', '<p>Bạn có thông báo mới từ OneCad BIM.</p>') }
 
@@ -1060,7 +1092,7 @@ async function sendEmail(env: Bindings, opts: {
   }
   // ─────────────────────────────────────────────────────────────────────────
 
-  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_reassigned_to', 'task_reassigned_from', 'task_overdue', 'project_added', 'chat_mention', 'birthday_wish', 'weekly_board_assigned', 'weekly_board_report'])
+  const MANDATORY_EVENTS = new Set(['task_assigned', 'task_reassigned_to', 'task_reassigned_from', 'task_overdue', 'project_added', 'chat_mention', 'birthday_wish', 'weekly_board_assigned', 'weekly_board_report', 'weekly_board_overdue'])
 
   if (opts.userId && !MANDATORY_EVENTS.has(opts.eventType)) {
     const pref = await opts.db.prepare(
@@ -10527,7 +10559,9 @@ app.post('/api/cron/friday-status-mails', async (c) => {
   const header = c.req.header('Authorization') || ''
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : String(c.req.header('X-Cron-Secret') || '').trim()
   if (!cronSecretMatches(token, expected)) return c.json({ error: 'Unauthorized' }, 401)
-  return c.json(await runFridayStatusMails(c.env))
+  const weeklyOverdue = await runWeeklyBoardOverdueNotices(c.env).catch((e: any) => ({ error: e?.message || 'overdue failed' }))
+  const friday = await runFridayStatusMails(c.env)
+  return c.json({ ...friday, weekly_overdue: weeklyOverdue })
 })
 
 /** Pages không chạy cron. Lịch ngoài gọi endpoint này mỗi ngày (9:00 VN) bằng CRON_SECRET. */
@@ -18538,6 +18572,86 @@ async function carryUnfinishedWeeklyItems(db: D1Database, user: any, weekStart: 
   }
 }
 
+/** Việc trong tuần hiện tại đã quá hạn và chưa Xong: chuông + mail cho từng người phụ trách, một lần mỗi ngày. */
+async function runWeeklyBoardOverdueNotices(env: Bindings) {
+  const db = env.DB
+  const today = todayInVietnam()
+  const wi = getISOWeekInfo(today)
+  const legacy = legacyWeekStart(wi.weekStart)
+  const rows = await db.prepare(`
+    SELECT
+      wpi.id, wpi.description, wpi.assignee_ids, wpi.target_date,
+      p.code AS project_code, p.name AS project_name,
+      COALESCE(wri.status, 'not_started') AS status
+    FROM weekly_plan_items wpi
+    JOIN weekly_plans wp ON wp.id = wpi.plan_id
+    JOIN projects p ON p.id = wp.project_id
+    LEFT JOIN weekly_report_items wri ON wri.plan_item_id = wpi.id
+    WHERE wp.week_start IN (?, ?)
+      AND IFNULL(wpi.category, '') != 'self_report'
+      AND wpi.target_date IS NOT NULL AND TRIM(wpi.target_date) != ''
+      AND wpi.target_date < ?
+  `).bind(wi.weekStart, legacy, today).all()
+
+  const byId = new Map<number, any>()
+  for (const row of (rows.results || []) as any[]) {
+    const id = Number(row.id)
+    const prev = byId.get(id)
+    if (!prev) byId.set(id, row)
+    else if (row.status === 'completed') prev.status = 'completed'
+  }
+  const open = [...byId.values()].filter((row) => row.status !== 'completed' && String(row.description || '').trim())
+  const byUser = new Map<number, any[]>()
+  for (const row of open) {
+    const projectName = row.project_code ? `${row.project_code} · ${row.project_name || ''}` : String(row.project_name || '')
+    const item = {
+      id: Number(row.id),
+      description: String(row.description || '').trim(),
+      projectName,
+      deadline: String(row.target_date),
+      daysOverdue: daysOverdueOf(String(row.target_date)),
+    }
+    for (const userId of parseWeeklyPlanAssigneeIds(row.assignee_ids)) {
+      const list = byUser.get(userId) || []
+      list.push(item)
+      byUser.set(userId, list)
+    }
+  }
+
+  let sent = 0
+  let already = 0
+  for (const [userId, items] of byUser) {
+    const seen = await db.prepare(`
+      SELECT id FROM notifications
+      WHERE user_id = ? AND title = 'Việc trễ hạn'
+        AND date(datetime(created_at, '+7 hours')) = ?
+      LIMIT 1
+    `).bind(userId, today).first()
+    if (seen) { already++; continue }
+    const active = await db.prepare('SELECT id FROM users WHERE id = ? AND is_active = 1').bind(userId).first()
+    if (!active) continue
+    const shown = items.slice(0, 8)
+    const message = items.length === 1
+      ? `Trễ hạn: ${items[0].description} (${items[0].projectName}) — hạn ${items[0].deadline}`
+      : `Bạn có ${items.length} việc kế hoạch tuần đã quá hạn.`
+    await deliverUserNotice(db, env, {
+      userId,
+      title: 'Việc trễ hạn',
+      message,
+      eventType: 'weekly_board_overdue',
+      data: {
+        count: items.length,
+        hiddenCount: Math.max(0, items.length - shown.length),
+        items: shown,
+      },
+      relatedType: 'weekly_board',
+      relatedId: items[0].id,
+    })
+    sent++
+  }
+  return { today, items: open.length, assignees: byUser.size, sent, already }
+}
+
 // GET /api/weekly-board?week=YYYY-MM-DD
 app.get('/api/weekly-board', authMiddleware, async (c) => {
   try {
@@ -18602,6 +18716,7 @@ app.get('/api/weekly-board', authMiddleware, async (c) => {
     `).bind(...access.params).all()
 
     const uid = Number(user.id)
+    const todayVn = todayInVietnam()
     const reportable: { id: number; name: string; code: string }[] = []
     const addable: { id: number; name: string; code: string }[] = []
     for (const p of (addableProjects.results || []) as any[]) {
@@ -18658,7 +18773,11 @@ app.get('/api/weekly-board', authMiddleware, async (c) => {
         can_reassign: isAssignee && row.category !== 'self_report' && await isWeeklyBoardProjectLeader(db, user, projectId),
         can_delete: leaderOrAdmin || (row.category === 'self_report' && isAssignee),
         kind: row.category === 'self_report' ? 'self_report' : 'task',
-        overdue: row.carried_from_item_id != null || String(row.notes || '').trim() === 'Trễ hạn',
+        overdue: (row.result_status || 'not_started') !== 'completed' && (
+          (!!row.target_date && String(row.target_date) < todayVn)
+          || row.carried_from_item_id != null
+          || String(row.notes || '').trim() === 'Trễ hạn'
+        ),
       })
     }
 
@@ -21345,6 +21464,7 @@ export default {
   fetch: (request: Request, env: Bindings, ctx: any) => app.fetch(request, env, ctx),
   scheduled: (_event: any, env: Bindings, ctx: any) => {
     ctx.waitUntil(Promise.all([
+      runWeeklyBoardOverdueNotices(env),
       runFridayStatusMails(env),
       runBirthdayWishes(env),
     ]))

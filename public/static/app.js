@@ -28628,7 +28628,7 @@ function renderWeeklyBoardRow(it) {
   return `<tr class="hover:bg-gray-50">
     <td class="py-2 px-3 text-xs">${escHtml(it.description)}${weeklyBoardLateBadge(it)}</td>
     <td class="py-2 px-3 text-xs">${weeklyBoardAssigneeCell(it)}</td>
-    <td class="py-2 px-3 text-xs wb-col-date">${it.target_date ? fmtDate(it.target_date) : '—'}</td>
+    <td class="py-2 px-3 text-xs wb-col-date${it.overdue ? ' wb-date-late' : ''}">${it.target_date ? fmtDate(it.target_date) : '—'}</td>
     <td class="py-2 px-3 wb-result-cell">${weeklyBoardResultControl(it)}</td>
     <td class="py-2 px-3 wb-col-status">${statusCell}</td>
     <td class="py-2 px-3 wb-col-act">${delBtn}</td>
