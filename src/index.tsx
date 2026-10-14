@@ -7985,17 +7985,83 @@ app.get('/api/assets', authMiddleware, adminOnly, async (c) => {
   }
 })
 
+const ASSET_CODE_PREFIX: Record<string, string> = {
+  computer: 'PC',
+  laptop: 'LP',
+  monitor: 'MH',
+  printer: 'IN',
+  tablet: 'MTB',
+  phone: 'DT',
+  network: 'MN',
+  storage: 'NAS',
+  accessory: 'UPS',
+  software: 'PM',
+  equipment: 'TB',
+  furniture: 'NT',
+  vehicle: 'XE',
+  other: 'KH',
+}
+
+function assetCodeSeries(codes: string[]): { prefix: string, max: number } | null {
+  const counts = new Map<string, number>()
+  const maxByPrefix = new Map<string, number>()
+  for (const raw of codes) {
+    const match = String(raw || '').trim().toUpperCase().match(/^BIM-([A-Z]+)-(\d+)$/)
+    if (!match) continue
+    const prefix = match[1]
+    const n = parseInt(match[2], 10)
+    counts.set(prefix, (counts.get(prefix) || 0) + 1)
+    if (Number.isFinite(n)) maxByPrefix.set(prefix, Math.max(maxByPrefix.get(prefix) || 0, n))
+  }
+  let prefix = ''
+  let count = 0
+  for (const [key, value] of counts) {
+    if (value > count) { prefix = key; count = value }
+  }
+  if (!prefix) return null
+  return { prefix, max: maxByPrefix.get(prefix) || 0 }
+}
+
+async function allocateAssetCode(db: D1Database, category: string, requested: string): Promise<string> {
+  const rows = await db.prepare(`SELECT asset_code, category FROM assets`).all()
+  const all = (rows.results || []) as { asset_code?: string, category?: string }[]
+  const used = new Set(all.map((row) => String(row.asset_code || '').trim().toUpperCase()))
+  const wanted = String(requested || '').trim()
+  if (wanted && !used.has(wanted.toUpperCase())) return wanted
+
+  const inCategory = all
+    .filter((row) => String(row.category || '') === category)
+    .map((row) => String(row.asset_code || ''))
+  const series = assetCodeSeries(inCategory)
+  const prefix = series?.prefix || ASSET_CODE_PREFIX[category] || 'KH'
+  const head = `BIM-${prefix}-`
+  let max = 0
+  for (const code of used) {
+    if (!code.startsWith(head)) continue
+    const n = parseInt(code.slice(head.length), 10)
+    if (Number.isFinite(n) && n > max) max = n
+  }
+  let next = max + 1
+  let code = `${head}${String(next).padStart(3, '0')}`
+  while (used.has(code)) {
+    next += 1
+    code = `${head}${String(next).padStart(3, '0')}`
+  }
+  return code
+}
+
 app.post('/api/assets', authMiddleware, adminOnly, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
     const data = await c.req.json()
-    const { asset_code, name, category, brand, model, serial_number, specifications,
+    const { name, category, brand, model, serial_number, specifications,
       purchase_date, purchase_price, current_value, warranty_expiry, status,
       location, department, assigned_to, notes,
       depreciation_years, depreciation_start_date, parent_asset_id, is_shared } = data
 
-    if (!asset_code || !name || !category) return c.json({ error: 'Missing required fields' }, 400)
+    if (!name || !category) return c.json({ error: 'Thiếu tên hoặc loại tài sản' }, 400)
+    const asset_code = await allocateAssetCode(db, String(category), String(data.asset_code || ''))
 
     const depYears = depreciation_years ? parseInt(depreciation_years) : 0
     const depStart = depreciation_start_date || purchase_date || null
@@ -8029,9 +8095,13 @@ app.post('/api/assets', authMiddleware, adminOnly, async (c) => {
       await generateDepreciationSchedule(db, newId, parseFloat(purchase_price), depYears, depStart)
     }
 
-    return c.json({ success: true, id: newId }, 201)
+    return c.json({ success: true, id: newId, asset_code }, 201)
   } catch (e: any) {
-    return c.json({ error: e.message }, 500)
+    const msg = String(e?.message || '')
+    if (/UNIQUE constraint failed:\s*assets\.asset_code/i.test(msg)) {
+      return c.json({ error: 'Mã tài sản đã tồn tại. Chọn loại lại để lấy số tiếp theo.' }, 409)
+    }
+    return c.json({ error: msg || 'Không lưu được tài sản' }, 500)
   }
 })
 
@@ -8087,7 +8157,11 @@ app.put('/api/assets/:id', authMiddleware, adminOnly, async (c) => {
 
     return c.json({ success: true })
   } catch (e: any) {
-    return c.json({ error: e.message }, 500)
+    const msg = String(e?.message || '')
+    if (/UNIQUE constraint failed:\s*assets\.asset_code/i.test(msg)) {
+      return c.json({ error: 'Mã tài sản đã tồn tại' }, 409)
+    }
+    return c.json({ error: msg || 'Không lưu được tài sản' }, 500)
   }
 })
 

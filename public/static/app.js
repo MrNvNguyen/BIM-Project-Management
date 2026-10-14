@@ -829,6 +829,61 @@ function assetAssigneeOptionsHtml() {
   return '<option value="">-- Không giao --</option><option value="shared">Dùng chung</option>' + people
 }
 
+const ASSET_CODE_PREFIX = {
+  computer: 'PC', laptop: 'LP', monitor: 'MH', printer: 'IN', tablet: 'MTB', phone: 'DT',
+  network: 'MN', storage: 'NAS', accessory: 'UPS', software: 'PM', equipment: 'TB',
+  furniture: 'NT', vehicle: 'XE', other: 'KH',
+}
+let _assetSuggestedCode = ''
+
+function eachAssetRecord(list, visit) {
+  ;(list || []).forEach((asset) => {
+    visit(asset)
+    if (asset.children?.length) eachAssetRecord(asset.children, visit)
+  })
+}
+
+function nextAssetCode(category) {
+  const codes = []
+  const inCategory = []
+  eachAssetRecord(allAssets, (asset) => {
+    const code = String(asset.asset_code || '')
+    codes.push(code)
+    if (asset.category === category) inCategory.push(code)
+  })
+  const counts = {}
+  inCategory.forEach((code) => {
+    const match = code.trim().toUpperCase().match(/^BIM-([A-Z]+)-\d+$/)
+    if (!match) return
+    counts[match[1]] = (counts[match[1]] || 0) + 1
+  })
+  let prefix = ASSET_CODE_PREFIX[category] || 'KH'
+  let best = 0
+  Object.entries(counts).forEach(([key, value]) => {
+    if (value > best) { prefix = key; best = value }
+  })
+  const head = `BIM-${prefix}-`
+  let max = 0
+  codes.forEach((code) => {
+    const upper = code.trim().toUpperCase()
+    if (!upper.startsWith(head)) return
+    const n = parseInt(upper.slice(head.length), 10)
+    if (Number.isFinite(n) && n > max) max = n
+  })
+  return head + String(max + 1).padStart(3, '0')
+}
+
+function applySuggestedAssetCode() {
+  if ($('assetId')?.value) return
+  const input = $('assetCode')
+  if (!input) return
+  const code = nextAssetCode($('assetCategory')?.value || 'computer')
+  if (!input.value || input.value === _assetSuggestedCode) {
+    input.value = code
+    _assetSuggestedCode = code
+  }
+}
+
 function getAssetCategoryName(c) {
   const m = {
     computer: 'Máy trạm', laptop: 'Laptop', monitor: 'Màn hình', printer: 'Máy in / máy scan',
@@ -12845,7 +12900,7 @@ function filterAssets(keepPage = false) {
     (!category || a.category === category) &&
     (!status || a.status === status) &&
     (!depr || (a.depreciation_status || 'none') === depr)
-  )
+  ).sort((a, b) => String(a.asset_code || '').localeCompare(String(b.asset_code || ''), 'en', { numeric: true }))
   // Render flat kết quả (không children)
   const flatAssets = filtered.map(a => ({ ...a, children: [] }))
   if (!keepPage) _assetPage = 1
@@ -13283,6 +13338,8 @@ async function openAssetModal(assetId = null) {
     $('assetDepreciationYears').value = '0'
     $('assetDepreciationStart').value = today()
     if ($('assignParentRow')) $('assignParentRow').classList.add('hidden')
+    _assetSuggestedCode = ''
+    applySuggestedAssetCode()
   }
   updateDeprPreview()
   openModal('assetModal')
@@ -13317,6 +13374,8 @@ async function openAssetModalAsChild(parentId) {
   $('assetPurchaseDate').value = today()
   $('assetDepreciationYears').value = '0'
   $('assetDepreciationStart').value = today()
+  _assetSuggestedCode = ''
+  applySuggestedAssetCode()
 
   updateDeprPreview()
   openModal('assetModal')
@@ -13455,10 +13514,11 @@ $('assetForm').addEventListener('submit', async (e) => {
       await api(`/assets/${id}`, { method: 'put', data })
       // Backend tự động tính lại lịch KH khi có thay đổi depreciation_years, depreciation_start_date hoặc purchase_price
     } else {
-      await api('/assets', { method: 'post', data })
+      const created = await api('/assets', { method: 'post', data })
+      if (created?.asset_code) data.asset_code = created.asset_code
     }
     closeModal('assetModal')
-    toast(id ? 'Cập nhật tài sản thành công' : 'Thêm tài sản thành công')
+    toast(id ? 'Cập nhật tài sản thành công' : `Đã thêm tài sản ${data.asset_code}`)
     await loadAssets({ preserveView: true })
   } catch (e) { toast('Lỗi: ' + (e.response?.data?.error || e.message), 'error') }
 })

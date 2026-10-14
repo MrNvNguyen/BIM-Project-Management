@@ -8356,7 +8356,7 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Mã tài sản *</label>
-          <input type="text" id="assetCode" class="input-field" placeholder="VD: PC-001" required>
+          <input type="text" id="assetCode" class="input-field" placeholder="BIM-MH-001" required>
         </div>
         <div>
           <label class="label">Tên tài sản *</label>
@@ -8366,7 +8366,7 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="label">Loại *</label>
-          <select id="assetCategory" class="select-field" required>
+          <select id="assetCategory" class="select-field" required onchange="applySuggestedAssetCode()">
             <option value="computer">Máy trạm</option>
             <option value="laptop">Laptop</option>
             <option value="monitor">Màn hình</option>
@@ -9148,7 +9148,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261014a"></script>
+<script src="/static/app.js?v=20261014c"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
