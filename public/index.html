@@ -457,6 +457,29 @@
       min-width: 0;
       flex: 1 1 auto;
     }
+    #page-weekly-board .wb-open-project {
+      margin-left: auto;
+      flex: 0 0 auto;
+      align-self: center;
+      border: 1px solid var(--shell-border-strong, #94a3b8);
+      background: transparent;
+      color: var(--shell-text);
+      border-radius: 8px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    #page-weekly-board .wb-open-project:hover {
+      border-color: #38bdf8;
+      color: #38bdf8;
+    }
+    html[data-theme="dark"] #page-weekly-board .wb-open-project {
+      color: #7dd3fc;
+      border-color: rgba(125, 211, 252, 0.5);
+      background: rgba(56, 189, 248, 0.1);
+    }
     #page-weekly-board .wb-sheet {
       width: 100%;
       table-layout: fixed;
@@ -9216,7 +9239,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261014e"></script>
+<script src="/static/app.js?v=20261015a"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO

@@ -28480,6 +28480,8 @@ async function saveLeaveDefaultDays() {
 
 let _weeklyBoardWeekStart = null
 let _weeklyBoardFilter = 'all'
+let _wbSaveGroups = {}
+let _wbDeleteGroups = {}
 let _weeklyBoardData = null
 let _weeklyBoardMembersCache = {}
 
@@ -28567,6 +28569,8 @@ async function loadWeeklyBoardPage(skipScroll) {
 function renderWeeklyBoardTable() {
   const root = $('weeklyBoardRoot')
   if (!root || !_weeklyBoardData) return
+  _wbSaveGroups = {}
+  _wbDeleteGroups = {}
   const wk = _weeklyBoardData.week
   const weekNum = wk.week_number || getISOWeekNumber(wk.week_start)
   const title = fmtWeekBoardTitle(wk.week_start, wk.week_end, weekNum)
@@ -28596,10 +28600,14 @@ function renderWeeklyBoardTable() {
   } else {
     body = order.map(pid => {
       const g = groups[pid]
-      const rows = g.items.map(it => renderWeeklyBoardRow(it)).join('')
+      const rows = weeklyBoardCollapseItems(g.items).map(it => renderWeeklyBoardRow(it)).join('')
       return `
         <div class="mb-6">
-          <h3 class="wb-project-title"><i class="fas fa-folder-open text-green-600 mt-0.5"></i><span>${escHtml(g.name)}</span></h3>
+          <h3 class="wb-project-title">
+            <i class="fas fa-folder-open text-green-600 mt-0.5"></i>
+            <span>${escHtml(g.name)}</span>
+            <button type="button" class="wb-open-project" onclick="weeklyBoardOpenProject(${Number(pid)})"><i class="fas fa-external-link-alt"></i> Mở dự án</button>
+          </h3>
           <div class="border rounded-xl overflow-hidden">
             <table class="wb-sheet text-sm">
               <colgroup>
@@ -28673,6 +28681,69 @@ function weeklyBoardAutosize(el) {
 function weeklyBoardLateBadge(it) {
   if (!it.overdue) return ''
   return `<span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold align-middle" style="background:rgba(239,68,68,.16);color:#fca5a5;border:1px solid rgba(239,68,68,.45)">Trễ hạn</span>`
+}
+
+function weeklyBoardOpenProject(projectId) {
+  openProjectDetail(projectId)
+}
+
+function weeklyBoardWorkKey(it) {
+  const text = String(it.description || '').trim().replace(/\s+/g, ' ').toLowerCase()
+  return `${text}\0${it.target_date || ''}`
+}
+
+function weeklyBoardCollapseItems(items) {
+  const buckets = []
+  const index = new Map()
+  items.forEach((it) => {
+    const key = weeklyBoardWorkKey(it)
+    if (!index.has(key)) {
+      index.set(key, buckets.length)
+      buckets.push([])
+    }
+    buckets[index.get(key)].push(it)
+  })
+  return buckets.map((group) => {
+    if (group.length === 1) {
+      const only = group[0]
+      _wbSaveGroups[only.id] = only.can_edit_result ? [only.id] : []
+      _wbDeleteGroups[only.id] = only.can_delete ? [only.id] : []
+      return only
+    }
+    const primary = group.find((it) => it.can_reassign) || group.find((it) => it.can_edit_result) || group[0]
+    const seen = new Set()
+    const assignees = []
+    group.forEach((it) => {
+      const people = Array.isArray(it.assignees) && it.assignees.length
+        ? it.assignees
+        : String(it.assignee_names || '').split(',').map((name) => ({ id: 0, name: name.trim() })).filter((a) => a.name)
+      people.forEach((person) => {
+        const key = person.id ? `id:${person.id}` : `n:${person.name}`
+        if (seen.has(key)) return
+        seen.add(key)
+        assignees.push(person)
+      })
+    })
+    const results = [...new Set(group.map((it) => String(it.result || '').trim()).filter(Boolean))]
+    const statuses = [...new Set(group.map((it) => it.status || 'not_started'))]
+    const editIds = group.filter((it) => it.can_edit_result).map((it) => it.id)
+    const deleteIds = group.filter((it) => it.can_delete).map((it) => it.id)
+    _wbSaveGroups[primary.id] = editIds.length ? editIds : [primary.id]
+    _wbDeleteGroups[primary.id] = deleteIds
+    return {
+      ...group[0],
+      id: primary.id,
+      assignees,
+      assignee_ids: assignees.map((a) => a.id).filter((id) => id > 0),
+      assignee_names: assignees.map((a) => a.name).join(', '),
+      overdue: group.some((it) => it.overdue),
+      can_edit_result: group.some((it) => it.can_edit_result),
+      can_delete: deleteIds.length > 0,
+      can_reassign: group.some((it) => it.can_reassign),
+      result: results.join('\n'),
+      status: statuses.length === 1 ? statuses[0] : (group.find((it) => it.status && it.status !== 'completed') || group[0]).status,
+    }
+  })
 }
 
 function renderWeeklyBoardRow(it) {
@@ -29018,14 +29089,15 @@ async function saveWeeklyBoardResult(itemId) {
   const resultEl = $(`wbResult_${itemId}`)
   const statusEl = $(`wbStatus_${itemId}`)
   if (!resultEl && !statusEl) return
+  const ids = (_wbSaveGroups[itemId] && _wbSaveGroups[itemId].length) ? _wbSaveGroups[itemId] : [itemId]
+  const payload = {
+    result: resultEl ? resultEl.value : '',
+    status: statusEl ? statusEl.value : 'in_progress',
+  }
   try {
-    await api(`/weekly-board/items/${itemId}/result`, {
-      method: 'PATCH',
-      data: {
-        result: resultEl ? resultEl.value : '',
-        status: statusEl ? statusEl.value : 'in_progress',
-      },
-    })
+    for (const id of ids) {
+      await api(`/weekly-board/items/${id}/result`, { method: 'PATCH', data: payload })
+    }
     toast('Đã lưu kết quả', 'success')
     await loadWeeklyBoardPage(true)
   } catch (err) {
@@ -29034,9 +29106,15 @@ async function saveWeeklyBoardResult(itemId) {
 }
 
 async function deleteWeeklyBoardItem(itemId) {
-  if (!confirm('Xóa việc này? (Không xóa cả tuần)')) return
+  const ids = (_wbDeleteGroups[itemId] && _wbDeleteGroups[itemId].length) ? _wbDeleteGroups[itemId] : [itemId]
+  const message = ids.length > 1
+    ? `Xóa việc này của ${ids.length} người phụ trách?`
+    : 'Xóa việc này? (Không xóa cả tuần)'
+  if (!confirm(message)) return
   try {
-    await api(`/weekly-board/items/${itemId}`, { method: 'DELETE' })
+    for (const id of ids) {
+      await api(`/weekly-board/items/${id}`, { method: 'DELETE' })
+    }
     toast('Đã xóa', 'success')
     await loadWeeklyBoardPage(true)
   } catch (err) {
