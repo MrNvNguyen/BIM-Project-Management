@@ -28575,11 +28575,7 @@ function renderWeeklyBoardTable() {
   const weekNum = wk.week_number || getISOWeekNumber(wk.week_start)
   const title = fmtWeekBoardTitle(wk.week_start, wk.week_end, weekNum)
   const filtered = weeklyBoardFilteredItems(_weeklyBoardData.items)
-  const allWork = (_weeklyBoardData.items || []).filter(it => it.kind !== 'self_report' && it.kind !== 'extra_report')
-  const tasks = weeklyBoardRepairDescriptions(
-    filtered.filter(it => it.kind !== 'self_report' && it.kind !== 'extra_report'),
-    allWork
-  )
+  const tasks = filtered.filter(it => it.kind !== 'self_report' && it.kind !== 'extra_report')
   const selfReports = filtered.filter(it => it.kind === 'self_report' || it.kind === 'extra_report')
   const addable = _weeklyBoardData.addable_projects || []
   const reportable = _weeklyBoardData.reportable_projects || []
@@ -28604,7 +28600,7 @@ function renderWeeklyBoardTable() {
   } else {
     body = order.map(pid => {
       const g = groups[pid]
-      const rows = weeklyBoardCollapseItems(g.items).map(it => renderWeeklyBoardRow(it)).join('')
+      const rows = g.items.map(it => renderWeeklyBoardRow(it)).join('')
       return `
         <div class="mb-6">
           <h3 class="wb-project-title">
@@ -28689,86 +28685,6 @@ function weeklyBoardLateBadge(it) {
 
 function weeklyBoardOpenProject(projectId) {
   openProjectDetail(projectId)
-}
-
-function weeklyBoardNormWork(text) {
-  return String(text || '').trim().replace(/\s+/g, ' ')
-}
-
-function weeklyBoardWorkKey(it) {
-  const text = weeklyBoardNormWork(it.description).toLowerCase()
-  return `${text}\0${it.target_date || ''}`
-}
-
-/** Cùng dự án, cùng câu nhưng mất đúng 1 ký tự đầu — hiện lại câu đầy đủ. */
-function weeklyBoardRepairDescriptions(items, donors) {
-  const pool = (donors || items).map((it) => ({ it, norm: weeklyBoardNormWork(it.description) }))
-  return items.map((it) => {
-    const mine = weeklyBoardNormWork(it.description)
-    if (mine.length < 8) return it
-    const hit = pool.find((d) =>
-      d.it !== it &&
-      Number(d.it.project_id) === Number(it.project_id) &&
-      d.norm.length === mine.length + 1 &&
-      d.norm.slice(1) === mine
-    )
-    if (!hit) return it
-    return { ...it, description: hit.it.description }
-  })
-}
-
-function weeklyBoardCollapseItems(items) {
-  const buckets = []
-  const index = new Map()
-  items.forEach((it) => {
-    const key = weeklyBoardWorkKey(it)
-    if (!index.has(key)) {
-      index.set(key, buckets.length)
-      buckets.push([])
-    }
-    buckets[index.get(key)].push(it)
-  })
-  return buckets.map((group) => {
-    if (group.length === 1) {
-      const only = group[0]
-      _wbSaveGroups[only.id] = only.can_edit_result ? [only.id] : []
-      _wbDeleteGroups[only.id] = only.can_delete ? [only.id] : []
-      return only
-    }
-    const primary = group.find((it) => it.can_reassign) || group.find((it) => it.can_edit_result) || group[0]
-    const seen = new Set()
-    const assignees = []
-    group.forEach((it) => {
-      const people = Array.isArray(it.assignees) && it.assignees.length
-        ? it.assignees
-        : String(it.assignee_names || '').split(',').map((name) => ({ id: 0, name: name.trim() })).filter((a) => a.name)
-      people.forEach((person) => {
-        const key = person.id ? `id:${person.id}` : `n:${person.name}`
-        if (seen.has(key)) return
-        seen.add(key)
-        assignees.push(person)
-      })
-    })
-    const results = [...new Set(group.map((it) => String(it.result || '').trim()).filter(Boolean))]
-    const statuses = [...new Set(group.map((it) => it.status || 'not_started'))]
-    const editIds = group.filter((it) => it.can_edit_result).map((it) => it.id)
-    const deleteIds = group.filter((it) => it.can_delete).map((it) => it.id)
-    _wbSaveGroups[primary.id] = editIds.length ? editIds : [primary.id]
-    _wbDeleteGroups[primary.id] = deleteIds
-    return {
-      ...group[0],
-      id: primary.id,
-      assignees,
-      assignee_ids: assignees.map((a) => a.id).filter((id) => id > 0),
-      assignee_names: assignees.map((a) => a.name).join(', '),
-      overdue: group.some((it) => it.overdue),
-      can_edit_result: group.some((it) => it.can_edit_result),
-      can_delete: deleteIds.length > 0,
-      can_reassign: group.some((it) => it.can_reassign),
-      result: results.join('\n'),
-      status: statuses.length === 1 ? statuses[0] : (group.find((it) => it.status && it.status !== 'completed') || group[0]).status,
-    }
-  })
 }
 
 function renderWeeklyBoardRow(it) {
@@ -29660,9 +29576,11 @@ async function openWeeklyPlanModal(planId, projectId) {
 
   // Load project members for assignee picker
   let members = []
+  window._wpDisciplineLeads = []
   try {
     const proj = await api(`/projects/${pid}`)
     members = proj.members || []
+    window._wpDisciplineLeads = proj.discipline_leads || []
   } catch(e) {}
 
   const existing = $('modalWeeklyPlan')
@@ -29719,7 +29637,7 @@ async function openWeeklyPlanModal(planId, projectId) {
   const renderItemRow = (it, idx) => `
     <tr class="item-row border-b" data-idx="${idx}">
       <td class="py-1 px-2">${wpDisciplineSelect(it.category||'')}</td>
-      <td class="py-1 px-2"><input type="text" value="${(it.description||'').replace(/"/g,'&quot;')}" placeholder="Nội dung *" class="w-full border rounded px-2 py-1 text-xs wp-desc" required></td>
+      <td class="py-1 px-2"><textarea rows="2" placeholder="Nội dung *" class="w-full border rounded px-2 py-1 text-xs wp-desc" required style="min-width:220px;resize:vertical">${escHtml(it.description||'')}</textarea></td>
       <td class="py-1 px-2">${renderAssigneeCell(it)}</td>
       <td class="py-1 px-2"><input type="date" value="${it.target_date||''}" class="w-full border rounded px-2 py-1 text-xs wp-target"></td>
       <td class="py-1 px-2">
@@ -29797,6 +29715,11 @@ async function openWeeklyPlanModal(planId, projectId) {
   `
   document.body.appendChild(modal)
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+  modal.querySelectorAll('#wpItemsTbody .item-row').forEach((row) => {
+    const hidden = row.querySelector('.wp-cat')
+    if (hidden && String(hidden.value || '').trim()) return
+    wpApplyDisciplineFromAssignee(row.querySelector('.wp-assignee-cell'))
+  })
   setTimeout(updateWeekLabel, 50)
   // Store renderItemRow & renderAssigneeCell for dynamic add
   window._wpRenderRow = renderItemRow
@@ -29917,11 +29840,53 @@ function wpToggleAssignee(itemEl, uid, name) {
     else targetCell.appendChild(tag)
     itemEl.classList.add('bg-green-50')
     if (checkIcon) checkIcon.classList.remove('invisible')
+    wpApplyDisciplineFromAssignee(targetCell)
   }
 }
 
+function wpDisciplineFromDepartment(department) {
+  const dept = String(department || '').trim().toLowerCase().replace(/^phòng\s+/, '')
+  if (!dept) return ''
+  const disciplines = window.allDisciplines || []
+  const byCode = disciplines.find((d) => String(d.code || '').trim().toLowerCase() === dept)
+  if (byCode) return byCode.code
+  const byName = disciplines.find((d) => String(d.name || '').trim().toLowerCase() === dept)
+  if (byName) return byName.code
+  return ''
+}
+
+function wpDisciplineCodeForUser(userId) {
+  const member = (window._wpMembers || []).find((m) => Number(m.user_id ?? m.id) === Number(userId))
+  const fromDept = wpDisciplineFromDepartment(member?.department)
+  if (fromDept) return fromDept
+  const leads = window._wpDisciplineLeads || []
+  const codes = [...new Set(leads
+    .filter((lead) => Number(lead.leader_id) === Number(userId))
+    .map((lead) => String(lead.discipline_code || '').trim())
+    .filter(Boolean))]
+  return codes[0] || ''
+}
+
+function wpApplyDisciplineFromAssignee(cell) {
+  if (!cell) return
+  const row = cell.closest('tr')
+  if (!row) return
+  const tags = [...row.querySelectorAll('.wp-tag')]
+  const tag = tags[tags.length - 1]
+  if (!tag) return
+  const code = wpDisciplineCodeForUser(tag.getAttribute('data-uid'))
+  if (!code) return
+  const wrap = row.querySelector('.wp-disc-combobox')
+  if (!wrap) return
+  const disc = (window.allDisciplines || []).find((d) => d.code === code)
+  const label = disc ? `${disc.code} – ${disc.name}` : code
+  wpDiscSelect(wrap.id, code, label)
+}
+
 function wpRemoveAssignee(closeBtn) {
+  const cell = closeBtn.closest('.wp-assignee-cell')
   closeBtn.closest('.wp-tag').remove()
+  wpApplyDisciplineFromAssignee(cell)
 }
 
 async function submitWeeklyPlan(e, projectId, planId) {

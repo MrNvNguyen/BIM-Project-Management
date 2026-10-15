@@ -2077,13 +2077,31 @@ app.get('/api/projects/:id', authMiddleware, async (c) => {
     const projectBudget = computeProjectBudget(p.contract_value, p.management_fee_pct)
     const computedProgress = taskComputedProgress(taskStatsObj.total_tasks, taskStatsObj.done_tasks)
     const projectWithBudget = { ...p, project_budget: projectBudget, computed_progress: computedProgress, pm_progress: p.progress || 0 }
+    let disciplineLeads: { discipline_code: string; leader_id: number }[] = []
+    try {
+      const leadRows = await db.prepare(`
+        SELECT discipline_code, leader_id
+        FROM project_design_disciplines
+        WHERE project_id = ? AND leader_id IS NOT NULL
+      `).bind(id).all()
+      const seenLead = new Set<string>()
+      for (const row of (leadRows.results || []) as { discipline_code?: string; leader_id?: number }[]) {
+        const code = String(row.discipline_code || '').trim()
+        const leaderId = Number(row.leader_id)
+        if (!code || !leaderId) continue
+        const key = `${leaderId}:${code}`
+        if (seenLead.has(key)) continue
+        seenLead.add(key)
+        disciplineLeads.push({ discipline_code: code, leader_id: leaderId })
+      }
+    } catch { /* bảng bộ môn chưa có */ }
 
     // Hide financial data from non-system_admin
     if (user.role !== 'system_admin') {
       const { contract_value, budget, management_fee_pct, project_budget, ...safeProject } = projectWithBudget
-      return c.json({ ...safeProject, members: members.results, task_stats: taskStatsObj })
+      return c.json({ ...safeProject, members: members.results, task_stats: taskStatsObj, discipline_leads: disciplineLeads })
     }
-    return c.json({ ...projectWithBudget, members: members.results, task_stats: taskStatsObj })
+    return c.json({ ...projectWithBudget, members: members.results, task_stats: taskStatsObj, discipline_leads: disciplineLeads })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -19041,6 +19059,34 @@ async function notifyWeeklyBoardReport(
   }
 }
 
+async function disciplineCodeForAssignee(db: D1Database, projectId: number, userId: number): Promise<string | null> {
+  try {
+    const person = await db.prepare('SELECT department FROM users WHERE id = ?').bind(userId).first() as { department?: string } | null
+    const dept = String(person?.department || '').trim().replace(/^phòng\s+/i, '')
+    if (dept) {
+      const byDept = await db.prepare(`
+        SELECT code FROM disciplines
+        WHERE IFNULL(is_active, 1) = 1
+          AND (LOWER(code) = LOWER(?) OR LOWER(name) = LOWER(?))
+        ORDER BY CASE WHEN LOWER(code) = LOWER(?) THEN 0 ELSE 1 END, code
+        LIMIT 1
+      `).bind(dept, dept, dept).first() as { code?: string } | null
+      const fromDept = String(byDept?.code || '').trim()
+      if (fromDept) return fromDept
+    }
+    const row = await db.prepare(`
+      SELECT discipline_code FROM project_design_disciplines
+      WHERE project_id = ? AND leader_id = ? AND TRIM(IFNULL(discipline_code, '')) != ''
+      ORDER BY discipline_code
+      LIMIT 1
+    `).bind(projectId, userId).first() as { discipline_code?: string } | null
+    const code = String(row?.discipline_code || '').trim()
+    return code || null
+  } catch {
+    return null
+  }
+}
+
 // POST /api/weekly-board/items — thêm một việc (INSERT only)
 app.post('/api/weekly-board/items', authMiddleware, async (c) => {
   try {
@@ -19104,24 +19150,29 @@ app.post('/api/weekly-board/items', authMiddleware, async (c) => {
     const maxSort = await db.prepare(`
       SELECT COALESCE(MAX(sort_order), -1) AS m FROM weekly_plan_items WHERE plan_id = ?
     `).bind(planId).first() as { m?: number } | null
-    const sortOrder = Number(maxSort?.m ?? -1) + 1
-
-    const ins = await db.prepare(`
-      INSERT INTO weekly_plan_items (plan_id, sort_order, description, assignee_ids, assignee_names, target_date, priority)
-      VALUES (?,?,?,?,?,?, 'normal')
-    `).bind(planId, sortOrder, description, JSON.stringify(assigneeIds), assigneeNames, targetDate).run()
-    const itemId = Number(ins.meta.last_row_id)
+    let sortOrder = Number(maxSort?.m ?? -1) + 1
 
     const taskTitle = description.length > 180 ? description.slice(0, 177) + '...' : description
     const weekLabel = `Tuần ${wi.weekNumber} (${wi.weekStart} → ${wi.weekEnd})`
-    const taskDescription = `${weekLabel}.\nNgười phụ trách: ${assigneeNames}.\n${description}`
     const taskIds: number[] = []
+    const itemIds: number[] = []
     try {
       for (const assigneeId of assigneeIds) {
+        const personName = nameById.get(assigneeId) || `#${assigneeId}`
+        const discipline = await disciplineCodeForAssignee(db, projectId, assigneeId)
+        const ins = await db.prepare(`
+          INSERT INTO weekly_plan_items (plan_id, sort_order, category, description, assignee_ids, assignee_names, target_date, priority)
+          VALUES (?,?,?,?,?,?,?, 'normal')
+        `).bind(planId, sortOrder, discipline, description, JSON.stringify([assigneeId]), personName, targetDate).run()
+        sortOrder += 1
+        const itemId = Number(ins.meta.last_row_id)
+        itemIds.push(itemId)
+        const taskDescription = `${weekLabel}.\nNgười phụ trách: ${personName}.\n${description}`
         const created = await createTaskRecord(db, c.env, user, {
           project_id: projectId,
           title: taskTitle,
           description: taskDescription,
+          discipline_code: discipline,
           task_type: 'other',
           priority: 'medium',
           status: 'todo',
@@ -19132,17 +19183,18 @@ app.post('/api/weekly-board/items', authMiddleware, async (c) => {
         if (created.status !== 201 || !created.body?.id) {
           throw new Error(created.body?.error || 'Không tạo được task')
         }
-        taskIds.push(Number(created.body.id))
+        const taskId = Number(created.body.id)
+        taskIds.push(taskId)
+        await saveWeeklyItemTaskLinks(db, itemId, { [String(assigneeId)]: taskId })
       }
-      const taskByUser: Record<string, number> = {}
-      assigneeIds.forEach((assigneeId, index) => { taskByUser[String(assigneeId)] = taskIds[index] })
-      await saveWeeklyItemTaskLinks(db, itemId, taskByUser)
     } catch (err: any) {
       for (const taskId of taskIds) {
         try { await db.prepare('DELETE FROM task_history WHERE task_id = ?').bind(taskId).run() } catch { /* ignore */ }
         try { await db.prepare('DELETE FROM tasks WHERE id = ?').bind(taskId).run() } catch { /* ignore */ }
       }
-      try { await db.prepare('DELETE FROM weekly_plan_items WHERE id = ?').bind(itemId).run() } catch { /* ignore */ }
+      for (const itemId of itemIds) {
+        try { await db.prepare('DELETE FROM weekly_plan_items WHERE id = ?').bind(itemId).run() } catch { /* ignore */ }
+      }
       return c.json({ error: err?.message || 'Không tạo được task cho người phụ trách' }, 500)
     }
 
@@ -19169,7 +19221,7 @@ app.post('/api/weekly-board/items', authMiddleware, async (c) => {
       })
     }
 
-    return c.json({ success: true, id: itemId, plan_id: planId, task_ids: taskIds })
+    return c.json({ success: true, id: itemIds[0] || null, ids: itemIds, plan_id: planId, task_ids: taskIds })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
