@@ -28575,7 +28575,11 @@ function renderWeeklyBoardTable() {
   const weekNum = wk.week_number || getISOWeekNumber(wk.week_start)
   const title = fmtWeekBoardTitle(wk.week_start, wk.week_end, weekNum)
   const filtered = weeklyBoardFilteredItems(_weeklyBoardData.items)
-  const tasks = filtered.filter(it => it.kind !== 'self_report' && it.kind !== 'extra_report')
+  const allWork = (_weeklyBoardData.items || []).filter(it => it.kind !== 'self_report' && it.kind !== 'extra_report')
+  const tasks = weeklyBoardRepairDescriptions(
+    filtered.filter(it => it.kind !== 'self_report' && it.kind !== 'extra_report'),
+    allWork
+  )
   const selfReports = filtered.filter(it => it.kind === 'self_report' || it.kind === 'extra_report')
   const addable = _weeklyBoardData.addable_projects || []
   const reportable = _weeklyBoardData.reportable_projects || []
@@ -28687,9 +28691,30 @@ function weeklyBoardOpenProject(projectId) {
   openProjectDetail(projectId)
 }
 
+function weeklyBoardNormWork(text) {
+  return String(text || '').trim().replace(/\s+/g, ' ')
+}
+
 function weeklyBoardWorkKey(it) {
-  const text = String(it.description || '').trim().replace(/\s+/g, ' ').toLowerCase()
+  const text = weeklyBoardNormWork(it.description).toLowerCase()
   return `${text}\0${it.target_date || ''}`
+}
+
+/** Cùng dự án, cùng câu nhưng mất đúng 1 ký tự đầu — hiện lại câu đầy đủ. */
+function weeklyBoardRepairDescriptions(items, donors) {
+  const pool = (donors || items).map((it) => ({ it, norm: weeklyBoardNormWork(it.description) }))
+  return items.map((it) => {
+    const mine = weeklyBoardNormWork(it.description)
+    if (mine.length < 8) return it
+    const hit = pool.find((d) =>
+      d.it !== it &&
+      Number(d.it.project_id) === Number(it.project_id) &&
+      d.norm.length === mine.length + 1 &&
+      d.norm.slice(1) === mine
+    )
+    if (!hit) return it
+    return { ...it, description: hit.it.description }
+  })
 }
 
 function weeklyBoardCollapseItems(items) {
