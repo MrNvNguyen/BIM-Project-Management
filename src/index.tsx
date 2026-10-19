@@ -18338,14 +18338,39 @@ app.post('/api/projects/:projectId/weekly-plans', authMiddleware, async (c) => {
       `).bind(projectId, wi.weekStart, wi.weekEnd, Number(wi.weekNumber), Number(wi.year), planTitle, overall_goal ? String(overall_goal) : null, userId).run()
       planId = r.meta.last_row_id as number
     }
+    const previousItems = await db.prepare(`
+      SELECT description, assignee_ids, carried_from_item_id
+      FROM weekly_plan_items WHERE plan_id = ?
+    `).bind(planId).all()
+    const keptKeys = new Set(
+      (items as { description?: string; assignee_ids?: unknown }[])
+        .filter((it) => String(it.description || '').trim())
+        .map((it) => weeklyItemKey(String(it.description || ''), it.assignee_ids))
+    )
+    for (const old of (previousItems.results || []) as { description?: string; assignee_ids?: string; carried_from_item_id?: number | null }[]) {
+      const key = weeklyItemKey(String(old.description || ''), old.assignee_ids || '[]')
+      if (keptKeys.has(key)) continue
+      await suppressCarryOfItem(db, planId, projectId, wi.weekStart, old)
+    }
+    const carryLinkByKey = new Map<string, number>()
+    for (const old of (previousItems.results || []) as { description?: string; assignee_ids?: string; carried_from_item_id?: number | null }[]) {
+      if (!old.carried_from_item_id) continue
+      const key = weeklyItemKey(String(old.description || ''), old.assignee_ids || '[]')
+      if (!carryLinkByKey.has(key)) carryLinkByKey.set(key, Number(old.carried_from_item_id))
+    }
+    const usedCarryLinks = new Set<number>()
     // Replace items
     await db.prepare(`DELETE FROM weekly_plan_items WHERE plan_id = ?`).bind(planId).run()
     for (let i = 0; i < items.length; i++) {
       const it = items[i]
       if (!it.description) continue
+      const itemKey = weeklyItemKey(String(it.description || ''), it.assignee_ids)
+      const linkedSource = carryLinkByKey.get(itemKey)
+      const carriedFrom = linkedSource && !usedCarryLinks.has(linkedSource) ? linkedSource : null
+      if (carriedFrom) usedCarryLinks.add(carriedFrom)
       await db.prepare(`
-        INSERT INTO weekly_plan_items (plan_id, sort_order, category, description, assignee_ids, assignee_names, target_date, linked_task_id, priority, notes)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO weekly_plan_items (plan_id, sort_order, category, description, assignee_ids, assignee_names, target_date, linked_task_id, priority, notes, carried_from_item_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
       `).bind(planId, i,
               it.category != null ? String(it.category) : null,
               String(it.description),
@@ -18354,7 +18379,8 @@ app.post('/api/projects/:projectId/weekly-plans', authMiddleware, async (c) => {
               it.target_date != null ? String(it.target_date) : null,
               it.linked_task_id != null ? Number(it.linked_task_id) : null,
               it.priority || 'normal',
-              it.notes != null ? String(it.notes) : null).run()
+              it.notes != null ? String(it.notes) : null,
+              carriedFrom).run()
     }
     return c.json({ success: true, id: planId, week_start: wi.weekStart, week_end: wi.weekEnd })
   } catch (e: any) { return c.json({ error: e.message }, 500) }
@@ -18575,6 +18601,49 @@ function addCalendarDaysUTC(dateStr: string, days: number): string {
   return formatUTCDate(dt)
 }
 
+function weeklyItemKey(description: string, assigneeRaw: unknown): string {
+  const raw = Array.isArray(assigneeRaw) ? JSON.stringify(assigneeRaw) : String(assigneeRaw || '')
+  const ids = parseWeeklyPlanAssigneeIds(raw).sort((a, b) => a - b).join(',')
+  const text = String(description || '').trim().replace(/\s+/g, ' ').toLowerCase()
+  return `${text}\0${ids}`
+}
+
+async function rememberWeeklyCarrySkip(db: D1Database, planId: number, sourceItemId: number) {
+  if (!planId || !sourceItemId) return
+  try {
+    await db.prepare(
+      `INSERT OR IGNORE INTO weekly_plan_carry_skips (plan_id, source_item_id) VALUES (?, ?)`
+    ).bind(planId, sourceItemId).run()
+  } catch { /* migration 0077 chưa áp */ }
+}
+
+/** Xóa ở tuần này thì không chuyển lại cùng nội dung từ tuần trước. */
+async function suppressCarryOfItem(
+  db: D1Database,
+  planId: number,
+  projectId: number,
+  weekStart: string,
+  item: { description?: string; assignee_ids?: string | null; carried_from_item_id?: number | null },
+) {
+  if (item.carried_from_item_id) await rememberWeeklyCarrySkip(db, planId, Number(item.carried_from_item_id))
+  const prevStart = addCalendarDaysUTC(weekStart, -7)
+  const prevLegacy = legacyWeekStart(prevStart)
+  const want = weeklyItemKey(String(item.description || ''), item.assignee_ids || '[]')
+  if (!want.split('\0')[0]) return
+  try {
+    const sources = await db.prepare(`
+      SELECT wpi.id, wpi.description, wpi.assignee_ids
+      FROM weekly_plan_items wpi
+      JOIN weekly_plans wp ON wp.id = wpi.plan_id
+      WHERE wp.project_id = ? AND wp.week_start IN (?, ?)
+    `).bind(projectId, prevStart, prevLegacy).all()
+    for (const src of (sources.results || []) as { id?: number; description?: string; assignee_ids?: string }[]) {
+      if (weeklyItemKey(String(src.description || ''), src.assignee_ids || '[]') !== want) continue
+      await rememberWeeklyCarrySkip(db, planId, Number(src.id))
+    }
+  } catch { /* ignore */ }
+}
+
 // Hết tuần (Chủ nhật) mà việc chưa Xong thì chuyển sang tuần đang mở.
 async function carryUnfinishedWeeklyItems(db: D1Database, user: any, weekStart: string) {
   const prevStart = addCalendarDaysUTC(weekStart, -7)
@@ -18616,7 +18685,7 @@ async function carryUnfinishedWeeklyItems(db: D1Database, user: any, weekStart: 
   if (!sourceWeekEnded) return
 
   const sources = await db.prepare(`
-    SELECT wpi.id, wpi.description, wpi.assignee_ids, wpi.assignee_names, wpi.target_date, wpi.priority, wp.project_id
+    SELECT wpi.id, wpi.description, wpi.assignee_ids, wpi.assignee_names, wpi.target_date, wpi.priority, wpi.category, wp.project_id
     FROM weekly_plans wp
     JOIN projects p ON p.id = wp.project_id
     JOIN weekly_plan_items wpi ON wpi.plan_id = wp.id
@@ -18631,32 +18700,50 @@ async function carryUnfinishedWeeklyItems(db: D1Database, user: any, weekStart: 
   `).bind(prevStart, prevLegacy, ...access.params).all()
 
   const userId = Number(user?.id) || null
+  const destCache = new Map<number, { description?: string; assignee_ids?: string; carried_from_item_id?: number | null }[]>()
   for (const src of (sources.results || []) as any[]) {
     const description = String(src.description || '').trim()
     if (!description) continue
     const projectId = Number(src.project_id)
     const { planId } = await ensureWeeklyPlanForBoard(db, projectId, weekStart, userId)
-    const exists = await db.prepare(
-      `SELECT id FROM weekly_plan_items WHERE plan_id = ? AND carried_from_item_id = ?`
-    ).bind(planId, src.id).first()
-    if (exists) continue
+    try {
+      const skip = await db.prepare(
+        `SELECT 1 AS x FROM weekly_plan_carry_skips WHERE plan_id = ? AND source_item_id = ?`
+      ).bind(planId, src.id).first()
+      if (skip) continue
+    } catch { /* migration 0077 chưa áp */ }
+    if (!destCache.has(planId)) {
+      const destRows = await db.prepare(
+        `SELECT description, assignee_ids, carried_from_item_id FROM weekly_plan_items WHERE plan_id = ?`
+      ).bind(planId).all()
+      destCache.set(planId, (destRows.results || []) as { description?: string; assignee_ids?: string; carried_from_item_id?: number | null }[])
+    }
+    const dest = destCache.get(planId) || []
+    const key = weeklyItemKey(description, src.assignee_ids || '[]')
+    const already = dest.some((row) =>
+      Number(row.carried_from_item_id) === Number(src.id) ||
+      weeklyItemKey(String(row.description || ''), row.assignee_ids || '[]') === key
+    )
+    if (already) continue
     const maxSort = await db.prepare(
       `SELECT COALESCE(MAX(sort_order), -1) AS m FROM weekly_plan_items WHERE plan_id = ?`
     ).bind(planId).first() as { m?: number } | null
     const sortOrder = Number(maxSort?.m ?? -1) + 1
+    const category = src.category && String(src.category) !== 'self_report' ? String(src.category) : null
     try {
       await db.prepare(`
         INSERT INTO weekly_plan_items
-          (plan_id, sort_order, description, assignee_ids, assignee_names, target_date, priority, notes, carried_from_item_id)
-        VALUES (?,?,?,?,?,?,?,'Trễ hạn',?)
+          (plan_id, sort_order, category, description, assignee_ids, assignee_names, target_date, priority, notes, carried_from_item_id)
+        VALUES (?,?,?,?,?,?,?,?, 'Trễ hạn', ?)
       `).bind(
-        planId, sortOrder, description,
+        planId, sortOrder, category, description,
         src.assignee_ids || '[]',
         src.assignee_names || null,
         src.target_date || null,
         src.priority || 'normal',
         src.id
       ).run()
+      dest.push({ description, assignee_ids: src.assignee_ids || '[]', carried_from_item_id: Number(src.id) })
     } catch (err: any) {
       const msg = String(err?.message || err)
       if (!/UNIQUE|constraint/i.test(msg)) throw err
@@ -19485,7 +19572,8 @@ app.delete('/api/weekly-board/items/:id', authMiddleware, async (c) => {
     const itemId = parseInt(c.req.param('id'))
 
     const row = await db.prepare(`
-      SELECT wpi.id, wpi.category, wpi.assignee_ids, wp.project_id
+      SELECT wpi.id, wpi.category, wpi.description, wpi.assignee_ids, wpi.carried_from_item_id,
+             wpi.plan_id, wp.project_id, wp.week_start
       FROM weekly_plan_items wpi
       JOIN weekly_plans wp ON wp.id = wpi.plan_id
       WHERE wpi.id = ?
@@ -19501,6 +19589,15 @@ app.delete('/api/weekly-board/items/:id', authMiddleware, async (c) => {
       return c.json({ error: 'Không có quyền xóa dòng này' }, 403)
     }
 
+    const stillThere = await db.prepare(`
+      SELECT id FROM weekly_plan_items
+      WHERE plan_id = ? AND id != ?
+        AND lower(trim(description)) = lower(trim(?))
+        AND IFNULL(assignee_ids, '[]') = IFNULL(?, '[]')
+    `).bind(row.plan_id, itemId, String(row.description || ''), row.assignee_ids || '[]').first()
+    if (!stillThere && row.category !== 'self_report') {
+      await suppressCarryOfItem(db, Number(row.plan_id), projectId, String(row.week_start), row)
+    }
     await db.prepare(`DELETE FROM weekly_report_items WHERE plan_item_id = ?`).bind(itemId).run()
     await db.prepare(`DELETE FROM weekly_plan_items WHERE id = ?`).bind(itemId).run()
     return c.json({ success: true })
