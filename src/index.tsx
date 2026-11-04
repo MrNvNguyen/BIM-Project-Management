@@ -3377,8 +3377,13 @@ app.delete('/api/tasks/:id', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
     const user = c.get('user') as any
-    if (!['system_admin','project_admin'].includes(user.role)) return c.json({ error: 'Forbidden' }, 403)
     const id = parseInt(c.req.param('id'))
+    const task = await db.prepare('SELECT id, project_id FROM tasks WHERE id = ?').bind(id).first() as { id?: number; project_id?: number } | null
+    if (!task) return c.json({ error: 'Task not found' }, 404)
+    // system_admin / project_admin toàn cục, hoặc project_admin của đúng dự án
+    if (!(await isProjectAdminOrAbove(db, user, Number(task.project_id)))) {
+      return c.json({ error: 'Forbidden' }, 403)
+    }
     // Cascade: delete related timesheets and history
     await db.prepare('DELETE FROM task_history WHERE task_id = ?').bind(id).run()
     await db.prepare('UPDATE timesheets SET task_id = NULL WHERE task_id = ?').bind(id).run()
