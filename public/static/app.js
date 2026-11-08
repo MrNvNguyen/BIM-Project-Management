@@ -20318,61 +20318,40 @@ let _projFinData = null
 
 // ── Xuất Excel bảng chi tiết tài chính từng dự án ────────────────
 async function exportFinDetailExcel() {
-  try { await ensureXlsxReady() } catch (e) { toast(e.message, 'error'); return }
-  if (typeof XLSX === 'undefined') {
+  try {
+  await ensureXlsxReady()
+  const XS = getXLSXForWrite()
+  if (!XS) {
     toast('Thư viện Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return
   }
 
-  // Lấy data từ DOM table hiện tại
   const table = document.getElementById('finDetailTable')
   if (!table) { toast('Không tìm thấy bảng dữ liệu', 'error'); return }
 
   const isLifetime = document.querySelector('#analyticsProjectFinanceContent h3')
     ?.textContent?.includes('Toàn vòng đời') || false
 
-  // Lấy tiêu đề từ heading bảng
   const titleEl = document.querySelector('#analyticsProjectFinanceContent .card h3')
   const title   = titleEl?.textContent?.trim().replace(/^\s*\S+\s*/, '') || 'Chi tiết tài chính'
 
-  // Thu thập rows từ thead + tbody + tfoot
-  const wb = XLSX.utils.book_new()
+  // ── Lấy dữ liệu đã render (phải khai báo trước khi dùng) ──
+  const rawData    = window._projFinRaw || {}
+  const projects   = rawData.projects || []
+  const totals     = rawData.totals   || {}
+  const fyLabel    = rawData.fiscal_year_label || ''
+  const statusLbl  = { active:'Đang chạy', planning:'Kế hoạch', on_hold:'Tạm dừng', completed:'Hoàn thành', cancelled:'Đã hủy' }
+  if (!projects.length) { toast('Không có dữ liệu để xuất', 'warning'); return }
 
-  // Màu sắc header
-  const headerStyle = {
-    font: { bold: true, color: { rgb: 'FFFFFF' }, sz: 10 },
-    fill: { fgColor: { rgb: '1F7A4D' } },
-    alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-    border: { bottom: { style: 'thin', color: { rgb: 'CCCCCC' } } }
-  }
-  const numStyle = {
-    numFmt: '#,##0',
-    alignment: { horizontal: 'right', vertical: 'center' }
-  }
-  const pctStyle = {
-    numFmt: '0.0"%"',
-    alignment: { horizontal: 'center', vertical: 'center' }
-  }
-  const totalStyle = {
-    font: { bold: true, sz: 10 },
-    fill: { fgColor: { rgb: 'F3F4F6' } },
-    alignment: { horizontal: 'right', vertical: 'center' },
-    numFmt: '#,##0'
-  }
+  const wb = XS.utils.book_new()
 
   // Kiểm tra có ngân sách không
-  const hasNganSach = (rawData.projects || []).some((p) => p.project_budget > 0)
+  const hasNganSach = projects.some((p) => p.project_budget > 0)
 
   // ── Header rows ──
   const headers1 = isLifetime
     ? ['Dự án', 'Mã', 'Trạng thái', 'Thời gian', 'GTHĐ', 'Đã thu HĐ', 'Công nợ', ...(hasNganSach ? ['Ngân sách', '% phí QL'] : []), 'DT đã thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ (%)']
     : ['Dự án', 'Mã', 'Trạng thái', 'GTHĐ', 'Đã thu HĐ', 'Công nợ', ...(hasNganSach ? ['Ngân sách', '% phí QL'] : []), 'DT đã thu', '% GTHĐ', 'CP trực tiếp', '% GTHĐ', 'CP lương', '% GTHĐ', 'CP chung', '% GTHĐ', 'Tổng CP', '% GTHĐ', 'Lợi nhuận', 'Biên LN (%)', 'Tiến độ (%)']
 
-  // ── Lấy dữ liệu từ _projFinData nếu có ──
-  const rawData    = window._projFinRaw || {}
-  const projects   = rawData.projects || []
-  const totals     = rawData.totals   || {}
-  const fyLabel    = rawData.fiscal_year_label || ''
-  const statusLbl  = { active:'Đang chạy', planning:'Kế hoạch', on_hold:'Tạm dừng', completed:'Hoàn thành', cancelled:'Đã hủy' }
 
   // Sort same as UI
   const sorted = [...projects].sort((a, b) => {
@@ -20457,7 +20436,7 @@ async function exportFinDetailExcel() {
     ])
   }
 
-  const ws = XLSX.utils.aoa_to_sheet(aoa)
+  const ws = XS.utils.aoa_to_sheet(aoa)
 
   // Column widths
   const colWidths = isLifetime
@@ -20472,13 +20451,16 @@ async function exportFinDetailExcel() {
   // Row heights
   ws['!rows'] = [{ hpt: 22 }, { hpt: 4 }, { hpt: 32 }]
 
-  XLSX.utils.book_append_sheet(wb, ws, 'Tài chính dự án')
+  XS.utils.book_append_sheet(wb, ws, 'Tài chính dự án')
 
   // Tên file
   const safeLabel = (fyLabel || title).replace(/[/\\?*[\]]/g, '-').substring(0, 40)
   const fname = `TaiChinh_DuAn_${safeLabel}_${new Date().toISOString().slice(0,10)}.xlsx`
-  XLSX.writeFile(wb, fname)
+  XS.writeFile(wb, fname)
   toast('Xuất Excel thành công!', 'success')
+  } catch (e) {
+    toast('Lỗi xuất Excel: ' + (e.message || e), 'error')
+  }
 }
 
 function _drawProjectFinCharts(data) {
