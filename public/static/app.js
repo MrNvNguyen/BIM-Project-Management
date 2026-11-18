@@ -32231,9 +32231,9 @@ async function confirmDeleteHstk(submissionId) {
 }
 
 // ── Export HSTK to Excel ──────────────────────────────────────────────
-function exportHstkExcel(submissionId) {
-  // Dùng XLSXStyle (xlsx-js-style) để hỗ trợ cell styling
-  const XS = window.XLSXStyle || window.XLSX
+async function exportHstkExcel(submissionId) {
+  try { await ensureXlsxReady() } catch (e) { toast(e.message || 'Không tải được thư viện Excel', 'error'); return }
+  const XS = getXLSXForWrite()
   if (!XS) { toast('Thư viện Excel chưa tải xong, thử lại sau', 'warning'); return }
   const sub = _hstkCurrentSub
   if (!sub || sub.id !== submissionId) { toast('Không tìm thấy dữ liệu checklist', 'error'); return }
