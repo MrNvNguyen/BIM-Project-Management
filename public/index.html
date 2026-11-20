@@ -3879,9 +3879,14 @@
             <h1 class="text-2xl font-bold text-gray-800">Quản lý Dự án</h1>
             <p class="text-gray-500 text-sm">Danh sách và quản lý các dự án BIM</p>
           </div>
-          <button id="btnNewProject" onclick="openProjectModal()" class="btn-primary flex items-center gap-2 hidden">
-            <i class="fas fa-plus"></i>Tạo dự án mới
-          </button>
+          <div class="flex items-center gap-2">
+            <button type="button" onclick="exportProjectsExcelByClient()" class="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm" title="Xuất danh sách dự án theo chủ đầu tư">
+              <i class="fas fa-file-excel"></i> Xuất Excel
+            </button>
+            <button id="btnNewProject" onclick="openProjectModal()" class="btn-primary flex items-center gap-2 hidden">
+              <i class="fas fa-plus"></i>Tạo dự án mới
+            </button>
+          </div>
         </div>
 
         <!-- Filters -->
@@ -9239,7 +9244,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261118a"></script>
+<script src="/static/app.js?v=20261120a"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO

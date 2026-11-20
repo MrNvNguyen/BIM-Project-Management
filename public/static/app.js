@@ -2519,6 +2519,128 @@ function filterProjects() {
   renderProjectsGrid(filtered)
 }
 
+function _projectListFiltered() {
+  const search = ($('projectSearch')?.value || '').toLowerCase()
+  const status = $('projectStatusFilter')?.value || ''
+  const type = $('projectTypeFilter')?.value || ''
+  const client = _cbGetValue('projectClientCombobox')
+  return (allProjects || []).filter(p =>
+    (!search || (p.name || '').toLowerCase().includes(search) || (p.code || '').toLowerCase().includes(search) || (p.client || '').toLowerCase().includes(search)) &&
+    (!status || p.status === status) &&
+    (!type || p.project_type === type) &&
+    (!client || (p.client || '') === client)
+  )
+}
+
+function _excelSheetName(name, used) {
+  let base = String(name || 'Sheet').replace(/[\\/?*[\]:]/g, ' ').replace(/\s+/g, ' ').trim() || 'Sheet'
+  if (base.length > 28) base = base.slice(0, 28).trim()
+  let out = base
+  let n = 2
+  while (used.has(out.toLowerCase())) {
+    const suffix = ` (${n++})`
+    out = (base.slice(0, Math.max(1, 31 - suffix.length)) + suffix).trim()
+  }
+  used.add(out.toLowerCase())
+  return out
+}
+
+/** Xuất Excel danh sách dự án theo từng chủ đầu tư (theo bộ lọc đang chọn). */
+async function exportProjectsExcelByClient() {
+  try {
+    await ensureXlsxReady()
+    const XS = getXLSXForWrite()
+    if (!XS) { toast('Thư viện Excel chưa sẵn sàng, vui lòng thử lại', 'error'); return }
+
+    const projects = _projectListFiltered()
+    if (!projects.length) { toast('Không có dự án để xuất', 'warning'); return }
+
+    const statusLbl = {
+      active: 'Hoạt động', planning: 'Lập kế hoạch', on_hold: 'Tạm dừng',
+      completed: 'Hoàn thành', cancelled: 'Đã hủy'
+    }
+    const showMoney = currentUser?.role === 'system_admin'
+    const headers = [
+      'STT', 'Mã dự án', 'Tên dự án', 'Chủ đầu tư', 'Loại', 'Trạng thái',
+      'Ngày bắt đầu', 'Ngày kết thúc', 'Tiến độ (%)', 'Tasks hoàn thành', 'Tasks tổng',
+      'Trễ hạn', 'Thành viên',
+      ...(showMoney ? ['Giá trị HĐ'] : [])
+    ]
+
+    const rowOf = (p, stt) => {
+      const total = p.total_tasks || 0
+      const done = p.completed_tasks || 0
+      const pct = total > 0 ? Math.round((done / total) * 100) : (p.progress || 0)
+      return [
+        stt,
+        p.code || '',
+        p.name || '',
+        (p.client || '').trim() || 'Chưa có chủ đầu tư',
+        getProjectTypeName(p.project_type),
+        statusLbl[p.status] || p.status || '',
+        p.start_date || '',
+        p.end_date || '',
+        pct,
+        done,
+        total,
+        p.overdue_tasks || 0,
+        p.member_count || 0,
+        ...(showMoney ? [p.contract_value != null ? Number(p.contract_value) : ''] : [])
+      ]
+    }
+
+    const byClient = new Map()
+    for (const p of projects) {
+      const key = (p.client || '').trim() || 'Chưa có chủ đầu tư'
+      if (!byClient.has(key)) byClient.set(key, [])
+      byClient.get(key).push(p)
+    }
+    const clientKeys = [...byClient.keys()].sort((a, b) => a.localeCompare(b, 'vi'))
+
+    const wb = XS.utils.book_new()
+    const usedNames = new Set()
+
+    // Sheet tổng hợp: nhóm theo chủ đầu tư
+    const allAoa = [['Danh sách dự án theo chủ đầu tư'], [], headers]
+    let sttAll = 0
+    for (const client of clientKeys) {
+      const list = byClient.get(client).slice().sort((a, b) => (a.code || '').localeCompare(b.code || '', 'vi'))
+      allAoa.push([client])
+      for (const p of list) allAoa.push(rowOf(p, ++sttAll))
+      allAoa.push([])
+    }
+    const wsAll = XS.utils.aoa_to_sheet(allAoa)
+    wsAll['!cols'] = [
+      { wch: 5 }, { wch: 14 }, { wch: 42 }, { wch: 28 }, { wch: 12 }, { wch: 14 },
+      { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 10 },
+      { wch: 8 }, { wch: 10 }, ...(showMoney ? [{ wch: 16 }] : [])
+    ]
+    wsAll['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: headers.length - 1 } }]
+    XS.utils.book_append_sheet(wb, wsAll, _excelSheetName('Tất cả', usedNames))
+
+    // Mỗi chủ đầu tư một sheet
+    for (const client of clientKeys) {
+      const list = byClient.get(client).slice().sort((a, b) => (a.code || '').localeCompare(b.code || '', 'vi'))
+      const aoa = [[`Chủ đầu tư: ${client}`], [`Số dự án: ${list.length}`], [], headers]
+      list.forEach((p, i) => aoa.push(rowOf(p, i + 1)))
+      const ws = XS.utils.aoa_to_sheet(aoa)
+      ws['!cols'] = wsAll['!cols']
+      ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: headers.length - 1 } }]
+      XS.utils.book_append_sheet(wb, ws, _excelSheetName(client, usedNames))
+    }
+
+    const filterClient = _cbGetValue('projectClientCombobox')
+    const tag = filterClient
+      ? String(filterClient).replace(/[\\/?*[\]:]/g, '-').slice(0, 30)
+      : 'tat-ca'
+    const fname = `DuAn_TheoChuDauTu_${tag}_${new Date().toISOString().slice(0, 10)}.xlsx`
+    XS.writeFile(wb, fname)
+    toast(`Đã xuất ${projects.length} dự án / ${clientKeys.length} chủ đầu tư`, 'success')
+  } catch (e) {
+    toast('Lỗi xuất Excel: ' + (e.message || e), 'error')
+  }
+}
+
 // ── Task grid (Wave E — HSPL Excel contract, shared project + global) ──
 let _taskGridInlineBusy = false
 
