@@ -16171,6 +16171,7 @@ let _dashCalYear = null
 let _dashCalMonth = null // 1–12
 let _dashCalFilter = 'all'
 let _dashCalItems = []
+let _dashCalTaskItems = []
 let _dashCalLoading = false
 
 const DASH_CAL_DAY_LABELS = [
@@ -16237,12 +16238,14 @@ function dashCalFilterItems(items) {
   })
 }
 
-function setDashCalFilter(f) {
+async function setDashCalFilter(f) {
   _dashCalFilter = f
   document.querySelectorAll('#dashCalFilters .dash-cal-filter').forEach((btn) => {
     btn.classList.toggle('active', btn.getAttribute('data-filter') === f)
   })
-  renderDashWeeklyCalendar()
+  if (f === 'my_tasks') await loadDashCalMyTasks()
+  else if (!_dashCalItems.length) await loadDashWeeklyCalendar()
+  else renderDashWeeklyCalendar()
 }
 
 function dashCalShiftMonth(delta) {
@@ -16253,14 +16256,16 @@ function dashCalShiftMonth(delta) {
   while (m > 12) { m -= 12; y += 1 }
   _dashCalYear = y
   _dashCalMonth = m
-  loadDashWeeklyCalendar()
+  if (_dashCalFilter === 'my_tasks') loadDashCalMyTasks()
+  else loadDashWeeklyCalendar()
 }
 
 function dashCalGoCurrentMonth() {
   const t = todayLocalISO()
   _dashCalYear = Number(t.slice(0, 4))
   _dashCalMonth = Number(t.slice(5, 7))
-  loadDashWeeklyCalendar()
+  if (_dashCalFilter === 'my_tasks') loadDashCalMyTasks()
+  else loadDashWeeklyCalendar()
 }
 
 function dashCalOpenWeeklyBoard(dateStr) {
@@ -16269,10 +16274,64 @@ function dashCalOpenWeeklyBoard(dateStr) {
   navigate('weekly-board')
 }
 
+function dashCalOpenItem(it, dateStr) {
+  if (it?.kind === 'work_task' && it.task_id) {
+    if (typeof openTaskDetail === 'function') openTaskDetail(it.task_id)
+    else navigate('tasks')
+    return
+  }
+  dashCalOpenWeeklyBoard(dateStr || it?.target_date)
+}
+
+function dashCalMapTaskToItem(t) {
+  const due = String(t.due_date || '').slice(0, 10) || null
+  const done = ['completed', 'done', 'cancelled'].includes(String(t.status || ''))
+  const today = todayLocalISO()
+  const overdue = !done && !!due && due < today
+  return {
+    id: `task-${t.id}`,
+    task_id: t.id,
+    kind: 'work_task',
+    description: t.title || t.description || '',
+    target_date: due,
+    project_code: t.project_code || '',
+    project_name: t.project_name || '',
+    assignee_names: t.assigned_to_name || currentUser?.full_name || '',
+    status: done ? 'completed' : (t.status === 'in_progress' || t.status === 'review' ? 'in_progress' : 'not_started'),
+    overdue,
+  }
+}
+
+async function loadDashCalMyTasks() {
+  const root = $('dashWeeklyCalendar')
+  if (!root || root.style.display === 'none') return
+  dashCalEnsureMonth()
+  const grid = $('dashCalGrid')
+  if (grid) {
+    grid.innerHTML = `<div class="text-xs text-gray-400 text-center py-6 col-span-full">Đang tải task của tôi...</div>`
+  }
+  try {
+    const uid = Number(currentUser?.id)
+    if (!uid) throw new Error('Chưa đăng nhập')
+    const resp = await api(`/tasks?assigned_to=${uid}&exclude_done=1&limit=${TASK_LIST_LIMIT}&offset=0`)
+    const rows = Array.isArray(resp) ? resp : (resp?.data || [])
+    _dashCalTaskItems = rows.map(dashCalMapTaskToItem)
+    renderDashWeeklyCalendar()
+  } catch (e) {
+    if (grid) {
+      grid.innerHTML = `<div class="text-xs text-red-500 text-center py-6 col-span-full">Không tải được task: ${escHtml(e.message || e)}</div>`
+    }
+  }
+}
+
 async function loadDashWeeklyCalendar() {
   const root = $('dashWeeklyCalendar')
   if (!root || root.style.display === 'none') return
   dashCalEnsureMonth()
+  if (_dashCalFilter === 'my_tasks') {
+    await loadDashCalMyTasks()
+    return
+  }
   if (_dashCalLoading) return
   _dashCalLoading = true
   const grid = $('dashCalGrid')
@@ -16309,12 +16368,17 @@ function renderDashWeeklyCalendar() {
   if (!grid) return
   dashCalEnsureMonth()
 
-  if (labelEl) labelEl.textContent = `${DASH_CAL_MONTH_NAMES[_dashCalMonth]} ${_dashCalYear}`
+  const isMyTasks = _dashCalFilter === 'my_tasks'
+  if (labelEl) {
+    labelEl.textContent = isMyTasks
+      ? `${DASH_CAL_MONTH_NAMES[_dashCalMonth]} ${_dashCalYear} · Task được giao`
+      : `${DASH_CAL_MONTH_NAMES[_dashCalMonth]} ${_dashCalYear}`
+  }
 
   const cellsMeta = dashCalMonthGrid(_dashCalYear, _dashCalMonth)
   const today = todayLocalISO()
   const monthPrefix = `${_dashCalYear}-${String(_dashCalMonth).padStart(2, '0')}`
-  const items = dashCalFilterItems(_dashCalItems)
+  const items = isMyTasks ? (_dashCalTaskItems || []) : dashCalFilterItems(_dashCalItems)
   const byDay = {}
   cellsMeta.forEach(({ dateStr }) => { byDay[dateStr] = [] })
   const unscheduled = []
@@ -16322,7 +16386,6 @@ function renderDashWeeklyCalendar() {
     const td = String(it.target_date || '').slice(0, 10)
     if (td && byDay[td]) byDay[td].push(it)
     else if (td && td.startsWith(monthPrefix)) {
-      // day in month but outside padded grid shouldn't happen with 42 cells
       if (!byDay[td]) byDay[td] = []
       byDay[td].push(it)
     } else if (!td) unscheduled.push(it)
@@ -16340,16 +16403,23 @@ function renderDashWeeklyCalendar() {
     const shown = list.slice(0, maxShow)
     const more = list.length - shown.length
     const chips = shown.map((it) => {
+      const fromTask = it.kind === 'work_task'
       const cls = [
         'dash-cal-chip',
+        fromTask ? 'from-task' : '',
         it.overdue ? 'overdue' : '',
         it.status === 'completed' ? 'done' : '',
       ].filter(Boolean).join(' ')
       const proj = String(it.project_code || it.project_name || '').trim()
       const who = String(it.assignee_names || (it.assignees || []).map((a) => a.name).filter(Boolean).join(', ') || '').trim()
       const title = `${it.description || ''}${proj ? ` · ${proj}` : ''}${who ? ` · ${who}` : ''}`
-      return `<button type="button" class="${cls}" title="${escHtml(title)}" onclick="dashCalOpenWeeklyBoard('${dateStr}')">
-        <span>${escHtml(String(it.description || '').slice(0, 40))}</span>
+      const short = String(it.description || '').trim()
+      const shortLabel = short.length > 28 ? short.slice(0, 28) + '…' : short
+      const openArg = fromTask
+        ? `dashCalOpenItem({kind:'work_task',task_id:${Number(it.task_id)}})`
+        : `dashCalOpenWeeklyBoard('${dateStr}')`
+      return `<button type="button" class="${cls}" title="${escHtml(title)}" onclick="${openArg}">
+        <span class="title">${escHtml(shortLabel)}</span>
         <span class="meta">${escHtml([proj, who].filter(Boolean).join(' · '))}</span>
       </button>`
     }).join('')
@@ -16367,11 +16437,18 @@ function renderDashWeeklyCalendar() {
       unEl.innerHTML = ''
     } else {
       unEl.classList.remove('hidden')
-      unEl.innerHTML = `<h4>Chưa xếp ngày (${unscheduled.length})</h4>
+      const heading = isMyTasks ? `Chưa có hạn (${unscheduled.length})` : `Chưa xếp ngày (${unscheduled.length})`
+      unEl.innerHTML = `<h4>${heading}</h4>
         <div class="flex flex-wrap gap-2">${unscheduled.slice(0, 12).map((it) => {
           const proj = String(it.project_code || '').trim()
-          return `<button type="button" class="dash-cal-chip${it.overdue ? ' overdue' : ''}" onclick="dashCalOpenWeeklyBoard()" title="${escHtml(it.description || '')}">
-            ${escHtml(String(it.description || '').slice(0, 40))}${proj ? ` <span class="meta">${escHtml(proj)}</span>` : ''}
+          const short = String(it.description || '').trim()
+          const shortLabel = short.length > 28 ? short.slice(0, 28) + '…' : short
+          const fromTask = it.kind === 'work_task'
+          const openArg = fromTask
+            ? `dashCalOpenItem({kind:'work_task',task_id:${Number(it.task_id)}})`
+            : `dashCalOpenWeeklyBoard()`
+          return `<button type="button" class="dash-cal-chip${fromTask ? ' from-task' : ''}${it.overdue ? ' overdue' : ''}" onclick="${openArg}" title="${escHtml(it.description || '')}">
+            <span class="title">${escHtml(shortLabel)}</span>${proj ? `<span class="meta">${escHtml(proj)}</span>` : ''}
           </button>`
         }).join('')}${unscheduled.length > 12 ? `<span class="dash-cal-more">+${unscheduled.length - 12}</span>` : ''}</div>`
     }

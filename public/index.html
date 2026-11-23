@@ -464,7 +464,12 @@
     #page-dashboard .dash-cal-chip:hover { filter: brightness(0.95); }
     #page-dashboard .dash-cal-chip.overdue { background: #fee2e2; color: #7f1d1d; }
     #page-dashboard .dash-cal-chip.done { background: #e5e7eb; color: #4b5563; text-decoration: line-through; }
-    #page-dashboard .dash-cal-chip .meta { display: block; opacity: 0.8; font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #page-dashboard .dash-cal-chip.from-task { background: #dbeafe; color: #1e3a8a; }
+    #page-dashboard .dash-cal-chip .title,
+    #page-dashboard .dash-cal-chip .meta {
+      display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #page-dashboard .dash-cal-chip .meta { opacity: 0.8; font-size: 9px; }
     #page-dashboard .dash-cal-more { font-size: 10px; color: var(--shell-text-muted); padding: 0 2px; }
     #page-dashboard .dash-cal-unscheduled { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--shell-border); }
     #page-dashboard .dash-cal-unscheduled h4 { font-size: 12px; font-weight: 600; color: var(--shell-text-muted); margin: 0 0 6px; }
@@ -486,6 +491,7 @@
     html[data-theme="dark"] #page-dashboard .dash-cal-chip { background: #14532d; color: #bbf7d0; }
     html[data-theme="dark"] #page-dashboard .dash-cal-chip.overdue { background: #7f1d1d; color: #fecaca; }
     html[data-theme="dark"] #page-dashboard .dash-cal-chip.done { background: #374151; color: #d1d5db; }
+    html[data-theme="dark"] #page-dashboard .dash-cal-chip.from-task { background: #1e3a5f; color: #bfdbfe; }
     html[data-theme="dark"] #page-dashboard .dash-cal-filter {
       background: #1e2433; color: #cbd5e1; border-color: #334155;
     }
@@ -3746,10 +3752,11 @@
               <p class="text-xs text-gray-400 mt-0.5" id="dashCalWeekLabel">—</p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
-              <div class="flex items-center gap-1" id="dashCalFilters">
+              <div class="flex items-center gap-1 flex-wrap" id="dashCalFilters">
                 <button type="button" class="dash-cal-filter active" data-filter="all" onclick="setDashCalFilter('all')">Tất cả</button>
-                <button type="button" class="dash-cal-filter" data-filter="mine" onclick="setDashCalFilter('mine')">Của tôi</button>
+                <button type="button" class="dash-cal-filter" data-filter="mine" onclick="setDashCalFilter('mine')">KH tuần của tôi</button>
                 <button type="button" class="dash-cal-filter" data-filter="open" onclick="setDashCalFilter('open')">Chưa xong</button>
+                <button type="button" class="dash-cal-filter" data-filter="my_tasks" onclick="setDashCalFilter('my_tasks')">Task của tôi</button>
               </div>
               <div class="flex items-center gap-1">
                 <button type="button" class="btn-secondary text-xs px-2 py-1" onclick="dashCalShiftMonth(-1)" title="Tháng trước"><i class="fas fa-chevron-left"></i></button>
@@ -9270,7 +9277,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261123b"></script>
+<script src="/static/app.js?v=20261123d"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO
