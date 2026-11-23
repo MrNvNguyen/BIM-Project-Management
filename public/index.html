@@ -425,6 +425,75 @@
     @keyframes slideUp { from { transform: translateX(-50%) translateY(20px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }
     @keyframes cbFadeIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
     .input-field { width: 100%; border: 1px solid var(--shell-border); border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; transition: border-color 0.2s; background: var(--shell-input-bg); color: var(--shell-text); }
+    /* Dashboard — Kế hoạch triển khai (lịch tháng) */
+    #page-dashboard .dash-cal-filter {
+      font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--shell-border);
+      background: transparent; color: var(--shell-text-muted); cursor: pointer;
+    }
+    #page-dashboard .dash-cal-filter.active {
+      background: #00A651; border-color: #00A651; color: #fff;
+    }
+    #page-dashboard .dash-cal-grid {
+      display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px;
+      border: 1px solid var(--shell-border); border-radius: 10px; overflow: hidden;
+      background: var(--shell-border);
+    }
+    #page-dashboard .dash-cal-head {
+      padding: 8px 4px; text-align: center; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.04em; background: var(--shell-elevated, #f8fafc); color: var(--shell-text);
+    }
+    #page-dashboard .dash-cal-head.weekend { color: #ef4444; }
+    #page-dashboard .dash-cal-day {
+      min-height: 96px; background: var(--shell-card-bg, #fff); padding: 6px;
+      display: flex; flex-direction: column; gap: 3px;
+    }
+    #page-dashboard .dash-cal-day.outside { opacity: 0.45; }
+    #page-dashboard .dash-cal-day.weekend { background: #fff5f5; }
+    #page-dashboard .dash-cal-day.today { box-shadow: inset 0 0 0 2px #00A651; }
+    #page-dashboard .dash-cal-daynum {
+      align-self: flex-end; font-size: 14px; font-weight: 700; line-height: 1; color: var(--shell-text);
+    }
+    #page-dashboard .dash-cal-day.weekend .dash-cal-daynum { color: #dc2626; }
+    #page-dashboard .dash-cal-day.outside .dash-cal-daynum { color: var(--shell-text-muted); }
+    #page-dashboard .dash-cal-chips { display: flex; flex-direction: column; gap: 3px; flex: 1; min-height: 0; overflow: hidden; }
+    #page-dashboard .dash-cal-chip {
+      display: block; width: 100%; text-align: left; border: 0; border-radius: 5px;
+      padding: 3px 5px; font-size: 10px; line-height: 1.25; cursor: pointer;
+      background: #dcfce7; color: #14532d; overflow: hidden;
+    }
+    #page-dashboard .dash-cal-chip:hover { filter: brightness(0.95); }
+    #page-dashboard .dash-cal-chip.overdue { background: #fee2e2; color: #7f1d1d; }
+    #page-dashboard .dash-cal-chip.done { background: #e5e7eb; color: #4b5563; text-decoration: line-through; }
+    #page-dashboard .dash-cal-chip .meta { display: block; opacity: 0.8; font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #page-dashboard .dash-cal-more { font-size: 10px; color: var(--shell-text-muted); padding: 0 2px; }
+    #page-dashboard .dash-cal-unscheduled { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--shell-border); }
+    #page-dashboard .dash-cal-unscheduled h4 { font-size: 12px; font-weight: 600; color: var(--shell-text-muted); margin: 0 0 6px; }
+    html[data-theme="dark"] #page-dashboard .dash-cal-head {
+      background: #1e2433; color: #e5e7eb;
+    }
+    html[data-theme="dark"] #page-dashboard .dash-cal-head.weekend { color: #f87171; }
+    html[data-theme="dark"] #page-dashboard .dash-cal-day {
+      background: #151a24;
+    }
+    html[data-theme="dark"] #page-dashboard .dash-cal-day.weekend {
+      background: #1c1520;
+    }
+    html[data-theme="dark"] #page-dashboard .dash-cal-day.outside {
+      background: #10141c; opacity: 0.55;
+    }
+    html[data-theme="dark"] #page-dashboard .dash-cal-daynum { color: #e5e7eb; }
+    html[data-theme="dark"] #page-dashboard .dash-cal-day.weekend .dash-cal-daynum { color: #fca5a5; }
+    html[data-theme="dark"] #page-dashboard .dash-cal-chip { background: #14532d; color: #bbf7d0; }
+    html[data-theme="dark"] #page-dashboard .dash-cal-chip.overdue { background: #7f1d1d; color: #fecaca; }
+    html[data-theme="dark"] #page-dashboard .dash-cal-chip.done { background: #374151; color: #d1d5db; }
+    html[data-theme="dark"] #page-dashboard .dash-cal-filter {
+      background: #1e2433; color: #cbd5e1; border-color: #334155;
+    }
+    @media (max-width: 900px) {
+      #page-dashboard .dash-cal-grid { overflow-x: auto; grid-template-columns: repeat(7, minmax(100px, 1fr)); }
+      #page-dashboard .dash-cal-day { min-height: 84px; }
+    }
+
     #page-weekly-board textarea.wb-result {
       display: block;
       box-sizing: border-box;
@@ -3588,8 +3657,7 @@
         <div id="dashWidgetPanel" style="display:none" class="card mb-4 bg-gray-50 border border-dashed border-gray-300">
           <p class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-cog mr-2"></i>Hiển thị/Ẩn widget:</p>
           <div class="flex flex-wrap gap-3 text-sm">
-            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-productivity" checked onchange="toggleWidget('dashProductivity', this.checked)"> Năng suất</label>
-            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-discipline" checked onchange="toggleWidget('dashDiscipline', this.checked)"> Bộ môn</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-weekly" checked onchange="toggleWidget('dashWeeklyCalendar', this.checked)"> Kế hoạch triển khai</label>
             <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-hours" checked onchange="toggleWidget('dashHours', this.checked)"> Giờ làm việc</label>
             <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-progress" checked onchange="toggleWidget('dashProgress', this.checked)"> Tiến độ</label>
             <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="wgt-tasks" checked onchange="toggleWidget('dashTasksCard', this.checked)"> Task trễ hạn</label>
@@ -3668,64 +3736,39 @@
           </div>
         </div>
 
-        <!-- Overall Progress -->
-        <div class="card mb-4">
-          <div class="flex justify-between items-center mb-2">
-            <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-line text-primary mr-2"></i>Tiến độ tổng thể</h3>
-            <span class="text-sm font-bold text-primary" id="dashOverallPct">0%</span>
+        <!-- Kế hoạch triển khai (lịch tháng) -->
+        <div class="card mb-4" id="dashWeeklyCalendar">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div>
+              <h3 class="font-bold text-gray-800 text-sm">
+                <i class="fas fa-calendar-alt text-primary mr-2"></i>Kế hoạch triển khai
+              </h3>
+              <p class="text-xs text-gray-400 mt-0.5" id="dashCalWeekLabel">—</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="flex items-center gap-1" id="dashCalFilters">
+                <button type="button" class="dash-cal-filter active" data-filter="all" onclick="setDashCalFilter('all')">Tất cả</button>
+                <button type="button" class="dash-cal-filter" data-filter="mine" onclick="setDashCalFilter('mine')">Của tôi</button>
+                <button type="button" class="dash-cal-filter" data-filter="open" onclick="setDashCalFilter('open')">Chưa xong</button>
+              </div>
+              <div class="flex items-center gap-1">
+                <button type="button" class="btn-secondary text-xs px-2 py-1" onclick="dashCalShiftMonth(-1)" title="Tháng trước"><i class="fas fa-chevron-left"></i></button>
+                <button type="button" class="btn-secondary text-xs px-2 py-1" onclick="dashCalGoCurrentMonth()">Tháng này</button>
+                <button type="button" class="btn-secondary text-xs px-2 py-1" onclick="dashCalShiftMonth(1)" title="Tháng sau"><i class="fas fa-chevron-right"></i></button>
+              </div>
+              <button type="button" class="text-xs text-primary hover:underline" onclick="dashCalOpenWeeklyBoard()">Mở Kế hoạch tuần →</button>
+            </div>
           </div>
-          <div class="progress-bar h-3 rounded-full">
-            <div class="progress-fill h-3 rounded-full" id="dashOverallBar" style="width:0%"></div>
+          <div id="dashCalGrid" class="dash-cal-grid">
+            <div class="text-xs text-gray-400 text-center py-6 col-span-full">Đang tải kế hoạch triển khai...</div>
           </div>
-          <div class="flex justify-between text-xs text-gray-400 mt-1">
-            <span id="dashTasksSummary">0 / 0 task</span>
-            <span id="dashOverdueSummary" class="text-red-500"></span>
-          </div>
+          <div id="dashCalUnscheduled" class="dash-cal-unscheduled hidden"></div>
         </div>
 
-        <!-- Secondary KPI widgets - thông tin chuyên sâu -->
+        <!-- Secondary KPI widgets -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
 
-          <!-- Widget 1: Phân bổ Task theo Trạng thái -->
-          <div class="kpi-card" style="border-color:#0066CC">
-            <div class="flex justify-between items-start mb-2">
-              <div class="flex-1">
-                <p class="text-xs text-gray-500 font-medium uppercase tracking-wide">Phân bổ task theo trạng thái</p>
-                <p class="text-xs text-gray-400 mt-0.5">Phân tích tiến độ công việc hiện tại</p>
-              </div>
-              <div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center ml-3 flex-shrink-0">
-                <i class="fas fa-tasks text-blue-600"></i>
-              </div>
-            </div>
-            <div id="taskStatusBars" class="space-y-1.5 mt-2">
-              <div class="text-xs text-gray-400 text-center py-2">Đang tải...</div>
-            </div>
-            <div class="flex flex-wrap gap-x-3 gap-y-1 mt-2" id="taskStatusLegend"></div>
-          </div>
-
-          <!-- Widget 2: Nhân sự hoạt động tháng này -->
-          <div class="kpi-card" style="border-color:#10B981">
-            <div class="flex justify-between items-start">
-              <div class="flex-1">
-                <p class="text-xs text-gray-500 font-medium uppercase tracking-wide">Nhân sự tháng này</p>
-                <div class="flex items-end gap-2 mt-1">
-                  <p class="text-3xl font-bold text-emerald-600" id="kpiActiveUsersMonth">-</p>
-                  <p class="text-sm text-gray-400 mb-1">/ <span id="kpiTotalUsersAll">-</span> người</p>
-                </div>
-                <p class="text-xs text-gray-400 mt-1">Đã chấm công trong tháng</p>
-                <div class="mt-2 pt-2 border-t border-gray-100">
-                  <p class="text-xs text-gray-500">🏆 Đóng góp nhiều nhất:</p>
-                  <p class="text-xs font-semibold text-emerald-700 mt-0.5 truncate" id="kpiTopContributor">-</p>
-                  <p class="text-xs text-gray-400" id="kpiTopContributorHours"></p>
-                </div>
-              </div>
-              <div class="w-12 h-12 rounded-xl bg-emerald-100 flex items-center justify-center ml-3 flex-shrink-0">
-                <i class="fas fa-user-clock text-xl text-emerald-600"></i>
-              </div>
-            </div>
-          </div>
-
-          <!-- Widget 3: Dự án sắp đến hạn (30 ngày tới) -->
+          <!-- Dự án sắp đến hạn (30 ngày tới) -->
           <div class="kpi-card" style="border-color:#EF4444">
             <div class="flex justify-between items-start mb-2">
               <div class="flex-1">
@@ -3741,7 +3784,7 @@
             </div>
           </div>
 
-          <!-- Widget 4a: Chi phí chung năm nay (admin only) -->
+          <!-- Chi phí chung năm nay (admin only) -->
           <div id="dashWidget4Admin" class="kpi-card" style="border-color:#8B5CF6;display:none">
             <div class="flex justify-between items-start">
               <div class="flex-1">
@@ -3764,7 +3807,7 @@
             </div>
           </div>
 
-          <!-- Widget 4b: Task của tôi (member only) -->
+          <!-- Task của tôi -->
           <div id="dashWidget4Member" class="kpi-card" style="border-color:#6366F1;display:none">
             <div class="flex justify-between items-start mb-2">
               <div class="flex-1">
@@ -3818,24 +3861,7 @@
           </div>
         </div>
 
-        <!-- Charts Row 1 -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-          <div class="card" id="dashProductivity">
-            <div class="flex justify-between items-center mb-3">
-              <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-bar text-primary mr-2"></i>Năng suất nhân sự (30 ngày)</h3>
-              <button onclick="navigate('productivity')" class="text-xs text-primary hover:underline">Chi tiết →</button>
-            </div>
-            <div class="chart-container-fixed"><canvas id="productivityChart"></canvas></div>
-          </div>
-          <div class="card" id="dashDiscipline">
-            <div class="flex justify-between items-center mb-3">
-              <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-chart-pie text-accent mr-2"></i>Phân bổ theo bộ môn</h3>
-            </div>
-            <div class="chart-container-fixed"><canvas id="disciplineChart"></canvas></div>
-          </div>
-        </div>
-
-        <!-- Charts Row 2: hours + progress -->
+        <!-- Charts: hours + progress -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div class="card md:col-span-2" id="dashHours">
             <div class="flex justify-between items-center mb-3">
@@ -9244,7 +9270,7 @@
 </div>
 
 <!-- Zoom prevention + chart resize handler -->
-<script src="/static/app.js?v=20261120a"></script>
+<script src="/static/app.js?v=20261123b"></script>
 <script src="/static/design-hstk.js?v=20261008h"></script>
 <script>
   // Lazy-load executive dashboard chỉ khi vào trang PMO

@@ -1534,8 +1534,8 @@ async function acceptPwaInstall() {
 async function loadDashboard() {
   try {
     const data = await api('/dashboard/stats')
-    const { stats, monthly_hours, project_progress, discipline_breakdown, member_productivity,
-            task_status_breakdown, projects_near_deadline, birthdays_this_month, birthdays_forecast } = data
+    const { stats, monthly_hours, project_progress,
+            projects_near_deadline, birthdays_this_month, birthdays_forecast } = data
 
     // KPI row – tất cả role hiển thị giống nhau (layout member)
     $('kpiProjects').textContent = stats.total_projects
@@ -1555,34 +1555,9 @@ async function loadDashboard() {
     if ($('kpiMyTasksDone'))    $('kpiMyTasksDone').textContent    = stats.my_tasks_completed || 0
     if ($('kpiMyTasksDueSoon')) $('kpiMyTasksDueSoon').textContent = stats.my_tasks_due_soon || 0
 
-    // Overall progress bar
-    const totalT = stats.total_tasks || 0
-    const doneT = stats.completed_tasks || 0
-    const rate = totalT > 0 ? Math.round((doneT / totalT) * 100) : 0
-    if ($('dashOverallPct')) $('dashOverallPct').textContent = rate + '%'
-    if ($('dashOverallBar')) $('dashOverallBar').style.width = rate + '%'
-    if ($('dashTasksSummary')) $('dashTasksSummary').textContent = doneT + ' / ' + totalT + ' task hoàn thành'
-    if ($('dashOverdueSummary')) {
-      const ov = stats.overdue_tasks || 0
-      $('dashOverdueSummary').textContent = ov > 0 ? ov + ' task trễ hạn' : ''
-    }
-
-    // Widget 1: Phân bổ task theo trạng thái
-    renderTaskStatusBars(task_status_breakdown, totalT)
-
-    // Widget 2: Nhân sự hoạt động tháng này
-    if ($('kpiActiveUsersMonth')) $('kpiActiveUsersMonth').textContent = stats.active_users_month || 0
-    if ($('kpiTotalUsersAll'))    $('kpiTotalUsersAll').textContent    = stats.total_users || 0
-    if ($('kpiTopContributor'))   $('kpiTopContributor').textContent   = stats.top_contributor_name || 'Chưa có dữ liệu'
-    if ($('kpiTopContributorHours')) {
-      $('kpiTopContributorHours').textContent = stats.top_contributor_hours
-        ? `${stats.top_contributor_hours} giờ trong tháng` : ''
-    }
-
-    // Widget 3: Dự án sắp đến hạn
+    // Dự án sắp đến hạn + Task của tôi
     renderProjectDeadlineList(projects_near_deadline)
 
-    // Widget 4: Task của tôi – luôn dùng layout member, ẩn admin widget
     const w4Admin = $('dashWidget4Admin')
     const w4Member = $('dashWidget4Member')
     if (w4Admin)  w4Admin.style.display  = 'none'
@@ -1593,12 +1568,11 @@ async function loadDashboard() {
     if ($('myTaskInProgress')) $('myTaskInProgress').textContent = stats.my_tasks_inprogress|| 0
     if ($('myTaskDueSoon'))    $('myTaskDueSoon').textContent    = stats.my_tasks_due_soon  || 0
 
-    renderProductivityChart(member_productivity)
-    renderDisciplineChart(discipline_breakdown)
     renderHoursChart(monthly_hours)
     renderProjectProgressList(project_progress)
     renderRecentTasksTable(project_progress, data.overdue_tasks_list || [])
     renderBirthdayWidget(birthdays_this_month || [], birthdays_forecast || [])
+    loadDashWeeklyCalendar()
   } catch (e) {
     console.error('Dashboard error:', e)
   }
@@ -16188,6 +16162,220 @@ function toggleDashboardWidgets() {
 function toggleWidget(id, visible) {
   const el = $(id)
   if (el) el.style.display = visible === false ? 'none' : ''
+}
+
+// ================================================================
+// DASHBOARD — Kế hoạch triển khai (lịch tháng)
+// ================================================================
+let _dashCalYear = null
+let _dashCalMonth = null // 1–12
+let _dashCalFilter = 'all'
+let _dashCalItems = []
+let _dashCalLoading = false
+
+const DASH_CAL_DAY_LABELS = [
+  { short: 'T2', weekend: false },
+  { short: 'T3', weekend: false },
+  { short: 'T4', weekend: false },
+  { short: 'T5', weekend: false },
+  { short: 'T6', weekend: false },
+  { short: 'T7', weekend: true },
+  { short: 'CN', weekend: true },
+]
+
+const DASH_CAL_MONTH_NAMES = [
+  '', 'Tháng 1', 'Tháng 2', 'Tháng 3', 'Tháng 4', 'Tháng 5', 'Tháng 6',
+  'Tháng 7', 'Tháng 8', 'Tháng 9', 'Tháng 10', 'Tháng 11', 'Tháng 12',
+]
+
+function dashCalEnsureMonth() {
+  if (_dashCalYear && _dashCalMonth) return
+  const t = todayLocalISO()
+  _dashCalYear = Number(t.slice(0, 4))
+  _dashCalMonth = Number(t.slice(5, 7))
+}
+
+function dashCalWeeksInMonth(year, month) {
+  const first = `${year}-${String(month).padStart(2, '0')}-01`
+  const lastDay = new Date(year, month, 0).getDate()
+  const last = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+  const weeks = []
+  let cursor = getWeekStartEnd(first).weekStart
+  const endWeek = getWeekStartEnd(last).weekStart
+  while (cursor <= endWeek) {
+    weeks.push(cursor)
+    cursor = addCalendarDays(cursor, 7)
+  }
+  return weeks
+}
+
+function dashCalMonthGrid(year, month) {
+  const first = `${year}-${String(month).padStart(2, '0')}-01`
+  const gridStart = getWeekStartEnd(first).weekStart
+  return Array.from({ length: 42 }, (_, i) => {
+    const dateStr = addCalendarDays(gridStart, i)
+    const inMonth = Number(dateStr.slice(5, 7)) === month
+    const dow = (parseDateOnly(dateStr).getDay() + 6) % 7 // Mon=0
+    return { dateStr, inMonth, weekend: dow >= 5 }
+  })
+}
+
+function dashCalFilterItems(items) {
+  const uid = Number(currentUser?.id)
+  const myName = String(currentUser?.full_name || '').trim().toLowerCase()
+  return (items || []).filter((it) => {
+    if (it.kind === 'self_report' || it.kind === 'extra_report') return false
+    if (_dashCalFilter === 'mine') {
+      const ids = Array.isArray(it.assignee_ids) ? it.assignee_ids.map(Number)
+        : (Array.isArray(it.assignees) ? it.assignees.map((a) => Number(a.id)) : [])
+      if (ids.length) return ids.includes(uid)
+      if (!myName) return false
+      return String(it.assignee_names || '').toLowerCase().split(',').map((s) => s.trim()).includes(myName)
+    }
+    if (_dashCalFilter === 'open') return it.status !== 'completed'
+    return true
+  })
+}
+
+function setDashCalFilter(f) {
+  _dashCalFilter = f
+  document.querySelectorAll('#dashCalFilters .dash-cal-filter').forEach((btn) => {
+    btn.classList.toggle('active', btn.getAttribute('data-filter') === f)
+  })
+  renderDashWeeklyCalendar()
+}
+
+function dashCalShiftMonth(delta) {
+  dashCalEnsureMonth()
+  let y = _dashCalYear
+  let m = _dashCalMonth + delta
+  while (m < 1) { m += 12; y -= 1 }
+  while (m > 12) { m -= 12; y += 1 }
+  _dashCalYear = y
+  _dashCalMonth = m
+  loadDashWeeklyCalendar()
+}
+
+function dashCalGoCurrentMonth() {
+  const t = todayLocalISO()
+  _dashCalYear = Number(t.slice(0, 4))
+  _dashCalMonth = Number(t.slice(5, 7))
+  loadDashWeeklyCalendar()
+}
+
+function dashCalOpenWeeklyBoard(dateStr) {
+  const anchor = dateStr || todayLocalISO()
+  _weeklyBoardWeekStart = getWeekStartEnd(anchor).weekStart
+  navigate('weekly-board')
+}
+
+async function loadDashWeeklyCalendar() {
+  const root = $('dashWeeklyCalendar')
+  if (!root || root.style.display === 'none') return
+  dashCalEnsureMonth()
+  if (_dashCalLoading) return
+  _dashCalLoading = true
+  const grid = $('dashCalGrid')
+  if (grid && !_dashCalItems.length) {
+    grid.innerHTML = `<div class="text-xs text-gray-400 text-center py-6 col-span-full">Đang tải kế hoạch triển khai...</div>`
+  }
+  try {
+    const weeks = dashCalWeeksInMonth(_dashCalYear, _dashCalMonth)
+    const results = await Promise.all(
+      weeks.map((ws) => api(`/weekly-board?week=${encodeURIComponent(ws)}`).catch(() => null))
+    )
+    const byId = new Map()
+    for (const data of results) {
+      for (const it of (data?.items || [])) {
+        const key = String(it.id ?? `${it.project_id}-${it.description}-${it.target_date}`)
+        if (!byId.has(key)) byId.set(key, it)
+      }
+    }
+    _dashCalItems = [...byId.values()]
+    renderDashWeeklyCalendar()
+  } catch (e) {
+    if (grid) {
+      grid.innerHTML = `<div class="text-xs text-red-500 text-center py-6 col-span-full">Không tải được kế hoạch: ${escHtml(e.message || e)}</div>`
+    }
+  } finally {
+    _dashCalLoading = false
+  }
+}
+
+function renderDashWeeklyCalendar() {
+  const grid = $('dashCalGrid')
+  const labelEl = $('dashCalWeekLabel')
+  const unEl = $('dashCalUnscheduled')
+  if (!grid) return
+  dashCalEnsureMonth()
+
+  if (labelEl) labelEl.textContent = `${DASH_CAL_MONTH_NAMES[_dashCalMonth]} ${_dashCalYear}`
+
+  const cellsMeta = dashCalMonthGrid(_dashCalYear, _dashCalMonth)
+  const today = todayLocalISO()
+  const monthPrefix = `${_dashCalYear}-${String(_dashCalMonth).padStart(2, '0')}`
+  const items = dashCalFilterItems(_dashCalItems)
+  const byDay = {}
+  cellsMeta.forEach(({ dateStr }) => { byDay[dateStr] = [] })
+  const unscheduled = []
+  items.forEach((it) => {
+    const td = String(it.target_date || '').slice(0, 10)
+    if (td && byDay[td]) byDay[td].push(it)
+    else if (td && td.startsWith(monthPrefix)) {
+      // day in month but outside padded grid shouldn't happen with 42 cells
+      if (!byDay[td]) byDay[td] = []
+      byDay[td].push(it)
+    } else if (!td) unscheduled.push(it)
+  })
+
+  const heads = DASH_CAL_DAY_LABELS.map((d) =>
+    `<div class="dash-cal-head${d.weekend ? ' weekend' : ''}">${d.short}</div>`
+  ).join('')
+
+  const cells = cellsMeta.map(({ dateStr, inMonth, weekend }) => {
+    const isToday = dateStr === today
+    const dayNum = Number(dateStr.slice(8, 10))
+    const list = byDay[dateStr] || []
+    const maxShow = inMonth ? 3 : 2
+    const shown = list.slice(0, maxShow)
+    const more = list.length - shown.length
+    const chips = shown.map((it) => {
+      const cls = [
+        'dash-cal-chip',
+        it.overdue ? 'overdue' : '',
+        it.status === 'completed' ? 'done' : '',
+      ].filter(Boolean).join(' ')
+      const proj = String(it.project_code || it.project_name || '').trim()
+      const who = String(it.assignee_names || (it.assignees || []).map((a) => a.name).filter(Boolean).join(', ') || '').trim()
+      const title = `${it.description || ''}${proj ? ` · ${proj}` : ''}${who ? ` · ${who}` : ''}`
+      return `<button type="button" class="${cls}" title="${escHtml(title)}" onclick="dashCalOpenWeeklyBoard('${dateStr}')">
+        <span>${escHtml(String(it.description || '').slice(0, 40))}</span>
+        <span class="meta">${escHtml([proj, who].filter(Boolean).join(' · '))}</span>
+      </button>`
+    }).join('')
+    return `<div class="dash-cal-day${weekend ? ' weekend' : ''}${isToday ? ' today' : ''}${inMonth ? '' : ' outside'}">
+      <div class="dash-cal-daynum">${dayNum}</div>
+      <div class="dash-cal-chips">${chips}${more > 0 ? `<div class="dash-cal-more">+${more}</div>` : ''}</div>
+    </div>`
+  }).join('')
+
+  grid.innerHTML = heads + cells
+
+  if (unEl) {
+    if (!unscheduled.length) {
+      unEl.classList.add('hidden')
+      unEl.innerHTML = ''
+    } else {
+      unEl.classList.remove('hidden')
+      unEl.innerHTML = `<h4>Chưa xếp ngày (${unscheduled.length})</h4>
+        <div class="flex flex-wrap gap-2">${unscheduled.slice(0, 12).map((it) => {
+          const proj = String(it.project_code || '').trim()
+          return `<button type="button" class="dash-cal-chip${it.overdue ? ' overdue' : ''}" onclick="dashCalOpenWeeklyBoard()" title="${escHtml(it.description || '')}">
+            ${escHtml(String(it.description || '').slice(0, 40))}${proj ? ` <span class="meta">${escHtml(proj)}</span>` : ''}
+          </button>`
+        }).join('')}${unscheduled.length > 12 ? `<span class="dash-cal-more">+${unscheduled.length - 12}</span>` : ''}</div>`
+    }
+  }
 }
 
 // ================================================================
