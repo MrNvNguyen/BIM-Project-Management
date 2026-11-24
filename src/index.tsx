@@ -18954,7 +18954,9 @@ app.get('/api/weekly-board', authMiddleware, async (c) => {
         result: row.result_text ?? '',
         status: row.result_status || 'not_started',
         can_edit_result: isAssignee || leaderOrAdmin,
-        can_reassign: isAssignee && row.category !== 'self_report' && await isWeeklyBoardProjectLeader(db, user, projectId),
+        can_reassign: row.category !== 'self_report' && (
+          leaderOrAdmin || (isAssignee && await isWeeklyBoardProjectLeader(db, user, projectId))
+        ),
         can_delete: leaderOrAdmin || (row.category === 'self_report' && isAssignee),
         kind: row.category === 'self_report' ? 'self_report' : 'task',
         overdue: (row.result_status || 'not_started') !== 'completed' && (
@@ -19365,7 +19367,9 @@ app.post('/api/weekly-board/reports', authMiddleware, async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500) }
 })
 
-// PATCH /api/weekly-board/items/:id/assignee — leader đang phụ trách giao lại một người
+// PATCH /api/weekly-board/items/:id/assignee
+// - add_assignee_ids: thêm nhiều người phụ trách (giữ người cũ)
+// - assignee_id: giao lại 1 người (thay chính mình) — tương thích cũ
 app.patch('/api/weekly-board/items/:id/assignee', authMiddleware, async (c) => {
   try {
     const db = c.env.DB
@@ -19373,8 +19377,8 @@ app.patch('/api/weekly-board/items/:id/assignee', authMiddleware, async (c) => {
     const userId = Number(user.id)
     const itemId = parseInt(c.req.param('id'))
     const body = await c.req.json()
-    const nextId = Number(body.assignee_id)
-    if (!nextId) return c.json({ error: 'Chọn người phụ trách mới' }, 400)
+    const addIdsRaw = Array.isArray(body.add_assignee_ids) ? body.add_assignee_ids : null
+    const nextId = Number(body.assignee_id) || 0
 
     const row = await db.prepare(`
       SELECT wpi.id, wpi.description, wpi.assignee_ids, wpi.category, wpi.target_date, wpi.linked_task_id,
@@ -19390,8 +19394,123 @@ app.patch('/api/weekly-board/items/:id/assignee', authMiddleware, async (c) => {
       return c.json({ error: 'Không có quyền truy cập dự án này' }, 403)
     }
     const assigneeIds = parseWeeklyPlanAssigneeIds(row.assignee_ids)
-    if (!assigneeIds.includes(userId) || !(await isWeeklyBoardProjectLeader(db, user, projectId))) {
-      return c.json({ error: 'Chỉ leader đang phụ trách mới được giao lại' }, 403)
+    const leaderOrAdmin = await isProjectLeaderOrAdmin(db, user, projectId)
+    const canManage = leaderOrAdmin || (
+      assigneeIds.includes(userId) && await isWeeklyBoardProjectLeader(db, user, projectId)
+    )
+    if (!canManage) {
+      return c.json({ error: 'Không có quyền thay đổi người phụ trách' }, 403)
+    }
+
+    const description = String(row.description || '')
+    const taskTitle = description.length > 180 ? description.slice(0, 177) + '...' : description
+    const weekLabel = row.week_start
+      ? `Tuần ${row.week_number || ''} (${row.week_start} → ${row.week_end})`
+      : ''
+
+    let taskMap: Record<string, number> = {}
+    try {
+      const linkRow = await db.prepare(`SELECT linked_task_ids FROM weekly_plan_items WHERE id = ?`).bind(itemId).first() as { linked_task_ids?: string } | null
+      taskMap = parseLinkedTaskMap(linkRow?.linked_task_ids)
+    } catch { /* cột chưa migrate */ }
+
+    // ── Thêm nhiều người phụ trách ──
+    if (addIdsRaw) {
+      const addIds = [...new Set(addIdsRaw.map((x: unknown) => Number(x)).filter((n: number) => n > 0))]
+        .filter((id) => !assigneeIds.includes(id))
+      if (!addIds.length) return c.json({ error: 'Chọn ít nhất một người chưa phụ trách' }, 400)
+
+      const ph = addIds.map(() => '?').join(',')
+      const valid = await db.prepare(`
+        SELECT COUNT(DISTINCT uid) AS c FROM (
+          SELECT pm.user_id AS uid FROM project_members pm
+            WHERE pm.project_id = ? AND pm.user_id IN (${ph})
+          UNION
+          SELECT p.admin_id AS uid FROM projects p
+            WHERE p.id = ? AND p.admin_id IN (${ph})
+          UNION
+          SELECT p.leader_id AS uid FROM projects p
+            WHERE p.id = ? AND p.leader_id IN (${ph})
+        ) src WHERE uid IS NOT NULL
+      `).bind(projectId, ...addIds, projectId, ...addIds, projectId, ...addIds).first() as { c?: number } | null
+      if (Number(valid?.c ?? 0) !== addIds.length) {
+        return c.json({ error: 'Mọi người phụ trách mới phải đang tham gia dự án' }, 400)
+      }
+
+      const nextAssignees = [...assigneeIds, ...addIds]
+      const nameRows = await db.prepare(
+        `SELECT id, full_name FROM users WHERE id IN (${nextAssignees.map(() => '?').join(',')})`
+      ).bind(...nextAssignees).all()
+      const nameById = new Map<number, string>()
+      for (const u of (nameRows.results || []) as { id: number; full_name: string }[]) {
+        nameById.set(Number(u.id), String(u.full_name))
+      }
+      const nextNames = nextAssignees.map((id) => nameById.get(id) || `#${id}`).join(', ')
+      const createdTaskIds: number[] = []
+      const proj = await db.prepare('SELECT code, name FROM projects WHERE id = ?').bind(projectId).first() as { code?: string; name?: string } | null
+      const projectName = proj?.code ? `${proj.code} · ${proj.name || ''}` : String(proj?.name || '')
+
+      for (const newId of addIds) {
+        const personName = nameById.get(newId) || `#${newId}`
+        const discipline = await disciplineCodeForAssignee(db, projectId, newId)
+        const created = await createTaskRecord(db, c.env, user, {
+          project_id: projectId,
+          title: taskTitle,
+          description: `${weekLabel}.\nNgười phụ trách: ${personName}.\n${description}`,
+          discipline_code: discipline,
+          task_type: 'other',
+          priority: 'medium',
+          status: 'todo',
+          assigned_to: newId,
+          start_date: row.week_start || null,
+          due_date: row.target_date || null,
+        }, { skipNotify: true, emptyPhase: true })
+        if (created.status !== 201 || !created.body?.id) {
+          return c.json({ error: created.body?.error || 'Không tạo được task cho người mới' }, 500)
+        }
+        const taskId = Number(created.body.id)
+        createdTaskIds.push(taskId)
+        taskMap[String(newId)] = taskId
+        await notifyTaskAssigneeChange(db, c.env, user, {
+          id: taskId,
+          title: taskTitle,
+          project_id: projectId,
+          priority: 'medium',
+          due_date: row.target_date || null,
+        }, null, newId)
+        await deliverUserNotice(db, c.env, {
+          userId: newId,
+          title: 'Việc mới được giao',
+          message: `Bạn được giao: ${taskTitle}`,
+          eventType: 'weekly_board_assigned',
+          data: {
+            taskTitle,
+            projectName,
+            deadline: row.target_date || null,
+            weekLabel,
+            coworkers: nextNames,
+            assignedBy: user.full_name || '',
+          },
+          relatedType: 'task',
+          relatedId: taskId,
+        })
+      }
+
+      await db.prepare(
+        `UPDATE weekly_plan_items SET assignee_ids = ?, assignee_names = ? WHERE id = ?`
+      ).bind(JSON.stringify(nextAssignees), nextNames, itemId).run()
+      await saveWeeklyItemTaskLinks(db, itemId, taskMap)
+      try {
+        await db.prepare(`UPDATE weekly_report_items SET assignee_names = ? WHERE plan_item_id = ?`).bind(nextNames, itemId).run()
+      } catch { /* dòng báo cáo có thể chưa có */ }
+
+      return c.json({ success: true, assignee_ids: nextAssignees, task_ids: createdTaskIds })
+    }
+
+    // ── Giao lại 1 người (thay chính mình) ──
+    if (!nextId) return c.json({ error: 'Chọn người phụ trách mới' }, 400)
+    if (!assigneeIds.includes(userId) && !leaderOrAdmin) {
+      return c.json({ error: 'Chỉ người đang phụ trách hoặc quản lý mới giao lại' }, 403)
     }
     if (nextId === userId) return c.json({ error: 'Người này đang phụ trách' }, 400)
     if (assigneeIds.includes(nextId)) return c.json({ error: 'Người này đã nằm trong danh sách phụ trách' }, 400)
@@ -19422,17 +19541,11 @@ app.patch('/api/weekly-board/items/:id/assignee', authMiddleware, async (c) => {
     for (const u of (nameRows.results || []) as { id: number; full_name: string }[]) {
       nameById.set(Number(u.id), String(u.full_name))
     }
-    const nextAssignees = assigneeIds.map((id) => id === userId ? nextId : id)
+    const replaceFrom = assigneeIds.includes(userId) ? userId : assigneeIds[0]
+    const nextAssignees = assigneeIds.map((id) => id === replaceFrom ? nextId : id)
     const nextNames = nextAssignees.map((id) => id === nextId ? nextName : (nameById.get(id) || `#${id}`)).join(', ')
 
-    const description = String(row.description || '')
-    const taskTitle = description.length > 180 ? description.slice(0, 177) + '...' : description
-    let taskMap: Record<string, number> = {}
-    try {
-      const linkRow = await db.prepare(`SELECT linked_task_ids FROM weekly_plan_items WHERE id = ?`).bind(itemId).first() as { linked_task_ids?: string } | null
-      taskMap = parseLinkedTaskMap(linkRow?.linked_task_ids)
-    } catch { /* cột chưa migrate */ }
-    let taskId = taskMap[String(userId)] || null
+    let taskId = taskMap[String(replaceFrom)] || null
     if (taskId) {
       const exists = await db.prepare(`SELECT id FROM tasks WHERE id = ? AND project_id = ?`).bind(taskId, projectId).first()
       if (!exists) taskId = null
@@ -19441,14 +19554,14 @@ app.patch('/api/weekly-board/items/:id/assignee', authMiddleware, async (c) => {
       const linked = await db.prepare(
         `SELECT id, assigned_to FROM tasks WHERE id = ? AND project_id = ?`
       ).bind(row.linked_task_id, projectId).first() as { id?: number; assigned_to?: number } | null
-      if (linked?.id && Number(linked.assigned_to) === userId) taskId = Number(linked.id)
+      if (linked?.id && Number(linked.assigned_to) === replaceFrom) taskId = Number(linked.id)
     }
     if (!taskId) {
       const found = await db.prepare(`
         SELECT id FROM tasks
         WHERE project_id = ? AND assigned_to = ? AND title = ? AND due_date IS ?
         ORDER BY id DESC LIMIT 1
-      `).bind(projectId, userId, taskTitle, row.target_date || null).first() as { id?: number } | null
+      `).bind(projectId, replaceFrom, taskTitle, row.target_date || null).first() as { id?: number } | null
       if (found?.id) taskId = Number(found.id)
     }
 
@@ -19458,12 +19571,9 @@ app.patch('/api/weekly-board/items/:id/assignee', authMiddleware, async (c) => {
       ).bind(taskId).first() as any
       await db.prepare(`UPDATE tasks SET assigned_to = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(nextId, taskId).run()
       if (task) {
-        await notifyTaskAssigneeChange(db, c.env, user, task, Number(task.assigned_to) || userId, nextId)
+        await notifyTaskAssigneeChange(db, c.env, user, task, Number(task.assigned_to) || replaceFrom, nextId)
       }
     } else {
-      const weekLabel = row.week_start
-        ? `Tuần ${row.week_number || ''} (${row.week_start} → ${row.week_end})`
-        : ''
       const created = await createTaskRecord(db, c.env, user, {
         project_id: projectId,
         title: taskTitle,
@@ -19488,7 +19598,7 @@ app.patch('/api/weekly-board/items/:id/assignee', authMiddleware, async (c) => {
       }, null, nextId)
     }
 
-    delete taskMap[String(userId)]
+    delete taskMap[String(replaceFrom)]
     taskMap[String(nextId)] = taskId
     await db.prepare(
       `UPDATE weekly_plan_items SET assignee_ids = ?, assignee_names = ? WHERE id = ?`

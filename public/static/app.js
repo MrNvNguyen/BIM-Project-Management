@@ -29110,7 +29110,7 @@ function weeklyBoardProjectId(comboboxId) {
 function weeklyBoardAssigneeCell(it) {
   const chips = weeklyBoardAssigneeChips(it)
   if (!it.can_reassign) return chips
-  return `${chips}<button type="button" class="block mt-1 text-[11px] font-medium" style="color:#38bdf8" onclick="weeklyBoardOpenReassign(${Number(it.id)}, ${Number(it.project_id)})">Đổi người</button><div id="wbReassign_${Number(it.id)}" class="mt-1" hidden></div>`
+  return `${chips}<button type="button" class="block mt-1 text-[11px] font-medium" style="color:#38bdf8" onclick="weeklyBoardOpenReassign(${Number(it.id)}, ${Number(it.project_id)})">Thêm / đổi người</button><div id="wbReassign_${Number(it.id)}" class="mt-1" hidden></div>`
 }
 
 async function weeklyBoardOpenReassign(itemId, projectId) {
@@ -29126,6 +29126,9 @@ async function weeklyBoardOpenReassign(itemId, projectId) {
   host.innerHTML = '<div class="text-xs text-gray-400">Đang tải thành viên…</div>'
   try {
     const proj = await api('/projects/' + projectId)
+    const currentIds = new Set(
+      weeklyBoardItemAssigneeIds((_weeklyBoardData?.items || []).find((x) => Number(x.id) === Number(itemId)) || {})
+    )
     const seen = new Set()
     const members = []
     ;(proj.members || []).forEach((m) => {
@@ -29141,19 +29144,51 @@ async function weeklyBoardOpenReassign(itemId, projectId) {
       members.push({ id: Number(proj.admin_id), name: proj.admin_name || 'Admin dự án' })
     }
     members.sort((a, b) => String(a.name).localeCompare(String(b.name), 'vi'))
+    const addable = members.filter((m) => !currentIds.has(Number(m.id)))
     const boxId = 'wbReassignCb_' + itemId
-    host.innerHTML = `<div id="${boxId}"></div>`
+    if (!addable.length) {
+      host.innerHTML = '<div class="text-xs text-gray-400">Đã có đủ thành viên dự án trong danh sách phụ trách</div>'
+      return
+    }
+    host.innerHTML = `
+      <div class="text-[11px] text-gray-400 mb-1">Chọn thêm người phụ trách (có thể nhiều)</div>
+      <div id="${boxId}"></div>
+      <button type="button" class="mt-2 btn-primary text-[11px] px-3 py-1" onclick="weeklyBoardAddAssignees(${Number(itemId)})">
+        <i class="fas fa-user-plus mr-1"></i>Thêm phụ trách
+      </button>`
     createCombobox(boxId, {
-      placeholder: 'Chọn người phụ trách mới',
-      items: members.map((m) => ({ value: String(m.id), label: m.name })),
+      placeholder: 'Chọn người để thêm',
+      items: addable.map((m) => ({ value: String(m.id), label: m.name })),
+      multiple: true,
+      value: [],
       fullWidth: true,
       teleport: true,
       panelMaxWidth: '280px',
       dropdownMaxHeight: '220px',
-      onchange: (val) => { if (val) weeklyBoardReassign(itemId, val) },
     })
   } catch (e) {
     host.innerHTML = `<div class="text-xs text-red-400">${escHtml(e.message || 'Không tải được thành viên')}</div>`
+  }
+}
+
+async function weeklyBoardAddAssignees(itemId) {
+  const boxId = 'wbReassignCb_' + itemId
+  const ids = (_cbState[boxId]?.values || [])
+    .map((id) => Number(id))
+    .filter((id) => id > 0)
+  if (!ids.length) {
+    toast('Chọn ít nhất một người để thêm', 'warning')
+    return
+  }
+  try {
+    await api(`/weekly-board/items/${itemId}/assignee`, {
+      method: 'PATCH',
+      data: { add_assignee_ids: ids },
+    })
+    toast(`Đã thêm ${ids.length} người phụ trách`, 'success')
+    await loadWeeklyBoardPage(true)
+  } catch (err) {
+    toast(err.message, 'error')
   }
 }
 
